@@ -1,0 +1,15 @@
+.icon-button {
+    -fx-background-color: rgba(0, 0, 0, 0.06);
+    -fx-background-radius: 8;
+    -fx-padding: 4 6 4 6;
+}
+
+.icon-button:hover {
+    -fx-background-color: rgba(0, 0, 0, 0.10);
+}
+
+.icon {
+    -fx-font-size: 12px;
+    -fx-text-fill: rgba(0, 0, 0, 0.75);
+    -fx-alignment: center;
+}

@@ -1,0 +1,203 @@
+.note-editor-pane {
+    -fx-background-color: white;
+}
+
+.note-header-bar {
+    -fx-background-color: #3b3f46;
+}
+
+.note-header-label {
+    -fx-text-fill: white;
+    -fx-font-size: 12px;
+    -fx-font-weight: bold;
+}
+
+.note-title-stack {
+    /* Container trägt Padding + Border, damit Anzeige und Editor deckungsgleich bleiben */
+    -fx-padding: 6 10 6 10;
+    -fx-background-color: rgba(0, 0, 0, 0.06);
+
+    /* Borderbreite bleibt IMMER 1px -> keine Verschiebung */
+    -fx-border-width: 1;
+    -fx-border-color: rgba(0, 0, 0, 0.18);
+    -fx-border-radius: 3;
+    -fx-background-radius: 3;
+}
+
+.note-title-area {
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #7a0f0f;
+
+    -fx-padding: 0;
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-border-width: 0;
+
+    -fx-background-insets: 0;
+    -fx-border-insets: 0;
+
+    -fx-prompt-text-fill: rgba(0, 0, 0, 0.35);
+    -fx-cursor: default;
+}
+
+.note-title-stack.note-title-active .note-title-area {
+    -fx-cursor: text;
+}
+
+.note-title-area .content {
+    -fx-padding: 0;
+    -fx-background-color: transparent;
+}
+
+/* Focus-Ring / Insets vermeiden */
+.note-title-area:focused {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-border-width: 0;
+}
+
+.note-body-container {
+    -fx-background-color: white;
+
+    /* Rahmen bleibt immer gleich breit -> keine Verschiebung */
+    -fx-border-color: rgba(0, 0, 0, 0.18);
+    -fx-border-width: 1;
+}
+
+.note-body-container.note-body-active {
+    /* Rahmen verschwindet optisch, bleibt aber 1px breit */
+    -fx-border-color: transparent;
+}
+
+.note-body-scroll {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+    -fx-background-insets: 0;
+    -fx-border-insets: 0;
+}
+
+.note-body-area {
+    /* Wichtig: niemals Border am inneren Feld setzen */
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-border-width: 0;
+
+    /* Insets stabilisieren */
+    -fx-background-insets: 0;
+    -fx-border-insets: 0;
+
+    -fx-padding: 10 10 10 10;
+    -fx-cursor: default;
+}
+
+.note-body-container.note-body-active .note-body-area {
+    -fx-cursor: text;
+}
+
+.note-formatting-bar {
+    -fx-background-color: rgba(250, 250, 250, 1.0);
+    -fx-border-color: rgba(0, 0, 0, 0.16);
+    -fx-border-width: 1;
+    -fx-padding: 4 6 4 6;
+    -fx-spacing: 6;
+}
+
+.note-formatting-root {
+    -fx-background-color: rgba(250, 250, 250, 1.0);
+}
+
+.note-formatting-row {
+    -fx-alignment: center-left;
+}
+
+.zettel-toolbar-button.formatting-button {
+    -fx-padding: 3 5 3 5;
+    -fx-background-radius: 6;
+}
+
+.note-formatting-root .toggle-button.mixed,
+.note-formatting-root .menu-button.mixed {
+    -fx-border-style: dashed;
+    -fx-border-width: 1;
+    -fx-border-color: -fx-text-base-color;
+    -fx-background-insets: 0;
+}
+
+.note-formatting-dropdown {
+    -fx-font-size: 12px;
+    -fx-padding: 2 6 2 6;
+    -fx-background-radius: 6;
+    -fx-background-color: rgba(0,0,0,0.06);
+}
+
+.note-formatting-dropdown:hover {
+    -fx-background-color: rgba(0,0,0,0.10);
+}
+
+.note-formatting-combo {
+    -fx-font-size: 12px;
+}
+
+.note-formatting-swatch {
+    -fx-padding: 2 2 2 2;
+    -fx-background-radius: 4;
+    -fx-background-color: rgba(0,0,0,0.06);
+}
+
+.note-formatting-swatch:hover {
+    -fx-background-color: rgba(0,0,0,0.10);
+}
+
+.zettel-root {
+    -fx-background-color: -fx-background;
+}
+
+.zettel-top-area {
+    -fx-background-color: rgba(0, 0, 0, 0.03);
+    -fx-border-color: rgba(0, 0, 0, 0.10);
+    -fx-border-width: 0 0 1 0;
+}
+
+.zettel-menu-bar {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+}
+
+.zettel-toolbar {
+    -fx-background-color: transparent;
+    -fx-padding: 6 8 6 8;
+    -fx-border-color: rgba(0, 0, 0, 0.10);
+    -fx-border-width: 1 0 0 0;
+}
+
+.zettel-bottom-toolbar {
+    -fx-background-color: rgba(0, 0, 0, 0.03);
+    -fx-border-color: rgba(0, 0, 0, 0.10);
+    -fx-border-width: 1 0 0 0;
+    -fx-padding: 6 8 6 8;
+}
+
+.zettel-toolbar {
+    -fx-background-color: transparent;
+    -fx-padding: 2;
+}
+
+.zettel-work-split {
+    -fx-padding: 0;
+}
+
+.zettel-work-pane {
+    -fx-background-color: rgba(255, 255, 255, 1.0);
+    -fx-border-color: rgba(0, 0, 0, 0.10);
+    -fx-border-width: 1;
+    -fx-background-radius: 0;
+    -fx-border-radius: 0;
+}
+
+.zettel-placeholder-label {
+    -fx-font-size: 12px;
+    -fx-text-fill: rgba(0, 0, 0, 0.45);
+}
+
+
