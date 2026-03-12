@@ -1,36 +1,46 @@
 package de.zettelkastenfx.notes.controller;
 
 import de.zettelkastenfx.base.BaseIcon;
+import de.zettelkastenfx.notes.bottom.BottomToolbar;
 import de.zettelkastenfx.notes.editor.NoteEditorPane;
+import de.zettelkastenfx.notes.keywords.KeywordsTablePane;
 import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
+import lombok.Getter;
 
 public class ZettelWindowView {
 
-  private final BorderPane root;
+  @Getter private final BorderPane root;
 
-  private final VBox topArea;
-  private final MenuBar menuBar;
-  private final Menu menuFile;
-  private final Menu menuEdit;
-  private final Menu menuView;
+  @Getter private final VBox topArea;
+  @Getter private final MenuBar menuBar;
+  @Getter private final Menu menuFile;
+  @Getter private final Menu menuEdit;
+  @Getter private final Menu menuView;
 
-  private final ToolBar topToolBar;
-  private final Button toolButtonOne;
-  private final Button toolButtonTwo;
-  private final Button toolButtonThree;
+  @Getter private final ToolBar topToolBar;
+  @Getter private final Button toolButtonPageAdd;
+  @Getter private final Button toolButtonPageCopy;
+  @Getter private final Button toolButtonPageWithBibliography;
 
-  private final ToolBar bottomToolBar;
+  @Getter private final MenuButton toolMenuFollowingPages;
+  @Getter private final MenuItem miFollowing;
+  @Getter private final MenuItem miIdea;
+  @Getter private final MenuItem miQuestion;
+  @Getter private final MenuItem miCritique;
+  @Getter private final MenuItem miTask;
 
-  private final SplitPane workAreaSplitPane;
+  @Getter private final BottomToolbar bottomToolbar;
 
-  private final Region centerArea;
-  private final Region rightArea;
+  @Getter private final SplitPane workAreaSplitPane;
 
-  private final NoteEditorPane noteEditorPane;
+  @Getter private final Region rightArea;
+
+  @Getter private final NoteEditorPane noteEditorPane;
+  @Getter private final KeywordsTablePane keywordsTablePane;
 
   public ZettelWindowView() {
     root = new BorderPane();
@@ -68,19 +78,34 @@ public class ZettelWindowView {
     topToolBar = new ToolBar();
     topToolBar.getStyleClass().add("zettel-toolbar");
 
-    toolButtonOne = BaseIcon.PAGE_ADD.button();
-    toolButtonTwo = BaseIcon.PAGE_COPY.button();
-    toolButtonThree = BaseIcon.PAGE_FIND.button();
+    toolButtonPageAdd = BaseIcon.PAGE_ADD.button();
+    toolButtonPageCopy = BaseIcon.PAGE_COPY.button();
+    toolButtonPageWithBibliography = BaseIcon.PAGE_RED.button();
 
-    topToolBar.getItems().addAll(toolButtonOne, toolButtonTwo, toolButtonThree);
+    toolMenuFollowingPages = new MenuButton();
+    toolMenuFollowingPages.setGraphic(BaseIcon.PAGE_LINK.imageView());
+    toolMenuFollowingPages.getStyleClass().add("icon-button"); // falls du den Look übernehmen willst
+    toolMenuFollowingPages.setFocusTraversable(false);
+    toolMenuFollowingPages.setTooltip(new Tooltip("Folgezettel"));
+
+    miFollowing = new MenuItem("Folgezettel", BaseIcon.PAGE_LINK.imageView());
+    miIdea      = new MenuItem("Idee",       BaseIcon.PAGE_BULB_ON.imageView());
+    miQuestion  = new MenuItem("Frage",      BaseIcon.QUESTION.imageView());
+    miCritique  = new MenuItem("Kritik",     BaseIcon.PAGE_LIGHTNING.imageView());
+    miTask      = new MenuItem("Aufgabe",    BaseIcon.PAGE_EDIT.imageView());
+
+    toolMenuFollowingPages.getItems().addAll(miFollowing, miIdea, miQuestion, miCritique, miTask);
+
+    topToolBar.getItems().addAll(
+        toolButtonPageAdd, toolButtonPageCopy, toolButtonPageWithBibliography,
+        toolMenuFollowingPages);
 
     topArea.getChildren().addAll(menuBar, topToolBar);
     root.setTop(topArea);
 
     /* Bottom: leere Werkzeugleiste (wird später befüllt) */
-    bottomToolBar = new ToolBar();
-    bottomToolBar.getStyleClass().add("zettel-bottom-toolbar");
-    root.setBottom(bottomToolBar);
+    bottomToolbar = new BottomToolbar();
+    root.setBottom(bottomToolbar.getRoot());
     // Arbeitsbereiche: links, mitte, rechts (verschiebbar)
     workAreaSplitPane = new SplitPane();
     workAreaSplitPane.setOrientation(Orientation.HORIZONTAL);
@@ -89,62 +114,14 @@ public class ZettelWindowView {
     noteEditorPane = new NoteEditorPane();
     noteEditorPane.getStyleClass().add("zettel-work-pane");
 
-    centerArea = createPlaceholderPane("MITTE");
-    centerArea.getStyleClass().add("zettel-work-pane");
+    keywordsTablePane = new KeywordsTablePane();
+    keywordsTablePane.getStyleClass().add("zettel-work-pane");
 
     rightArea = createPlaceholderPane("RECHTS");
     rightArea.getStyleClass().add("zettel-work-pane");
 
-    workAreaSplitPane.getItems().addAll(noteEditorPane, centerArea, rightArea);
+    workAreaSplitPane.getItems().addAll(noteEditorPane, keywordsTablePane, rightArea);
     root.setCenter(workAreaSplitPane);
-  }
-
-  public BorderPane getRoot() {
-    return root;
-  }
-
-  public SplitPane getWorkAreaSplitPane() {
-    return workAreaSplitPane;
-  }
-
-  public NoteEditorPane getNoteEditorPane() {
-    return noteEditorPane;
-  }
-
-  public Region getCenterArea() {
-    return centerArea;
-  }
-
-  public Region getRightArea() {
-    return rightArea;
-  }
-
-  public Menu getMenuFile() {
-    return menuFile;
-  }
-
-  public Menu getMenuEdit() {
-    return menuEdit;
-  }
-
-  public Menu getMenuView() {
-    return menuView;
-  }
-
-  public ToolBar getBottomToolBar() {
-    return bottomToolBar;
-  }
-
-  public Button getToolButtonOne() {
-    return toolButtonOne;
-  }
-
-  public Button getToolButtonTwo() {
-    return toolButtonTwo;
-  }
-
-  public Button getToolButtonThree() {
-    return toolButtonThree;
   }
 
   private MenuButton createMenuButton(String text, String styleClass) {

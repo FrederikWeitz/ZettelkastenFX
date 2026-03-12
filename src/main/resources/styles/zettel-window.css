@@ -1,3 +1,55 @@
+/* Bibliographie-Bereich */
+.biblio-create-button {
+    -fx-padding: 8 10;
+}
+
+.biblio-edit-toggle {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-padding: 0 4 0 0;
+    -fx-min-width: 18;
+    -fx-pref-width: 18;
+    -fx-max-width: 18;
+    -fx-min-height: 18;
+    -fx-pref-height: 18;
+    -fx-max-height: 18;
+}
+
+.biblio-editor-shell .label {
+    -fx-text-overrun: ellipsis;
+}
+
+.biblio-placeholder {
+    -fx-padding: 10;
+    -fx-background-color: rgba(0,0,0,0.06);
+    -fx-background-radius: 8;
+}
+
+.biblio-type-combo {
+    -fx-pref-width: 220;
+}
+
+.biblio-form-title {
+    -fx-font-weight: bold;
+}
+
+.biblio-form-host {
+    -fx-padding: 4 0 0 0;
+}
+
+/* Keywords-Tabelle (mittleres Fenster): ohne Header */
+.keywords-table .column-header-background,
+.keywords-table .column-header,
+.keywords-table .filler {
+    -fx-min-height: 0;
+    -fx-pref-height: 0;
+    -fx-max-height: 0;
+}
+
+.keywords-table .column-header-background {
+    visibility: hidden;
+}
+
 .note-editor-pane {
     -fx-background-color: white;
 }
@@ -149,6 +201,75 @@
     -fx-background-color: rgba(0,0,0,0.10);
 }
 
+.note-header-bar {
+    -fx-padding: 6 10;
+    -fx-background-color: #3a3a3a;
+}
+
+.note-header-bar .button.note-header-nav {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-padding: 0 4 0 4;
+    -fx-min-width: 18;
+    -fx-pref-width: 18;
+    -fx-max-width: 18;
+    -fx-min-height: 18;
+    -fx-pref-height: 18;
+    -fx-max-height: 18;
+}
+
+.note-header-bar .button.note-header-nav:hover {
+    -fx-opacity: 0.85;
+}
+
+.note-header-bar .button.note-header-nav:pressed {
+    -fx-opacity: 0.70;
+}
+
+.note-header-title {
+    -fx-text-fill: #e8e8e8;
+    -fx-font-size: 12px;
+}
+
+.note-header-value {
+    -fx-text-fill: white;
+    -fx-font-weight: bold;
+}
+
+.note-header-left, .note-header-center, .note-header-right {
+    -fx-alignment: center-left;
+}
+
+.note-header-center { -fx-alignment: center; }
+.note-header-right  { -fx-alignment: center-right; }
+
+.note-info-button {
+    -fx-min-width: 22;
+    -fx-pref-width: 22;
+    -fx-max-width: 22;
+    -fx-min-height: 22;
+    -fx-pref-height: 22;
+    -fx-max-height: 22;
+    -fx-padding: 0;
+}
+
+.note-info-popup {
+    -fx-padding: 10;
+    -fx-background-color: #2f2f2f;
+    -fx-background-radius: 10;
+    -fx-border-radius: 10;
+    -fx-border-color: rgba(255,255,255,0.18);
+}
+
+.note-info-section-title {
+    -fx-text-fill: #dddddd;
+    -fx-font-weight: bold;
+}
+
+.note-info-key { -fx-text-fill: #bbbbbb; }
+.note-info-value, .note-info-link { -fx-text-fill: white; }
+.note-info-muted { -fx-text-fill: #9a9a9a; }
+
 .zettel-root {
     -fx-background-color: -fx-background;
 }
@@ -181,6 +302,27 @@
 .zettel-toolbar {
     -fx-background-color: transparent;
     -fx-padding: 2;
+}
+
+.zettel-bottom-toolbar .button.nav-button {
+    -fx-padding: 2 4 2 4;
+    -fx-min-width: 16;
+    -fx-pref-width: 16;
+    -fx-max-width: 16;
+
+    -fx-min-height: 22;
+    -fx-pref-height: 22;
+    -fx-max-height: 22;
+}
+
+.zettel-bottom-toolbar .toggle-button.icon-toggle {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-padding: 2 6 2 6;
+}
+
+.zettel-bottom-toolbar .toggle-button.icon-toggle:selected {
+    -fx-opacity: 0.85;
 }
 
 .zettel-work-split {

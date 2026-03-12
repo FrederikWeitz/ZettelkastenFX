@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: ZettelkastenFX
+
+  main:
+    web-application-type: none
+
+  datasource:
+    url: "jdbc:sqlite:${zettelkastenfx.db.path}"
+    driver-class-name: "org.sqlite.JDBC"
+    hikari:
+      maximum-pool-size: 1
+  jpa:
+    database-platform: "org.hibernate.community.dialect.SQLiteDialect"
+    open-in-view: false
+
+zettelkastenfx:
+  db:
+    path: "${user.home}/.zettelkastenfx/zettelkastenfx.db"

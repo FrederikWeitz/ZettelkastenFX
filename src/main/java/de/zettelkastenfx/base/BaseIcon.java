@@ -11,11 +11,37 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public enum BaseIcon {
 
+  ADD("add", "Hinzufügen"),
+
+  ARROW_REFRESH("arrow_refresh", "Aktualisieren"),
+
+  BOOK("book", "Bibliografie"),
+  BOOK_ADD("book_add", "Buch hinzufügen"),
+  BOOK_DELETE("book_delete", "Buch löschen"),
+  BOOK_EDIT("book_edit", "Buch editieren"),
+
+  BULLET_ARROW_LEFT("bullet_arrow_left", "Zurück"),
+  BULLET_ARROW_RIGHT("bullet_arrow_right", "Vor"),
+  BULLET_GREEN("bullet_green", "geöffnet"),
+  BULLET_RED("bullet_red", "gesperrt"),
+
+  CLEAR_FORMATTING("clear_formatting", "Formatierung löschen"),
+
+  DELETE("delete", "Löschen"),
+
+  DOCUMENT_PAGE_PREVIOUS("document_page_previous", "Zurück"),
+  DOCUMENT_PAGE_NEXT("document_page_next", "Vor"),
+
   PAGE_ADD("page_add", "Neu"),
   PAGE_COPY("page_copy", "Kopieren"),
   PAGE_FIND("page_find", "Suchen"),
+  PAGE_RED("page_red", "Kopieren bibliographische Angaben"),
 
-  CLEAR_FORMATTING("clear_formatting", "Formatierung löschen"),
+  PAGE_LINK("page_link", "Folgezettel"),
+  PAGE_BULB_ON("page_bulb_on", "Idee"),
+  QUESTION("question", "Fragen"),
+  PAGE_LIGHTNING("page_lightning", "Kritik"),
+  PAGE_EDIT("page_edit", "Aufgabe"),
 
   TEXT_ALIGN_CENTER("text_align_center", "Zentrieren"),
   TEXT_ALIGN_JUSTIFY("text_align_justify", "Blocksatz"),
@@ -37,7 +63,9 @@ public enum BaseIcon {
   TEXT_INDENT_REMOVE("text_indent_remove", "Einzug verringern"),
 
   TEXT_LIST_BULLETS("text_list_bullets", "Aufzählung"),
-  TEXT_LIST_NUMBERS("text_list_numbers", "Nummerierung");
+  TEXT_LIST_NUMBERS("text_list_numbers", "Nummerierung"),
+
+  WWW_PAGE("www_page", "Website");
 
   private static final String ICONS_BASE_PATH = "/button-icons/";
   private static final String[] SUPPORTED_EXTENSIONS = { ".png", ".gif", ".jpg", ".jpeg" };
@@ -82,11 +110,30 @@ public enum BaseIcon {
     return tooltipText;
   }
 
+  /**
+   * Button mit vorgefertigtem Tooltip
+   *
+   * @return Button mit Imageview und vorgefertigtem Tooltip
+   */
   public Button button() {
     Button button = new Button();
     button.getStyleClass().add("icon-button");
     button.setGraphic(imageView());
     button.setTooltip(new Tooltip(tooltip()));
+    return button;
+  }
+
+  /**
+   * Button mit manuell eingefügtem Tooltip. Wenn tooltip = null, dann ohne Tooltip
+   *
+   * @param tooltip Text für den Tooltip
+   * @return Button mit Imageview und individuellem Tooltip
+   */
+  public Button button(String tooltip) {
+    Button button = new Button();
+    button.getStyleClass().add("icon-button");
+    button.setGraphic(imageView());
+    if (tooltip != null) button.setTooltip(new Tooltip(tooltip));
     return button;
   }
 
