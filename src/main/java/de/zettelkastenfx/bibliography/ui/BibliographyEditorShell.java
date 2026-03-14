@@ -850,7 +850,7 @@ public class BibliographyEditorShell {
     internetPublishedPicker = new DatePicker();
     internetPublishedPicker.setMaxWidth(Double.MAX_VALUE);
 
-    Label publishedLabel = new Label();
+    Label publishedLabel = new Label("Veröffentlicht am ");
     publishedLabel.visibleProperty().bind(toggleEdit.selectedProperty().not());
     publishedLabel.managedProperty().bind(toggleEdit.selectedProperty().not());
 

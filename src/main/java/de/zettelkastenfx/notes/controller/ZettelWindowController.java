@@ -1,5 +1,6 @@
 package de.zettelkastenfx.notes.controller;
 
+import de.zettelkastenfx.base.BaseIcon;
 import de.zettelkastenfx.base.util.PersistenceUtil;
 import de.zettelkastenfx.bibliography.model.*;
 import de.zettelkastenfx.bibliography.persistence.BibliographyRepository;
@@ -11,16 +12,21 @@ import de.zettelkastenfx.bibliography.ui.lookup.BibliographyLookupProvider;
 import de.zettelkastenfx.bibliography.ui.lookup.TitleSuggestion;
 import de.zettelkastenfx.notes.editor.NoteEditorPane;
 import de.zettelkastenfx.notes.editor.format.InlineCssStyleUtil;
-import de.zettelkastenfx.notes.model.Note;
+import de.zettelkastenfx.notes.model.*;
 import de.zettelkastenfx.persistence.NoteRepository;
 import javafx.application.Platform;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.VBox;
+import javafx.stage.Popup;
 import javafx.stage.Stage;
-import org.fxmisc.richtext.model.StyledDocument;
 
 import java.util.*;
 
@@ -44,13 +50,36 @@ public class ZettelWindowController {
   // Maximal zulässige Zettel-ID (wird von uns gepflegt; später ggf. aus DB)
   private int maxNoteId = 0;
 
+  // Temporärer Zustand für frisch angelegte Folgezettel:
+  // Der Verweis wird sofort am Quellzettel gespeichert, der Zielzettel aber erst,
+  // wenn er später gültig befüllt wurde.
+  private Integer pendingFollowUpTargetNoteId;
+
+  // Verhindert, dass direkt nach internem Zettelwechsel ein frisch geöffneter,
+  // noch leerer Zettel sofort wieder als "ungültig" behandelt wird.
+  private boolean suppressInvalidCleanupOnce;
+
   // für BottomToolbar
   private final Deque<Integer> backHistory = new ArrayDeque<>();
   private final Deque<Integer> forwardHistory = new ArrayDeque<>();
   private boolean historyNavigation;
 
-  // Toolbar/Notizen: einfacher Session-Store (damit du mehrere Zettel testen kannst)
-  private final NoteMemoryStore store = new NoteMemoryStore();
+  // Popup zum manuellen Bearbeiten von Verweisen
+  private final Popup linkEditPopup = new Popup();
+  private final VBox linkEditRoot = new VBox(10);
+
+  private TextField linkEditNoteIdField;
+  private Label linkEditTitleLabel;
+  private Label linkEditStatusLabel;
+  private Button linkEditReverseButton;
+
+  private ToggleButton linkEditSerieButton;
+  private ToggleButton linkEditIdeaButton;
+  private ToggleButton linkEditQuestionButton;
+  private ToggleButton linkEditCritiqueButton;
+  private ToggleButton linkEditTaskButton;
+
+  private boolean updatingLinkEditUi;
 
   public ZettelWindowController(Stage stage, ZettelWindowView view) {
     this.stage = stage;
@@ -82,13 +111,14 @@ public class ZettelWindowController {
     view.getToolButtonPageAdd().setOnAction(event -> createNewEmptyNote());
     view.getToolButtonPageCopy().setOnAction(event -> createCopyOfCurrentNote());
     view.getToolButtonPageWithBibliography().setOnAction(event -> createCopyBibliography());
+    view.getToolButtonLinkEdit().setOnAction(event -> toggleLinkEditPopup());
 
     // Dropdown für Folgezettel
-    view.getMiFollowing().setOnAction(e -> System.out.println("Folgezettel (kommt gleich)"));
-    view.getMiIdea().setOnAction(e -> System.out.println("Idee (kommt gleich)"));
-    view.getMiQuestion().setOnAction(e -> System.out.println("Frage (kommt gleich)"));
-    view.getMiCritique().setOnAction(e -> System.out.println("Kritik (kommt gleich)"));
-    view.getMiTask().setOnAction(e -> System.out.println("Aufgabe (kommt gleich)"));
+    view.getMiFollowing().setOnAction(e -> createTypedFollowUpNote(LinkType.SERIE));
+    view.getMiIdea().setOnAction(e -> createTypedFollowUpNote(LinkType.IDEE));
+    view.getMiQuestion().setOnAction(e -> createTypedFollowUpNote(LinkType.FRAGE));
+    view.getMiCritique().setOnAction(e -> createTypedFollowUpNote(LinkType.KRITIK));
+    view.getMiTask().setOnAction(e -> createTypedFollowUpNote(LinkType.AUFGABE));
 
     // Menü (oben): "Datei -> Schließen" schließt nur dieses Fenster
     view.getMenuFile().getItems().getLast().setOnAction(event -> stage.close());
@@ -104,8 +134,12 @@ public class ZettelWindowController {
 
     wireBottomToolbar();
     wireHeaderBarNavigation();
+    initLinkEditPopup();
 
-    stage.setOnCloseRequest(e -> saveCurrentIfValid());
+    stage.setOnCloseRequest(e -> {
+      linkEditPopup.hide();
+      saveOrDiscardCurrentNoteBeforeLeave();
+    });
   }
 
   private void wireTitleEditing(NoteEditorPane editor) {
@@ -284,6 +318,546 @@ public class ZettelWindowController {
     editor.setOnHeaderNext(this::openNextNoteWrap);
   }
 
+  /**
+   * Initialisiert das Popup zum manuellen Bearbeiten von Verweisen.
+   */
+  private void initLinkEditPopup() {
+    linkEditRoot.setPadding(new Insets(14));
+    linkEditRoot.setSpacing(10);
+    linkEditRoot.setFillWidth(true);
+    linkEditRoot.setPrefWidth(460);
+    linkEditRoot.setMinWidth(460);
+    linkEditRoot.setMaxWidth(460);
+    linkEditRoot.setStyle(
+        "-fx-background-color: -fx-control-inner-background;" +
+            "-fx-border-color: -fx-box-border;" +
+            "-fx-border-width: 1;" +
+            "-fx-background-radius: 10;" +
+            "-fx-border-radius: 10;" +
+            "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.18), 18, 0.18, 0, 4);"
+    );
+
+    linkEditPopup.setAutoHide(false);
+    linkEditPopup.getContent().setAll(linkEditRoot);
+
+    buildLinkEditPopupContent();
+  }
+
+  /**
+   * Baut den Inhalt des Link-Edit-Popups auf.
+   */
+  private void buildLinkEditPopupContent() {
+    Label heading = new Label("Verweise anlegen und entfernen");
+    heading.setStyle(
+        "-fx-font-size: 14px;" +
+            "-fx-font-weight: bold;"
+    );
+
+    Separator separator = new Separator();
+
+    HBox row1 = new HBox(6);
+    row1.setAlignment(Pos.CENTER_LEFT);
+
+    linkEditNoteIdField = new TextField();
+    linkEditNoteIdField.setPromptText("Zettelnummer");
+    linkEditNoteIdField.setPrefColumnCount(8);
+    linkEditNoteIdField.setPrefWidth(110);
+    linkEditNoteIdField.setTextFormatter(new TextFormatter<String>(change -> {
+      String next = change.getControlNewText();
+      return next.matches("\\d*") ? change : null;
+    }));
+    linkEditNoteIdField.textProperty().addListener((obs, oldValue, newValue) -> refreshLinkEditSelectionState());
+
+    Button btnPrev = BaseIcon.BULLET_ARROW_LEFT.button();
+    Button btnNext = BaseIcon.BULLET_ARROW_RIGHT.button();
+    Button btnGoSuccessor = BaseIcon.BULLET_GO.button("nächster Folgezettel");
+    linkEditReverseButton = BaseIcon.ARROW_REFRESH.button("Verweis umdrehen");
+    Button btnClose = BaseIcon.CROSS.button();
+
+    btnPrev.setOnAction(e -> selectPreviousExistingNoteInPopup());
+    btnNext.setOnAction(e -> selectNextExistingNoteInPopup());
+    btnGoSuccessor.setOnAction(e -> selectNextSuccessorInPopup());
+    linkEditReverseButton.setOnAction(e -> reverseSelectedLinkInPopup());
+    btnClose.setOnAction(e -> closeLinkEditPopup());
+
+    btnPrev.setFocusTraversable(false);
+    btnNext.setFocusTraversable(false);
+    btnGoSuccessor.setFocusTraversable(false);
+    linkEditReverseButton.setFocusTraversable(false);
+    btnClose.setFocusTraversable(false);
+
+    Region spacer = new Region();
+    HBox.setHgrow(spacer, Priority.ALWAYS);
+
+    row1.getChildren().addAll(
+        linkEditNoteIdField,
+        btnPrev,
+        btnNext,
+        btnGoSuccessor,
+        linkEditReverseButton,
+        spacer,
+        btnClose
+    );
+
+    HBox row2 = new HBox(8);
+    row2.setAlignment(Pos.CENTER_LEFT);
+    row2.setPadding(new Insets(2, 0, 2, 0));
+
+    linkEditTitleLabel = new Label("—");
+    linkEditTitleLabel.setWrapText(false);
+    linkEditTitleLabel.setMaxWidth(Double.MAX_VALUE);
+    linkEditTitleLabel.setEllipsisString("…");
+    linkEditTitleLabel.setStyle(
+        "-fx-font-size: 12px;" +
+            "-fx-font-weight: bold;"
+    );
+    HBox.setHgrow(linkEditTitleLabel, Priority.ALWAYS);
+
+    linkEditStatusLabel = new Label("");
+    linkEditStatusLabel.setStyle("-fx-text-fill: -fx-text-inner-color;");
+
+    row2.getChildren().addAll(linkEditTitleLabel, linkEditStatusLabel);
+
+    HBox row3 = new HBox(6);
+    row3.setAlignment(Pos.CENTER_LEFT);
+    row3.setPadding(new Insets(4, 0, 0, 0));
+
+    ToggleGroup group = new ToggleGroup();
+
+    linkEditSerieButton = createLinkTypeToggleButton(BaseIcon.PAGE_LINK, "Folgezettel", LinkType.SERIE, group);
+    linkEditIdeaButton = createLinkTypeToggleButton(BaseIcon.PAGE_BULB_ON, "Idee", LinkType.IDEE, group);
+    linkEditQuestionButton = createLinkTypeToggleButton(BaseIcon.QUESTION, "Frage", LinkType.FRAGE, group);
+    linkEditCritiqueButton = createLinkTypeToggleButton(BaseIcon.PAGE_LIGHTNING, "Kritik", LinkType.KRITIK, group);
+    linkEditTaskButton = createLinkTypeToggleButton(BaseIcon.PAGE_EDIT, "Aufgabe", LinkType.AUFGABE, group);
+
+    row3.getChildren().addAll(
+        linkEditSerieButton,
+        linkEditIdeaButton,
+        linkEditQuestionButton,
+        linkEditCritiqueButton,
+        linkEditTaskButton
+    );
+
+    linkEditRoot.getChildren().setAll(heading, separator, row1, row2, row3);
+  }
+
+  /**
+   * Erzeugt einen ToggleButton für einen Verweistyp.
+   *
+   * @param icon Icon des Buttons
+   * @param tooltip Tooltiptext
+   * @param linkType zugehöriger Verweistyp
+   * @param group gemeinsame Toggle-Gruppe
+   * @return konfigurierter ToggleButton
+   */
+  private ToggleButton createLinkTypeToggleButton(BaseIcon icon,
+                                                  String tooltip,
+                                                  LinkType linkType,
+                                                  ToggleGroup group) {
+    ToggleButton button = new ToggleButton();
+    button.getStyleClass().add("icon-button");
+    button.setGraphic(icon.imageView());
+    button.setTooltip(new Tooltip(tooltip));
+    button.setFocusTraversable(false);
+    button.setToggleGroup(group);
+    button.setMinWidth(34);
+    button.setPrefWidth(34);
+    button.setMinHeight(30);
+    button.setPrefHeight(30);
+    button.setStyle("-fx-background-radius: 6;");
+    button.setOnAction(e -> handleLinkTypeToggle(linkType, button.isSelected()));
+    return button;
+  }
+
+  /**
+   * Zeigt das Popup an oder blendet es aus.
+   */
+  private void toggleLinkEditPopup() {
+    if (linkEditPopup.isShowing()) {
+      closeLinkEditPopup();
+      return;
+    }
+    openLinkEditPopup();
+  }
+
+  /**
+   * Öffnet das Popup mittig über dem Zettelkastenfenster.
+   */
+  private void openLinkEditPopup() {
+    if (currentNote == null || currentNote.getId() <= 0) {
+      return;
+    }
+
+    refreshCurrentSuccessorsFromRepository();
+    setLinkEditSelectedNoteId(currentNote.getId());
+    refreshLinkEditSelectionState();
+
+    if (!linkEditPopup.isShowing()) {
+      linkEditPopup.show(stage);
+    }
+
+    centerLinkEditPopup();
+    Platform.runLater(() -> {
+      centerLinkEditPopup();
+      linkEditNoteIdField.requestFocus();
+      linkEditNoteIdField.positionCaret(linkEditNoteIdField.getText().length());
+    });
+  }
+
+  /**
+   * Schließt das Popup.
+   */
+  private void closeLinkEditPopup() {
+    linkEditPopup.hide();
+  }
+
+  /**
+   * Zentriert das Popup im aktuellen Fenster.
+   */
+  private void centerLinkEditPopup() {
+    if (!linkEditPopup.isShowing()) {
+      return;
+    }
+
+    double popupWidth = linkEditRoot.getWidth() > 0 ? linkEditRoot.getWidth() : linkEditRoot.prefWidth(-1);
+    double popupHeight = linkEditRoot.getHeight() > 0 ? linkEditRoot.getHeight() : linkEditRoot.prefHeight(-1);
+
+    double x = stage.getX() + (stage.getWidth() - popupWidth) / 2.0;
+    double y = stage.getY() + (stage.getHeight() - popupHeight) / 2.0;
+
+    linkEditPopup.setX(x);
+    linkEditPopup.setY(y);
+  }
+
+  /**
+   * Setzt die aktuell im Popup ausgewählte Zettelnummer.
+   *
+   * @param noteId auszuwählende Zettelnummer
+   */
+  private void setLinkEditSelectedNoteId(int noteId) {
+    updatingLinkEditUi = true;
+    try {
+      linkEditNoteIdField.setText(noteId <= 0 ? "" : Integer.toString(noteId));
+    } finally {
+      updatingLinkEditUi = false;
+    }
+  }
+
+  /**
+   * Aktualisiert Titelanzeige, Statusmeldung und Verweistyp-Buttons
+   * anhand der aktuell im Popup ausgewählten Zettelnummer.
+   */
+  private void refreshLinkEditSelectionState() {
+    if (linkEditNoteIdField == null || updatingLinkEditUi) {
+      return;
+    }
+
+    Integer selectedNoteId = parseLinkEditSelectedNoteId();
+    if (selectedNoteId == null || selectedNoteId <= 0) {
+      linkEditTitleLabel.setText("—");
+      linkEditStatusLabel.setText("Zettelnummer eingeben");
+      linkEditStatusLabel.setStyle("-fx-text-fill: #8a6d3b;");
+      selectLinkTypeToggle(null);
+      setLinkTypeButtonsDisabled(true);
+      if (linkEditReverseButton != null) {
+        linkEditReverseButton.setDisable(true);
+      }
+      return;
+    }
+
+    boolean exists = noteRepository.existsNote(selectedNoteId);
+    if (!exists) {
+      linkEditTitleLabel.setText("—");
+      linkEditStatusLabel.setText("Zettel existiert nicht");
+      linkEditStatusLabel.setStyle("-fx-text-fill: #b94a48;");
+      selectLinkTypeToggle(null);
+      setLinkTypeButtonsDisabled(true);
+      if (linkEditReverseButton != null) {
+        linkEditReverseButton.setDisable(true);
+      }
+      return;
+    }
+
+    String title = noteRepository.loadNoteTitle(selectedNoteId).orElse("");
+    linkEditTitleLabel.setText(title == null || title.isBlank() ? "—" : title);
+
+    if (currentNote != null && currentNote.getId() > 0 && selectedNoteId == currentNote.getId()) {
+      linkEditStatusLabel.setText("Selbstverweis ist nicht erlaubt");
+      linkEditStatusLabel.setStyle("-fx-text-fill: #b94a48;");
+      selectLinkTypeToggle(null);
+      setLinkTypeButtonsDisabled(true);
+      if (linkEditReverseButton != null) {
+        linkEditReverseButton.setDisable(true);
+      }
+      return;
+    }
+
+    linkEditStatusLabel.setText("");
+    linkEditStatusLabel.setStyle("-fx-text-fill: -fx-text-inner-color;");
+    setLinkTypeButtonsDisabled(false);
+    if (linkEditReverseButton != null) {
+      linkEditReverseButton.setDisable(false);
+    }
+
+    selectLinkTypeToggle(findCurrentLinkTypeTo(selectedNoteId));
+  }
+
+  /**
+   * Liest die aktuell im Popup ausgewählte Zettelnummer.
+   *
+   * @return ausgewählte Zettelnummer oder {@code null}
+   */
+  private Integer parseLinkEditSelectedNoteId() {
+    if (linkEditNoteIdField == null) {
+      return null;
+    }
+
+    String text = linkEditNoteIdField.getText();
+    if (text == null || text.isBlank()) {
+      return null;
+    }
+
+    try {
+      return Integer.parseInt(text);
+    } catch (NumberFormatException ex) {
+      return null;
+    }
+  }
+
+  /**
+   * Wählt im Popup den vorherigen existierenden Zettel aus.
+   * Gibt es keinen kleineren mehr, wird zum höchsten existierenden Zettel umgebrochen.
+   */
+  private void selectPreviousExistingNoteInPopup() {
+    int maxExisting = noteRepository.maxNoteId();
+    if (maxExisting <= 0) {
+      refreshLinkEditSelectionState();
+      return;
+    }
+
+    Integer currentSelection = parseLinkEditSelectedNoteId();
+    int start = currentSelection == null || currentSelection <= 0 ? maxExisting + 1 : currentSelection;
+
+    OptionalInt previous = noteRepository.findPreviousExistingNoteId(start);
+    if (previous.isPresent()) {
+      setLinkEditSelectedNoteId(previous.getAsInt());
+    } else {
+      setLinkEditSelectedNoteId(maxExisting);
+    }
+
+    refreshLinkEditSelectionState();
+  }
+
+  /**
+   * Wählt im Popup den nächsten existierenden Zettel aus.
+   * Gibt es keinen größeren mehr, wird zum kleinsten existierenden Zettel umgebrochen.
+   */
+  private void selectNextExistingNoteInPopup() {
+    Integer currentSelection = parseLinkEditSelectedNoteId();
+    int start = currentSelection == null || currentSelection <= 0 ? 0 : currentSelection;
+
+    OptionalInt next = noteRepository.findNextExistingNoteId(start);
+    if (next.isPresent()) {
+      setLinkEditSelectedNoteId(next.getAsInt());
+    } else {
+      OptionalInt first = noteRepository.findNextExistingNoteId(0);
+      first.ifPresent(this::setLinkEditSelectedNoteId);
+    }
+
+    refreshLinkEditSelectionState();
+  }
+
+  /**
+   * Springt im Popup zyklisch durch die Folgezettel des aktuell geöffneten Zettels.
+   */
+  private void selectNextSuccessorInPopup() {
+    refreshCurrentSuccessorsFromRepository();
+
+    List<Integer> successorIds = currentNote.getSuccessors().stream()
+                                     .map(NoteLink::toNoteId)
+                                     .distinct()
+                                     .sorted()
+                                     .toList();
+
+    if (successorIds.isEmpty()) {
+      linkEditStatusLabel.setText("Keine Folgezettel vorhanden");
+      return;
+    }
+
+    Integer selected = parseLinkEditSelectedNoteId();
+    int nextId = successorIds.getFirst();
+
+    if (selected != null && successorIds.contains(selected)) {
+      for (Integer candidate : successorIds) {
+        if (candidate > selected) {
+          nextId = candidate;
+          break;
+        }
+      }
+    }
+
+    setLinkEditSelectedNoteId(nextId);
+    refreshLinkEditSelectionState();
+  }
+
+  /**
+   * Dreht den aktuell ausgewählten Verweis im Link-Edit-Popup um.
+   * Aus dem Verweis vom aktuell sichtbaren Zettel auf den ausgewählten Zettel
+   * wird ein Verweis in Gegenrichtung. Der bestehende Verweistyp bleibt erhalten.
+   */
+  private void reverseSelectedLinkInPopup() {
+    if (currentNote == null || currentNote.getId() <= 0) {
+      return;
+    }
+
+    Integer selectedNoteId = parseLinkEditSelectedNoteId();
+    if (selectedNoteId == null || selectedNoteId <= 0) {
+      linkEditStatusLabel.setText("Zettelnummer eingeben");
+      linkEditStatusLabel.setStyle("-fx-text-fill: #8a6d3b;");
+      return;
+    }
+
+    if (!noteRepository.existsNote(selectedNoteId)) {
+      linkEditStatusLabel.setText("Zettel existiert nicht");
+      linkEditStatusLabel.setStyle("-fx-text-fill: #b94a48;");
+      return;
+    }
+
+    if (selectedNoteId == currentNote.getId()) {
+      linkEditStatusLabel.setText("Selbstverweis ist nicht erlaubt");
+      linkEditStatusLabel.setStyle("-fx-text-fill: #b94a48;");
+      return;
+    }
+
+    LinkType currentType = findCurrentLinkTypeTo(selectedNoteId);
+    if (currentType == null) {
+      linkEditStatusLabel.setText("Kein Verweis zum Umdrehen vorhanden");
+      linkEditStatusLabel.setStyle("-fx-text-fill: #8a6d3b;");
+      return;
+    }
+
+    boolean reversed = noteRepository.reverseSuccessorLink(currentNote.getId(), selectedNoteId);
+    if (!reversed) {
+      linkEditStatusLabel.setText("Verweis konnte nicht umgedreht werden");
+      linkEditStatusLabel.setStyle("-fx-text-fill: #b94a48;");
+      return;
+    }
+
+    refreshCurrentSuccessorsFromRepository();
+    syncInfoPopup(currentNote);
+    refreshLinkEditSelectionState();
+
+    linkEditStatusLabel.setText("Verweis wurde umgedreht");
+    linkEditStatusLabel.setStyle("-fx-text-fill: -fx-text-inner-color;");
+  }
+
+  /**
+   * Reagiert auf das Umschalten eines Verweistyp-Buttons.
+   *
+   * @param linkType betroffener Verweistyp
+   * @param selected neuer Auswahlzustand des Buttons
+   */
+  private void handleLinkTypeToggle(LinkType linkType, boolean selected) {
+    if (updatingLinkEditUi || currentNote == null || currentNote.getId() <= 0) {
+      return;
+    }
+
+    Integer targetId = parseLinkEditSelectedNoteId();
+    if (targetId == null || targetId <= 0 || !noteRepository.existsNote(targetId)) {
+      refreshLinkEditSelectionState();
+      return;
+    }
+
+    if (targetId == currentNote.getId()) {
+      linkEditStatusLabel.setText("Selbstverweis ist nicht erlaubt");
+      linkEditStatusLabel.setStyle("-fx-text-fill: #b94a48;");
+      selectLinkTypeToggle(null);
+      setLinkTypeButtonsDisabled(true);
+      return;
+    }
+
+    if (!selected) {
+      LinkType currentType = findCurrentLinkTypeTo(targetId);
+      if (currentType != null && currentType == linkType) {
+        noteRepository.removeSuccessorLink(currentNote.getId(), targetId);
+        refreshCurrentSuccessorsFromRepository();
+        syncInfoPopup(currentNote);
+      }
+      refreshLinkEditSelectionState();
+      return;
+    }
+
+    noteRepository.addSuccessorLink(currentNote.getId(), targetId, linkType);
+    refreshCurrentSuccessorsFromRepository();
+    syncInfoPopup(currentNote);
+    refreshLinkEditSelectionState();
+  }
+
+  /**
+   * Aktualisiert die im aktuellen Zettel gehaltene Folgezettel-Liste
+   * aus der Datenbank.
+   */
+  private void refreshCurrentSuccessorsFromRepository() {
+    if (currentNote == null || currentNote.getId() <= 0) {
+      return;
+    }
+    currentNote.setSuccessors(noteRepository.loadSuccessors(currentNote.getId()));
+  }
+
+  /**
+   * Ermittelt den aktuellen Verweistyp vom geöffneten Zettel auf den gewählten Zielzettel.
+   *
+   * @param targetId Zielzettel
+   * @return aktueller Verweistyp oder {@code null}
+   */
+  private LinkType findCurrentLinkTypeTo(int targetId) {
+    if (currentNote == null || currentNote.getSuccessors() == null) {
+      return null;
+    }
+
+    for (NoteLink link : currentNote.getSuccessors()) {
+      if (link != null && link.toNoteId() == targetId) {
+        return link.type();
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Synchronisiert die Toggle-Auswahl im Popup mit dem aktuellen Verweistyp.
+   *
+   * @param selectedType aktuell ausgewählter Typ oder {@code null}
+   */
+  private void selectLinkTypeToggle(LinkType selectedType) {
+    updatingLinkEditUi = true;
+    try {
+      linkEditSerieButton.setSelected(selectedType == LinkType.SERIE);
+      linkEditIdeaButton.setSelected(selectedType == LinkType.IDEE);
+      linkEditQuestionButton.setSelected(selectedType == LinkType.FRAGE);
+      linkEditCritiqueButton.setSelected(selectedType == LinkType.KRITIK);
+      linkEditTaskButton.setSelected(selectedType == LinkType.AUFGABE);
+    } finally {
+      updatingLinkEditUi = false;
+    }
+  }
+
+  /**
+   * Aktiviert oder deaktiviert alle Verweistyp-Buttons des Popups gemeinsam.
+   *
+   * @param disabled {@code true}, wenn die Buttons deaktiviert werden sollen
+   */
+  private void setLinkTypeButtonsDisabled(boolean disabled) {
+    if (linkEditSerieButton == null) {
+      return;
+    }
+
+    linkEditSerieButton.setDisable(disabled);
+    linkEditIdeaButton.setDisable(disabled);
+    linkEditQuestionButton.setDisable(disabled);
+    linkEditCritiqueButton.setDisable(disabled);
+    linkEditTaskButton.setDisable(disabled);
+  }
+
   private void beginTitleEdit(NoteEditorPane editor) {
     if (titleEditing) {
       editor.getTitleEditorArea().requestFocus();
@@ -340,11 +914,31 @@ public class ZettelWindowController {
     }
 
     currentNote.applyTo(view.getNoteEditorPane(), view.getKeywordsTablePane());
+    syncInfoPopup(currentNote);
     renderBibliographyHost();
     syncBottomToolbar(currentNote);
     view.getNoteEditorPane().setBibliographyVisible(
         view.getBottomToolbar().bookToggle().isSelected()
     );
+  }
+
+  /**
+   * Synchronisiert die Daten des Info-Popups mit dem aktuell sichtbaren Zettel.
+   * Dabei werden ausgehende und eingehende Referenzen sowie Projekte geladen.
+   *
+   * @param note aktuell sichtbarer Zettel
+   */
+  private void syncInfoPopup(Note note) {
+    if (note == null || note.getId() <= 0) {
+      view.getNoteEditorPane().setInfoData(List.of(), List.of(), List.of());
+      return;
+    }
+
+    List<NoteReferenceInfo> outgoing = noteRepository.loadOutgoingReferenceInfos(note.getId());
+    List<NoteReferenceInfo> incoming = noteRepository.loadIncomingReferenceInfos(note.getId());
+    List<String> projects = note.getProjects() == null ? List.of() : List.copyOf(note.getProjects());
+
+    view.getNoteEditorPane().setInfoData(outgoing, incoming, projects);
   }
 
   /**
@@ -379,25 +973,6 @@ public class ZettelWindowController {
     editor.getBodyArea().setEditable(false);
     editor.getFormattingContextMenu().hide();
     saveCurrentIfValid();
-  }
-
-
-  /**
-   * Öffnet den angegebenen Zettel
-   *
-   * @param id
-   */
-  private void openNote(int id) {
-    loading = true;
-    try {
-      var opt = noteRepository.load(id);
-      if (opt.isEmpty()) return;
-
-      currentNote = opt.get();
-      currentNote.applyTo(view.getNoteEditorPane(), view.getKeywordsTablePane());
-    } finally {
-      loading = false;
-    }
   }
 
   private void refreshKeywordCounts() {
@@ -474,7 +1049,20 @@ public class ZettelWindowController {
     }
   }
 
+  /**
+   * Öffnet einen Zettel über die zentrale Navigationslogik.
+   * Vor dem tatsächlichen Wechsel wird der aktuelle Zettel gespeichert
+   * oder verworfen, falls dies beim Verlassen nötig ist.
+   *
+   * @param id ID des zu öffnenden Zettels
+   */
   private void openNoteViaToolbar(int id) {
+    if (currentNote != null && currentNote.getId() == id) {
+      return;
+    }
+
+    saveOrDiscardCurrentNoteBeforeLeave();
+
     if (!historyNavigation) {
       if (currentNote != null && currentNote.getId() > 0 && currentNote.getId() != id) {
         backHistory.push(currentNote.getId());
@@ -482,10 +1070,7 @@ public class ZettelWindowController {
       }
     }
 
-    // HIER: deine echte Lade-/Wechsel-Logik aufrufen
-    // (Sobald wir Persistenz/Load drin haben, wird das eine Zeile: openNote(id);)
     onNoteActivated(id);
-
     updateHistoryButtons();
   }
 
@@ -507,6 +1092,7 @@ public class ZettelWindowController {
 
       // UI befüllen aus der Note
       currentNote.applyTo(view.getNoteEditorPane(), view.getKeywordsTablePane());
+      syncInfoPopup(currentNote);
       renderBibliographyHost();
 
       // BottomToolbar befüllen (nur Anzeige, Feld bleibt editierbar)
@@ -515,8 +1101,13 @@ public class ZettelWindowController {
       // Counts nach dem Laden sofort aktualisieren
       refreshKeywordCounts();
 
-      view.getNoteEditorPane().setOnNavigateToNote(this::openNoteViaToolbar); // klick im Popup lädt Zettel
+      view.getNoteEditorPane().setOnNavigateToNote(this::openNoteViaToolbar);
       view.getNoteEditorPane().setBibliographyVisible(view.getBottomToolbar().bookToggle().isSelected());
+      if (linkEditPopup.isShowing()) {
+        refreshCurrentSuccessorsFromRepository();
+        refreshLinkEditSelectionState();
+        Platform.runLater(this::centerLinkEditPopup);
+      }
     } finally {
       loading = false;
     }
@@ -562,39 +1153,17 @@ public class ZettelWindowController {
     }
   }
 
-  private static final class NoteMemoryStore {
-    private final Map<Integer, NoteSnapshot> notes = new HashMap<>();
-
-    int count() { return notes.size(); }
-
-    java.util.Optional<NoteSnapshot> get(int id) {
-      return Optional.ofNullable(notes.get(id));
-    }
-
-    void put(NoteSnapshot snap) {
-      notes.put(snap.id(), snap);
-    }
-  }
-
-  private record NoteSnapshot(
-      int id,
-      String title,
-      StyledDocument<String, String, String> bodyDoc,
-      List<String> keywords
-  ) {}
-
   /**
    * erstellt einen neuen Zettel mit maxId+1
    */
   private void createNewEmptyNote() {
-    saveCurrentIfValid(); // aktuellen ggf. sichern
+    saveOrDiscardCurrentNoteBeforeLeave(); // aktuellen ggf. sichern
 
     currentNote = new Note();
     currentNote.setId(allocateNextNoteId());
 
     // UI leeren (über Note, damit nichts “verstreut” bleibt)
-    applyCurrentNoteToUi();
-    InlineCssStyleUtil.clearHeadingForSelection(view.getNoteEditorPane().getBodyArea());
+    showCurrentDraftNote();
 
     setNoteIdField(currentNote.getId());
     updateHistoryButtons();
@@ -614,7 +1183,7 @@ public class ZettelWindowController {
     }
 
     // alten Zettel abspeichern
-    saveCurrentIfValid();
+    saveOrDiscardCurrentNoteBeforeLeave();
 
     // Daten zwischenspeichern
     // TODO: später ergänzen
@@ -654,38 +1223,257 @@ public class ZettelWindowController {
     return maxNoteId;
   }
 
+  /**
+   * Erstellt einen neuen leeren Zettel und übernimmt dabei die bibliographische
+   * Verknüpfung des aktuell geöffneten Zettels.
+   * Es werden ausschließlich bibliographyType und bibliographyRefId übernommen,
+   * nicht jedoch Titel, Inhalt oder Keywords.
+   */
   private void createCopyBibliography() {
-    // Bibliografie-Übernahme kommt in 3.3; aktuell legen wir den neuen Zettel schon an (leer),
-    // damit dein Workflow “Klick -> neuer Zettel” schon funktioniert.
-    createNewEmptyNote();
+    saveOrDiscardCurrentNoteBeforeLeave();
+
+    Note newNote = new Note();
+    newNote.setId(allocateNextNoteId());
+
+    copyBibliographyReference(currentNote, newNote);
+
+    currentNote = newNote;
+
+    applyCurrentNoteToUi();
+    InlineCssStyleUtil.clearHeadingForSelection(view.getNoteEditorPane().getBodyArea());
+
+    setNoteIdField(currentNote.getId());
+    updateHistoryButtons();
   }
 
+  /**
+   * Legt einen neuen Folgezettel mit dem angegebenen Linktyp an.
+   * Zuerst wird der aktuelle Zettel gespeichert. Anschließend wird am
+   * aktuellen Zettel sofort ein Verweis auf die neue Ziel-ID angelegt.
+   * Danach wird der neue Zielzettel als leerer Entwurf geöffnet.
+   *
+   * Bleibt dieser Zielzettel beim Verlassen ungültig und ist er zugleich
+   * der letzte Zettel, wird der Verweis wieder entfernt.
+   *
+   * @param linkType Typ des Folgezettels
+   */
+  private void createTypedFollowUpNote(LinkType linkType) {
+    if (linkType == null) {
+      return;
+    }
+
+    saveOrDiscardCurrentNoteBeforeLeave();
+
+    if (currentNote == null || currentNote.getId() <= 0) {
+      return;
+    }
+
+    int sourceId = currentNote.getId();
+    int targetId = allocateNextNoteId();
+
+    noteRepository.addSuccessorLink(sourceId, targetId, linkType);
+
+    List<NoteLink> successors = new ArrayList<>(currentNote.getSuccessors());
+    successors.removeIf(link -> link != null && link.toNoteId() == targetId);
+    successors.add(new NoteLink(targetId, linkType));
+    currentNote.setSuccessors(successors);
+
+    pendingFollowUpTargetNoteId = targetId;
+
+    currentNote = new Note();
+    currentNote.setId(targetId);
+
+    showCurrentDraftNote();
+
+    setNoteIdField(currentNote.getId());
+    updateHistoryButtons();
+  }
+
+  /**
+   * Zeigt den aktuell in {@code currentNote} liegenden Entwurfszettel an und
+   * unterdrückt genau einmal die Invalid-Behandlung direkt nach dem internen
+   * Wechsel, damit neu angelegte leere Zettel nicht sofort wieder verworfen
+   * werden.
+   */
+  private void showCurrentDraftNote() {
+    suppressInvalidCleanupOnce = true;
+
+    applyCurrentNoteToUi();
+    InlineCssStyleUtil.clearHeadingForSelection(view.getNoteEditorPane().getBodyArea());
+
+    Platform.runLater(() -> suppressInvalidCleanupOnce = false);
+  }
+
+  /**
+   * Behandelt einen ungültigen Zettel beim tatsächlichen Verlassen.
+   * Ein ungültiger Zettel wird nur dann verworfen, wenn er der letzte Zettel ist.
+   * Wurde zu diesem Zettel ein Folgezettel-Link angelegt, werden alle eingehenden
+   * Verweise auf diesen Zettel entfernt, sobald der Zettel verworfen wird.
+   */
+  private void handleInvalidCurrentNoteBeforeLeave() {
+    if (currentNote == null || currentNote.getId() <= 0) {
+      clearPendingFollowUpStateIfCurrentMatches();
+      return;
+    }
+
+    if (suppressInvalidCleanupOnce) {
+      return;
+    }
+
+    int currentId = currentNote.getId();
+
+    boolean noteExists = noteRepository.existsNote(currentId);
+    boolean deletedBecauseLast = false;
+
+    if (noteExists) {
+      deletedBecauseLast = noteRepository.deleteNoteIfItIsLast(currentId);
+      if (deletedBecauseLast) {
+        noteRepository.removeAllIncomingLinksToNote(currentId);
+        clearPendingFollowUpStateIfCurrentMatches();
+        maxNoteId = Math.max(noteRepository.maxNoteId(), 0);
+        closeLinkEditPopup();
+        return;
+      }
+    } else {
+      boolean isLastOrBeyondLast = currentId >= noteRepository.maxNoteId();
+      if (isLastOrBeyondLast) {
+        noteRepository.removeAllIncomingLinksToNote(currentId);
+        clearPendingFollowUpStateIfCurrentMatches();
+        maxNoteId = Math.max(noteRepository.maxNoteId(), 0);
+        closeLinkEditPopup();
+        return;
+      }
+    }
+
+    clearPendingFollowUpStateIfCurrentMatches();
+  }
+
+  /**
+   * Löscht lediglich den Pending-Zustand eines Folgezettels, ohne den Link
+   * in der Datenbank zu entfernen.
+   */
+  private void clearPendingFollowUpStateIfCurrentMatches() {
+    if (currentNote == null || pendingFollowUpTargetNoteId == null) {
+      return;
+    }
+    if (currentNote.getId() != pendingFollowUpTargetNoteId) {
+      return;
+    }
+
+    pendingFollowUpTargetNoteId = null;
+  }
+
+  /**
+   * Markiert einen zuvor nur vorgemerkten Folgezettel als erfolgreich
+   * gespeichert. Danach bleibt der Verweis dauerhaft bestehen.
+   */
+  private void clearPendingFollowUpAfterSuccessfulSave() {
+    if (currentNote == null || pendingFollowUpTargetNoteId == null) {
+      return;
+    }
+    if (currentNote.getId() != pendingFollowUpTargetNoteId) {
+      return;
+    }
+
+    pendingFollowUpTargetNoteId = null;
+  }
+
+  /**
+   * Überträgt die bibliographische Referenz vom Quellzettel auf den Zielzettel.
+   * Wird kein gültiger Quellzettel übergeben oder enthält dieser keine
+   * Bibliographie-Verknüpfung, bleibt der Zielzettel bibliographisch leer.
+   *
+   * @param source Quellzettel
+   * @param target Zielzettel
+   */
+  private void copyBibliographyReference(Note source, Note target) {
+    if (target == null) {
+      return;
+    }
+
+    if (source == null
+            || source.getBibliographyType() == null
+            || source.getBibliographyType() == BibliographyType.USER
+            || source.getBibliographyRefId() == null
+            || source.getBibliographyRefId() <= 0) {
+      target.setBibliographyType(BibliographyType.USER);
+      target.setBibliographyRefId(null);
+      target.setBibliographyEntry(null);
+      return;
+    }
+
+    target.setBibliographyType(source.getBibliographyType());
+    target.setBibliographyRefId(source.getBibliographyRefId());
+    target.setBibliographyEntry(source.getBibliographyEntry());
+  }
+
+  /**
+   * Speichert den aktuellen Zettel, sofern er gültig ist.
+   * Ungültige Zettel werden hier bewusst nicht gelöscht oder verworfen,
+   * da diese Methode auch bei Zwischenaktionen während des Editierens
+   * aufgerufen wird.
+   */
   private void saveCurrentIfValid() {
-    if (loading) return;
+    if (loading) {
+      return;
+    }
 
     var editor = view.getNoteEditorPane();
 
     String title = editor.getTitleEditorArea().getText() == null ? "" : editor.getTitleEditorArea().getText().trim();
     String bodyPlain = editor.getBodyArea().getText() == null ? "" : editor.getBodyArea().getText().trim();
 
-    // speichern erst wenn Überschrift und Inhalt je >= 1 Zeichen
-    if (title.isEmpty() || bodyPlain.isEmpty()) return;
+    if (title.isEmpty() || bodyPlain.isEmpty()) {
+      return;
+    }
 
     if (currentNote.getId() <= 0) {
       currentNote.setId(allocateNextNoteId());
     }
 
-    // UI -> Note
     currentNote.captureFrom(view.getNoteEditorPane(), view.getKeywordsTablePane());
 
     int savedId = noteRepository.save(currentNote);
     currentNote.setId(savedId);
     maxNoteId = Math.max(maxNoteId, savedId);
 
+    clearPendingFollowUpAfterSuccessfulSave();
+
     setNoteIdField(savedId);
     refreshKeywordCounts();
+
+    refreshCurrentSuccessorsFromRepository();
+    syncInfoPopup(currentNote);
     renderBibliographyHost();
     syncBottomToolbar(currentNote);
+
+    if (linkEditPopup.isShowing()) {
+      refreshLinkEditSelectionState();
+      Platform.runLater(this::centerLinkEditPopup);
+    }
+  }
+
+  /**
+   * Wird verwendet, wenn der aktuelle Zettel tatsächlich verlassen wird.
+   * Gültige Zettel werden gespeichert.
+   * Ungültige Zettel werden nur dann verworfen, wenn sie der letzte Zettel sind.
+   */
+  private void saveOrDiscardCurrentNoteBeforeLeave() {
+    if (loading) {
+      return;
+    }
+
+    var editor = view.getNoteEditorPane();
+
+    String title = editor.getTitleEditorArea().getText() == null ? "" : editor.getTitleEditorArea().getText().trim();
+    String bodyPlain = editor.getBodyArea().getText() == null ? "" : editor.getBodyArea().getText().trim();
+
+    if (title.isEmpty() || bodyPlain.isEmpty()) {
+      handleInvalidCurrentNoteBeforeLeave();
+      return;
+    }
+
+    saveCurrentIfValid();
   }
 
   /**
@@ -715,27 +1503,37 @@ public class ZettelWindowController {
     editor.getBodyArea().requestFocus();
   }
 
+  /**
+   * Öffnet den vorherigen Zettel mit Umlauf am Anfang.
+   */
   private void openPrevNoteWrap() {
     int max = noteRepository.maxNoteId();
-    if (max <= 0) return;
-
-    saveCurrentIfValid();
+    if (max <= 0) {
+      return;
+    }
 
     int cur = (currentNote != null) ? currentNote.getId() : 0;
-    if (cur <= 0) cur = 1;
+    if (cur <= 0) {
+      cur = 1;
+    }
 
     int target = (cur <= 1) ? max : (cur - 1);
     openNoteViaToolbar(target);
   }
 
+  /**
+   * Öffnet den nächsten Zettel mit Umlauf am Ende.
+   */
   private void openNextNoteWrap() {
     int max = noteRepository.maxNoteId();
-    if (max <= 0) return;
-
-    saveCurrentIfValid();
+    if (max <= 0) {
+      return;
+    }
 
     int cur = (currentNote != null) ? currentNote.getId() : 0;
-    if (cur <= 0) cur = 1;
+    if (cur <= 0) {
+      cur = 1;
+    }
 
     int target = (cur >= max) ? 1 : (cur + 1);
     openNoteViaToolbar(target);

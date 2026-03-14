@@ -22,15 +22,30 @@ public enum BaseIcon {
 
   BULLET_ARROW_LEFT("bullet_arrow_left", "Zurück"),
   BULLET_ARROW_RIGHT("bullet_arrow_right", "Vor"),
+  BULLET_GO("bullet_go", "Weiter"),
   BULLET_GREEN("bullet_green", "geöffnet"),
   BULLET_RED("bullet_red", "gesperrt"),
 
   CLEAR_FORMATTING("clear_formatting", "Formatierung löschen"),
 
+  CROSS("cross", "Schließen"),
+
   DELETE("delete", "Löschen"),
 
   DOCUMENT_PAGE_PREVIOUS("document_page_previous", "Zurück"),
   DOCUMENT_PAGE_NEXT("document_page_next", "Vor"),
+
+  INFORMATION("information", "Info"),
+
+  KEY("key", "Schlagwörter"),
+
+  LAYOUTS_JOIN("layouts_join", "Zuklappen"),
+  LAYOUTS_SPLIT("layouts_split", "Aufklappen"),
+
+  LINK_EDIT("link_edit", "Verweise"),
+  LIST("list", "Liste"),
+
+  MAGNIFY_LINK("magnify_link", "Verweise"),
 
   PAGE_ADD("page_add", "Neu"),
   PAGE_COPY("page_copy", "Kopieren"),
@@ -42,6 +57,8 @@ public enum BaseIcon {
   QUESTION("question", "Fragen"),
   PAGE_LIGHTNING("page_lightning", "Kritik"),
   PAGE_EDIT("page_edit", "Aufgabe"),
+
+  PERFORMANCE_ANALYSIS("performance_analysis", "Cluster"),
 
   TEXT_ALIGN_CENTER("text_align_center", "Zentrieren"),
   TEXT_ALIGN_JUSTIFY("text_align_justify", "Blocksatz"),

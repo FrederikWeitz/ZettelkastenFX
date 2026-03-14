@@ -109,6 +109,12 @@
     -fx-border-width: 0;
 }
 
+/* Versteckt die Scrollbars der TextArea */
+.note-title-area .scroll-pane {
+    -fx-hbar-policy: never;
+    -fx-vbar-policy: never;
+}
+
 .note-body-container {
     -fx-background-color: white;
 
@@ -251,6 +257,11 @@
     -fx-pref-height: 22;
     -fx-max-height: 22;
     -fx-padding: 0;
+    -fx-background-color: transparent;
+}
+
+.note-info-button:hover {
+    -fx-background-color: rgba(255, 255, 255, 0.2);
 }
 
 .note-info-popup {
@@ -259,6 +270,8 @@
     -fx-background-radius: 10;
     -fx-border-radius: 10;
     -fx-border-color: rgba(255,255,255,0.18);
+    -fx-min-width: 80;
+    -fx-pref-width: 180;
 }
 
 .note-info-section-title {

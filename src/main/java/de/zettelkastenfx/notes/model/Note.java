@@ -62,17 +62,7 @@ public class Note {
     applyBodyTo(editor.getBodyArea());
     keywordsPane.setKeywords(getKeywords());
     editor.setHeaderNoteNumber(id);
-    editor.setHeaderCreatedAt(createdAt); //
-
-    // TODO: muss noch spezifiziert werden
-    // editor.setInfoData(successors, null, projects);
-  }
-
-  public boolean isPersistable() {
-    String t = getTitle() == null ? "" : getTitle().trim();
-    // „Body darf nicht leer sein“: wir prüfen Plaintext aus dem Blob erst im Controller (siehe unten),
-    // hier minimal: Title muss existieren, Keywords egal.
-    return !t.isEmpty();
+    editor.setHeaderCreatedAt(createdAt);
   }
 
   // Body aus UI “einsammeln”

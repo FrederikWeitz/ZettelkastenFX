@@ -2,7 +2,6 @@ package de.zettelkastenfx.notes.controller;
 
 import de.zettelkastenfx.base.util.PersistenceUtil;
 import de.zettelkastenfx.persistence.DbBootstrap;
-import de.zettelkastenfx.persistence.NoteRepository;
 import javafx.scene.Scene;
 import javafx.stage.Stage;
 

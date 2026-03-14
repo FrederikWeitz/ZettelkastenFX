@@ -3,6 +3,7 @@ package de.zettelkastenfx.notes.editor;
 import de.zettelkastenfx.base.BaseIcon;
 import de.zettelkastenfx.base.util.DateUtil;
 import de.zettelkastenfx.notes.editor.format.NoteFormattingMenuContent;
+import de.zettelkastenfx.notes.model.NoteReferenceInfo;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
@@ -48,13 +49,13 @@ public class NoteEditorPane extends VBox {
   private final Button btnHeaderInfo;
 
   // Info-Popup
-  private final Popup infoPopup = new javafx.stage.Popup();
-  private final VBox infoPopupRoot = new javafx.scene.layout.VBox(8);
+  private final Popup infoPopup = new Popup();
+  private final VBox infoPopupRoot = new VBox(8);
 
   private IntConsumer onNavigateToNote = id -> {};
-  private List<Integer> infoOutgoing = java.util.List.of();
-  private List<Integer> infoIncoming = java.util.List.of();
-  private List<String> infoProjects = java.util.List.of();
+  private List<NoteReferenceInfo> infoOutgoing = List.of();
+  private List<NoteReferenceInfo> infoIncoming = List.of();
+  private List<String> infoProjects = List.of();
 
   // Fenster für die bibliographischen Angaben
   @Getter
@@ -85,7 +86,7 @@ public class NoteEditorPane extends VBox {
 
     var right = new HBox();
     right.getStyleClass().add("note-header-right");
-    btnHeaderInfo = new Button("i");
+    btnHeaderInfo = BaseIcon.INFORMATION.button();
     btnHeaderInfo.getStyleClass().addAll("icon-button", "note-info-button");
     btnHeaderInfo.setFocusTraversable(false);
 
@@ -200,15 +201,28 @@ public class NoteEditorPane extends VBox {
     bibliographyHost.setManaged(visible);
   }
 
-  public void setInfoData(List<Integer> outgoing,
-                          List<Integer> incoming,
+  /**
+   * Setzt die anzuzeigenden Daten für das Info-Popup.
+   * Ist das Popup gerade geöffnet, wird sein Inhalt sofort neu aufgebaut
+   * und neu unter dem Info-Button positioniert.
+   *
+   * @param outgoing ausgehende Referenzen des aktuellen Zettels
+   * @param incoming eingehende Referenzen auf den aktuellen Zettel
+   * @param projects zugeordnete Projekte
+   */
+  public void setInfoData(List<NoteReferenceInfo> outgoing,
+                          List<NoteReferenceInfo> incoming,
                           List<String> projects) {
-    this.infoOutgoing = outgoing == null ? java.util.List.of() : java.util.List.copyOf(outgoing);
-    this.infoIncoming = incoming == null ? java.util.List.of() : java.util.List.copyOf(incoming);
-    this.infoProjects = projects == null ? java.util.List.of() : java.util.List.copyOf(projects);
+    this.infoOutgoing = outgoing == null ? List.of() : List.copyOf(outgoing);
+    this.infoIncoming = incoming == null ? List.of() : List.copyOf(incoming);
+    this.infoProjects = projects == null ? List.of() : List.copyOf(projects);
+
+    if (infoPopup.isShowing()) {
+      refreshOpenInfoPopup();
+    }
   }
 
-  public void setOnNavigateToNote(java.util.function.IntConsumer onNavigateToNote) {
+  public void setOnNavigateToNote(IntConsumer onNavigateToNote) {
     this.onNavigateToNote = (onNavigateToNote == null) ? id -> {} : onNavigateToNote;
   }
 
@@ -234,19 +248,48 @@ public class NoteEditorPane extends VBox {
     });
   }
 
+  /**
+   * Aktualisiert ein bereits geöffnetes Info-Popup und positioniert es
+   * erneut unterhalb des Info-Buttons.
+   */
+  private void refreshOpenInfoPopup() {
+    if (!infoPopup.isShowing()) {
+      return;
+    }
+
+    rebuildInfoPopupContent();
+
+    var b = btnHeaderInfo.localToScreen(btnHeaderInfo.getBoundsInLocal());
+    if (b == null) {
+      return;
+    }
+
+    javafx.application.Platform.runLater(() -> {
+      double w = infoPopupRoot.getWidth();
+      if (w <= 0) {
+        w = infoPopupRoot.prefWidth(-1);
+      }
+
+      double centerX = (b.getMinX() + b.getMaxX()) / 2.0;
+      double x = centerX - w / 2.0;
+
+      infoPopup.setX(x);
+      infoPopup.setY(b.getMaxY() + 6);
+    });
+  }
+
+  /**
+   * Baut den Inhalt des Info-Popups vollständig neu auf.
+   * Angezeigt werden Wortzahl, ausgehende Referenzen, eingehende Referenzen
+   * und zugeordnete Projekte.
+   */
   private void rebuildInfoPopupContent() {
     infoPopupRoot.getChildren().clear();
 
     int wc = computeWordCount();
     infoPopupRoot.getChildren().add(sectionLine("Wörter", Integer.toString(wc)));
-
-    if (infoOutgoing != null && !infoOutgoing.isEmpty()) {
-      infoPopupRoot.getChildren().add(sectionLinks("Folgezettel", infoOutgoing));
-    }
-
-    if (infoIncoming != null && !infoIncoming.isEmpty()) {
-      infoPopupRoot.getChildren().add(sectionLinks("Verweist auf diesen Zettel", infoIncoming));
-    }
+    infoPopupRoot.getChildren().add(sectionReferenceLinks("Folgezettel", infoOutgoing));
+    infoPopupRoot.getChildren().add(sectionReferenceLinks("Verweist auf diesen Zettel", infoIncoming));
 
     if (infoProjects != null && !infoProjects.isEmpty()) {
       infoPopupRoot.getChildren().add(sectionTexts("Projekte", infoProjects));
@@ -274,7 +317,16 @@ public class NoteEditorPane extends VBox {
     return row;
   }
 
-  private Node sectionLinks(String title, List<Integer> ids) {
+  /**
+   * Baut einen Abschnitt mit klickbaren Zettelreferenzen für das Info-Popup.
+   * Die Einträge selbst zeigen die Zettelnummer, der Tooltip liefert
+   * Referenztyp und Überschrift.
+   *
+   * @param title Abschnittsüberschrift
+   * @param references anzuzeigende Referenzen
+   * @return UI-Knoten für den Abschnitt
+   */
+  private Node sectionReferenceLinks(String title, List<NoteReferenceInfo> references) {
     var box = new VBox(4);
     box.getStyleClass().add("note-info-section");
 
@@ -282,24 +334,31 @@ public class NoteEditorPane extends VBox {
     head.getStyleClass().add("note-info-section-title");
     box.getChildren().add(head);
 
-    if (ids == null || ids.isEmpty()) {
-      var empty = new Label("—");
-      empty.getStyleClass().add("note-info-muted");
-      box.getChildren().add(empty);
+    if (references == null || references.isEmpty()) {
+//      var empty = new Label("—");
+//      empty.getStyleClass().add("note-info-muted");
+      box.getChildren().clear();
       return box;
     }
 
     var flow = new FlowPane(6, 6);
-    for (Integer id : ids) {
-      if (id == null) continue;
-      var link = new Hyperlink(Integer.toString(id));
+
+    for (NoteReferenceInfo reference : references) {
+      if (reference == null) {
+        continue;
+      }
+
+      var link = new Hyperlink(Integer.toString(reference.noteId()));
       link.getStyleClass().add("note-info-link");
+      link.setTooltip(new Tooltip(reference.tooltipText()));
       link.setOnAction(e -> {
         infoPopup.hide();
-        onNavigateToNote.accept(id);
+        onNavigateToNote.accept(reference.noteId());
       });
+
       flow.getChildren().add(link);
     }
+
     box.getChildren().add(flow);
     return box;
   }

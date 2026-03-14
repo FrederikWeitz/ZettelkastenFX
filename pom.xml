@@ -28,18 +28,6 @@
     </properties>
 
     <dependencies>
-        <!-- Spring Boot core (ohne Web) -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter</artifactId>
-        </dependency>
-
-        <!-- Persistenz -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-jpa</artifactId>
-        </dependency>
-
         <!-- Flyway Migrationen -->
         <dependency>
             <groupId>org.flywaydb</groupId>
@@ -98,12 +86,6 @@
             <version>${jrtf.version}</version>
         </dependency>
 
-        <!-- Tests -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
@@ -113,15 +95,6 @@
 
     <build>
         <plugins>
-            <!-- Spring Boot Packaging -->
-            <plugin>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-maven-plugin</artifactId>
-                <configuration>
-                    <mainClass>de.zettelkasten.app.Zettelkasten</mainClass>
-                </configuration>
-            </plugin>
-
             <!-- JavaFX Run Support: mvn clean javafx:run -->
             <plugin>
                 <groupId>org.openjfx</groupId>

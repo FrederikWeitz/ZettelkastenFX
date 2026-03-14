@@ -25,6 +25,7 @@ public class ZettelWindowView {
   @Getter private final Button toolButtonPageAdd;
   @Getter private final Button toolButtonPageCopy;
   @Getter private final Button toolButtonPageWithBibliography;
+  @Getter private final Button toolButtonLinkEdit;
 
   @Getter private final MenuButton toolMenuFollowingPages;
   @Getter private final MenuItem miFollowing;
@@ -81,6 +82,7 @@ public class ZettelWindowView {
     toolButtonPageAdd = BaseIcon.PAGE_ADD.button();
     toolButtonPageCopy = BaseIcon.PAGE_COPY.button();
     toolButtonPageWithBibliography = BaseIcon.PAGE_RED.button();
+    toolButtonLinkEdit = BaseIcon.LINK_EDIT.button();
 
     toolMenuFollowingPages = new MenuButton();
     toolMenuFollowingPages.setGraphic(BaseIcon.PAGE_LINK.imageView());
@@ -97,8 +99,12 @@ public class ZettelWindowView {
     toolMenuFollowingPages.getItems().addAll(miFollowing, miIdea, miQuestion, miCritique, miTask);
 
     topToolBar.getItems().addAll(
-        toolButtonPageAdd, toolButtonPageCopy, toolButtonPageWithBibliography,
-        toolMenuFollowingPages);
+        toolButtonPageAdd,
+        toolButtonPageCopy,
+        toolButtonPageWithBibliography,
+        toolMenuFollowingPages,
+        toolButtonLinkEdit
+    );
 
     topArea.getChildren().addAll(menuBar, topToolBar);
     root.setTop(topArea);
@@ -122,13 +128,6 @@ public class ZettelWindowView {
 
     workAreaSplitPane.getItems().addAll(noteEditorPane, keywordsTablePane, rightArea);
     root.setCenter(workAreaSplitPane);
-  }
-
-  private MenuButton createMenuButton(String text, String styleClass) {
-    MenuButton menuButton = new MenuButton(text);
-    menuButton.getStyleClass().addAll("zettel-menu-button", styleClass);
-    menuButton.setMaxWidth(Double.MAX_VALUE);
-    return menuButton;
   }
 
   private Region createPlaceholderPane(String title) {
