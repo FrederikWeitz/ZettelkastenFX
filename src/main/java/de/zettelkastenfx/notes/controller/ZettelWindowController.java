@@ -21,10 +21,7 @@ import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseEvent;
-import javafx.scene.layout.HBox;
-import javafx.scene.layout.Priority;
-import javafx.scene.layout.Region;
-import javafx.scene.layout.VBox;
+import javafx.scene.layout.*;
 import javafx.stage.Popup;
 import javafx.stage.Stage;
 
@@ -97,6 +94,7 @@ public class ZettelWindowController {
   public void applyInitialState() {
     // Startlayout: drei Bereiche ungefähr gleich
     Platform.runLater(() -> view.getWorkAreaSplitPane().setDividerPositions(0.33, 0.66));
+    refreshServiceAreaForCurrentState();
   }
 
   private void wireEvents() {
@@ -112,6 +110,14 @@ public class ZettelWindowController {
     view.getToolButtonPageCopy().setOnAction(event -> createCopyOfCurrentNote());
     view.getToolButtonPageWithBibliography().setOnAction(event -> createCopyBibliography());
     view.getToolButtonLinkEdit().setOnAction(event -> toggleLinkEditPopup());
+    view.getToolButtonToggleServiceArea().setOnAction(event -> toggleServiceArea());
+
+
+    view.getServiceAreaMagnifyLinkButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.MAGNIFY_LINK));
+    view.getServiceAreaKeyButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.KEY));
+    view.getServiceAreaBookButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.BOOK));
+    view.getServiceAreaListButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.LIST));
+    view.getServiceAreaClusterButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.PERFORMANCE_ANALYSIS));
 
     // Dropdown für Folgezettel
     view.getMiFollowing().setOnAction(e -> createTypedFollowUpNote(LinkType.SERIE));
@@ -579,7 +585,7 @@ public class ZettelWindowController {
     }
 
     String title = noteRepository.loadNoteTitle(selectedNoteId).orElse("");
-    linkEditTitleLabel.setText(title == null || title.isBlank() ? "—" : title);
+    linkEditTitleLabel.setText(title.isBlank() ? "—" : title);
 
     if (currentNote != null && currentNote.getId() > 0 && selectedNoteId == currentNote.getId()) {
       linkEditStatusLabel.setText("Selbstverweis ist nicht erlaubt");
@@ -1123,7 +1129,7 @@ public class ZettelWindowController {
     if (backHistory.isEmpty()) return;
 
     Integer current = currentNote.getId();
-    if (current != null && current > 0) {
+    if (current > 0) {
       forwardHistory.push(current);
     }
 
@@ -1140,7 +1146,7 @@ public class ZettelWindowController {
     if (forwardHistory.isEmpty()) return;
 
     Integer current = currentNote.getId();
-    if (current != null && current > 0) {
+    if (current > 0) {
       backHistory.push(current);
     }
 
@@ -3015,6 +3021,55 @@ public class ZettelWindowController {
   private String norm(String s) {
     return s == null ? "" : s.trim();
   }
+
+  /**
+   * Klappt den rechten Arbeitsbereich ein oder wieder aus.
+   * Beim erneuten Öffnen wird der aktuell gewählte Zettel im nächsten Schritt
+   * wieder für den aktiven Modus synchronisiert.
+   */
+  private void toggleServiceArea() {
+    boolean wasCollapsed = view.isServiceAreaCollapsed();
+    view.toggleServiceAreaCollapsed();
+
+    if (wasCollapsed && view.getActiveServiceAreaMode() != null) {
+      refreshServiceAreaForCurrentState();
+    }
+  }
+
+  /**
+   * Reagiert auf das Umschalten eines Modus in der rechten Seitenleiste.
+   * Es kann immer nur ein Modus gleichzeitig aktiv sein.
+   * Wird der bereits aktive Modus erneut geklickt, wird er wieder deaktiviert.
+   *
+   * @param mode angeklickter Modus
+   */
+  private void handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode mode) {
+    if (view.getActiveServiceAreaMode() == mode) {
+      view.setActiveServiceAreaMode(null);
+      view.setServiceAreaContent(new Pane());
+      return;
+    }
+
+    view.setActiveServiceAreaMode(mode);
+    refreshServiceAreaForCurrentState();
+  }
+
+  /**
+   * Aktualisiert den sichtbaren Inhalt des rechten Arbeitsbereichs
+   * passend zum aktuell gewählten Modus.
+   * Für den aktuellen Ausbauschritt werden noch Platzhalteransichten verwendet.
+   */
+  private void refreshServiceAreaForCurrentState() {
+    ZettelWindowView.ServiceAreaMode mode = view.getActiveServiceAreaMode();
+    if (mode == null) {
+      view.setServiceAreaContent(new Pane());
+      return;
+    }
+
+    view.setServiceAreaContent(view.createModePlaceholder(mode));
+  }
+
+
 }
 
 
