@@ -9,10 +9,7 @@ import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
 import javafx.scene.layout.BorderPane;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class KeywordsTablePane extends BorderPane {
 
@@ -47,6 +44,7 @@ public class KeywordsTablePane extends BorderPane {
       Row row = e.getRowValue();
       row.setKeyword(normalizeKeyword(e.getNewValue()));
       normalizeRows();
+      setKeywords(getKeywords());
       onKeywordsCommitted.run();
     });
 
@@ -101,8 +99,12 @@ public class KeywordsTablePane extends BorderPane {
   /** Setzt Keywords (ohne Sortierung; Sortierung kommt später in Aufgabe 3.2.4). */
   public void setKeywords(Collection<String> keywords) {
     items.clear();
-    if (keywords != null) {
-      for (String k : keywords) {
+
+    Set<String> set = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+    set.addAll(keywords);
+
+    if (!set.isEmpty()) {
+      for (String k : set) {
         String n = normalizeKeyword(k);
         if (!n.isBlank()) items.add(new Row(n, ""));
       }

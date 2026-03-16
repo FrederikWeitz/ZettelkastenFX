@@ -22,6 +22,8 @@ public class NoteRepository {
     this.bibliographyRepo = new BibliographyRepository(ds);
   }
 
+  public record KeywordUsageRow(int id, String keyword, int count) {}
+
   public int countNotes() {
     try (Connection c = ds.getConnection();
          PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM notes");
@@ -303,6 +305,238 @@ public class NoteRepository {
         join.addBatch();
       }
       join.executeBatch();
+    }
+  }
+
+  /**
+   * Lädt alle Schlagwörter mit ID und Häufigkeit.
+   *
+   * @return Schlagwortzeilen für das KEY-Fenster
+   */
+  public List<KeywordUsageRow> loadKeywordUsageRows() {
+    String sql = """
+        SELECT k.id, k.keyword, COUNT(nk.note_id) AS cnt
+        FROM keywords k
+        LEFT JOIN note_keywords nk ON nk.keyword_id = k.id
+        GROUP BY k.id, k.keyword
+        ORDER BY k.keyword COLLATE NOCASE
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql);
+         ResultSet rs = ps.executeQuery()) {
+
+      List<KeywordUsageRow> out = new ArrayList<>();
+      while (rs.next()) {
+        out.add(new KeywordUsageRow(
+            rs.getInt("id"),
+            rs.getString("keyword"),
+            rs.getInt("cnt")
+        ));
+      }
+      return out;
+
+    } catch (SQLException e) {
+      throw new IllegalStateException("loadKeywordUsageRows fehlgeschlagen", e);
+    }
+  }
+
+  /**
+   * Sucht Schlagwörter per case-insensitiver Enthält-Suche.
+   *
+   * @param text Suchtext
+   * @param limit maximale Trefferzahl
+   * @return passende Schlagwörter
+   */
+  public List<String> searchKeywordsContainingIgnoreCase(String text, int limit) {
+    String normalized = text == null ? "" : text.trim();
+    if (normalized.isBlank()) {
+      return List.of();
+    }
+
+    String sql = """
+        SELECT keyword
+        FROM keywords
+        WHERE lower(keyword) LIKE ?
+        ORDER BY keyword COLLATE NOCASE
+        LIMIT ?
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql)) {
+
+      ps.setString(1, "%" + normalized.toLowerCase(Locale.ROOT) + "%");
+      ps.setInt(2, Math.max(1, limit));
+
+      try (ResultSet rs = ps.executeQuery()) {
+        List<String> out = new ArrayList<>();
+        while (rs.next()) {
+          out.add(rs.getString("keyword"));
+        }
+        return out;
+      }
+
+    } catch (SQLException e) {
+      throw new IllegalStateException("searchKeywordsContainingIgnoreCase fehlgeschlagen", e);
+    }
+  }
+
+  /**
+   * Findet ein Schlagwort per case-insensitivem Exaktvergleich.
+   *
+   * @param keyword gesuchter Text
+   * @return gefundenes Schlagwort mit ID und Häufigkeit
+   */
+  public Optional<KeywordUsageRow> findKeywordByExactIgnoreCase(String keyword) {
+    String normalized = keyword == null ? "" : keyword.trim();
+    if (normalized.isBlank()) {
+      return Optional.empty();
+    }
+
+    String sql = """
+        SELECT k.id, k.keyword, COUNT(nk.note_id) AS cnt
+        FROM keywords k
+        LEFT JOIN note_keywords nk ON nk.keyword_id = k.id
+        WHERE lower(k.keyword) = ?
+        GROUP BY k.id, k.keyword
+        LIMIT 1
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql)) {
+
+      ps.setString(1, normalized.toLowerCase(Locale.ROOT));
+
+      try (ResultSet rs = ps.executeQuery()) {
+        if (!rs.next()) {
+          return Optional.empty();
+        }
+
+        return Optional.of(new KeywordUsageRow(
+            rs.getInt("id"),
+            rs.getString("keyword"),
+            rs.getInt("cnt")
+        ));
+      }
+
+    } catch (SQLException e) {
+      throw new IllegalStateException("findKeywordByExactIgnoreCase fehlgeschlagen", e);
+    }
+  }
+
+  /**
+   * Benennt ein Schlagwort um, ohne seine ID zu ändern.
+   *
+   * @param keywordId Schlagwort-ID
+   * @param newKeyword neuer Text
+   */
+  public void renameKeyword(int keywordId, String newKeyword) {
+    String normalized = newKeyword == null ? "" : newKeyword.trim();
+    if (keywordId <= 0) {
+      throw new IllegalArgumentException("renameKeyword: keywordId muss > 0 sein.");
+    }
+    if (normalized.isBlank()) {
+      throw new IllegalArgumentException("renameKeyword: newKeyword darf nicht leer sein.");
+    }
+
+    String sql = """
+        UPDATE keywords
+        SET keyword = ?
+        WHERE id = ?
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql)) {
+      ps.setString(1, normalized);
+      ps.setInt(2, keywordId);
+      ps.executeUpdate();
+    } catch (SQLException e) {
+      throw new IllegalStateException("renameKeyword fehlgeschlagen (keywordId=" + keywordId + ")", e);
+    }
+  }
+
+  /**
+   * Löscht ein Schlagwort vollständig. Zugehörige Join-Einträge werden über
+   * ON DELETE CASCADE entfernt.
+   *
+   * @param keywordId Schlagwort-ID
+   */
+  public void deleteKeyword(int keywordId) {
+    if (keywordId <= 0) {
+      throw new IllegalArgumentException("deleteKeyword: keywordId muss > 0 sein.");
+    }
+
+    String sql = "DELETE FROM keywords WHERE id = ?";
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql)) {
+      ps.setInt(1, keywordId);
+      ps.executeUpdate();
+    } catch (SQLException e) {
+      throw new IllegalStateException("deleteKeyword fehlgeschlagen (keywordId=" + keywordId + ")", e);
+    }
+  }
+
+  /**
+   * Führt zwei Schlagwörter zusammen. Das erste bleibt bestehen, das zweite wird
+   * entfernt. Bereits vorhandene Zuordnungen werden nicht doppelt angelegt.
+   *
+   * @param keepKeywordId ID des beizubehaltenden Schlagworts
+   * @param removeKeywordId ID des zu löschenden Schlagworts
+   */
+  public void mergeKeywords(int keepKeywordId, int removeKeywordId) {
+    if (keepKeywordId <= 0 || removeKeywordId <= 0) {
+      throw new IllegalArgumentException("mergeKeywords: IDs müssen > 0 sein.");
+    }
+    if (keepKeywordId == removeKeywordId) {
+      return;
+    }
+
+    String copySql = """
+        INSERT OR IGNORE INTO note_keywords(note_id, keyword_id)
+        SELECT note_id, ?
+        FROM note_keywords
+        WHERE keyword_id = ?
+        """;
+
+    String deleteJoinSql = """
+        DELETE FROM note_keywords
+        WHERE keyword_id = ?
+        """;
+
+    String deleteKeywordSql = """
+        DELETE FROM keywords
+        WHERE id = ?
+        """;
+
+    try (Connection c = ds.getConnection()) {
+      c.setAutoCommit(false);
+      try (PreparedStatement copyPs = c.prepareStatement(copySql);
+           PreparedStatement deleteJoinPs = c.prepareStatement(deleteJoinSql);
+           PreparedStatement deleteKeywordPs = c.prepareStatement(deleteKeywordSql)) {
+
+        copyPs.setInt(1, keepKeywordId);
+        copyPs.setInt(2, removeKeywordId);
+        copyPs.executeUpdate();
+
+        deleteJoinPs.setInt(1, removeKeywordId);
+        deleteJoinPs.executeUpdate();
+
+        deleteKeywordPs.setInt(1, removeKeywordId);
+        deleteKeywordPs.executeUpdate();
+
+        c.commit();
+      } catch (Exception ex) {
+        c.rollback();
+        throw ex;
+      } finally {
+        c.setAutoCommit(true);
+      }
+    } catch (Exception e) {
+      throw new IllegalStateException(
+          "mergeKeywords fehlgeschlagen (keep=" + keepKeywordId + ", remove=" + removeKeywordId + ")",
+          e
+      );
     }
   }
 

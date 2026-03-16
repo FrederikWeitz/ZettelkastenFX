@@ -5,16 +5,25 @@ import de.zettelkastenfx.notes.bottom.BottomToolbar;
 import de.zettelkastenfx.notes.editor.NoteEditorPane;
 import de.zettelkastenfx.notes.keywords.KeywordsTablePane;
 import javafx.application.Platform;
+import javafx.beans.property.ReadOnlyIntegerWrapper;
+import javafx.beans.property.ReadOnlyStringWrapper;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
 import javafx.geometry.Insets;
 import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
+import javafx.scene.Node;
 import javafx.scene.control.*;
+import javafx.scene.input.MouseButton;
+import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.*;
+import javafx.util.StringConverter;
 import lombok.Getter;
+import lombok.Setter;
+
+import java.util.List;
 
 public class ZettelWindowView {
-
-  // public static Object ServiceAreaMode;
 
   @Getter private final BorderPane root;
 
@@ -54,6 +63,50 @@ public class ZettelWindowView {
   @Getter private final ToggleButton serviceAreaListButton;
   @Getter private final ToggleButton serviceAreaClusterButton;
 
+  // MAGNIFY_LINK-Komponente
+  @Getter private final BorderPane magnifyLinkPane;
+  @Getter private final ToolBar magnifyLinkToolBar;
+  @Getter private final TextField magnifyLinkNoteIdField;
+  @Getter private final Slider magnifyLinkIncomingDepthSlider;
+  @Getter private final Slider magnifyLinkOutgoingDepthSlider;
+  @Getter private final ToggleButton magnifyLinkDirectedTraversalButton;
+
+  @Getter private final ToggleButton magnifyLinkSerieButton;
+  @Getter private final ToggleButton magnifyLinkIdeaButton;
+  @Getter private final ToggleButton magnifyLinkQuestionButton;
+  @Getter private final ToggleButton magnifyLinkCritiqueButton;
+  @Getter private final ToggleButton magnifyLinkTaskButton;
+
+  @Getter private final TextField magnifyLinkFilterField;
+  @Getter private final Label magnifyLinkStatusLabel;
+  @Getter private final VBox magnifyLinkListBox;
+
+  // KEY-Komponente
+  @Getter private final BorderPane keyPane;
+  @Getter private final ToolBar keyToolBar;
+  @Getter private final TextField keyFilterField;
+  @Getter private final TextField keyKeepField;
+  @Getter private final ComboBox<String> keyReplaceField;
+  @Getter private final Button keyReplaceButton;
+  @Getter private final Label keyStatusLabel;
+  @Getter private final TableView<KeyTableRow> keyTable;
+  @Getter private final TableColumn<KeyTableRow, String> keyKeywordColumn;
+  @Getter private final TableColumn<KeyTableRow, Number> keyCountColumn;
+
+  private Integer pendingKeyEditRowId;
+  private String pendingKeyEditText;
+
+  public enum KeyStatusType {
+    INFO,
+    SUCCESS,
+    WARNING,
+    ERROR
+  }
+
+  private String keyInventoryStatusText = "";
+  private String keyActionStatusText = "";
+  private KeyStatusType keyActionStatusType = KeyStatusType.INFO;
+
   // Zustand für die Service-Area
   public enum ServiceAreaMode {
     MAGNIFY_LINK,
@@ -63,13 +116,70 @@ public class ZettelWindowView {
     PERFORMANCE_ANALYSIS
   }
 
+  @FunctionalInterface
+  public interface KeyKeywordEditCommitHandler {
+    /**
+     * Reagiert auf das Abschließen einer Inline-Bearbeitung in der Schlagwortspalte.
+     *
+     * @param row bearbeitete Tabellenzeile
+     * @param newKeyword neu eingegebener Wert
+     * @return {@code true}, wenn die Änderung übernommen wurde; sonst {@code false}
+     */
+    boolean handleCommit(KeyTableRow row, String newKeyword);
+  }
+
+  @Getter
+  public static final class KeyTableRow {
+    private final int keywordId;
+    private final String keyword;
+    private final int count;
+
+    /**
+     * Erzeugt eine Tabellenzeile für das KEY-Fenster.
+     *
+     * @param keywordId ID des Schlagworts
+     * @param keyword Schlagworttext
+     * @param count Häufigkeit
+     */
+    public KeyTableRow(int keywordId, String keyword, int count) {
+      this.keywordId = keywordId;
+      this.keyword = keyword;
+      this.count = count;
+    }
+  }
+
+  /**
+   * Gespeicherter primärer Sortierzustand der KEY-Tabelle.
+   *
+   * @param columnId ID der sortierten Spalte
+   * @param sortType Sortierrichtung
+   */
+  public record KeyTableSortState(String columnId, TableColumn.SortType sortType) {
+  }
+
+  /**
+   * -- SETTER --
+   *  Setzt den Commit-Handler für Inline-Änderungen in der Schlagwortspalte.
+   */
+  @Setter private KeyKeywordEditCommitHandler keyKeywordEditCommitHandler;
+
   @Getter private final NoteEditorPane noteEditorPane;
   @Getter private final KeywordsTablePane keywordsTablePane;
 
   // Service-Area und Zustandsvariablen dazu
   @Getter private final BorderPane serviceArea;
+
+  /**
+   * -- GETTER --
+   *  Prüft, ob der rechte Arbeitsbereich aktuell eingeklappt ist.
+   */
   @Getter private boolean serviceAreaCollapsed;
-  private ServiceAreaMode activeServiceAreaMode;
+
+  /**
+   * -- GETTER --
+   *  Liefert den aktuell aktiven Modus der rechten Seitenleiste.
+   */
+  @Getter private ServiceAreaMode activeServiceAreaMode;
   private double[] expandedDividerPositions = new double[] {0.33, 0.66};
 
   public ZettelWindowView() {
@@ -129,7 +239,7 @@ public class ZettelWindowView {
 
     toolMenuFollowingPages.getItems().addAll(miFollowing, miIdea, miQuestion, miCritique, miTask);
 
-    // Spaver für die Toolbar
+    // Spacer für die Toolbar
     Region toolbarSpacer = new Region();
     HBox.setHgrow(toolbarSpacer, Priority.ALWAYS);
 
@@ -184,13 +294,204 @@ public class ZettelWindowView {
     serviceAreaContentHost.getStyleClass().add("zettel-right-content-host");
     serviceAreaContentHost.setPadding(new Insets(10));
 
+    magnifyLinkPane = new BorderPane();
+    magnifyLinkPane.getStyleClass().add("zettel-magnify-link-pane");
+
+    magnifyLinkToolBar = new ToolBar();
+    magnifyLinkToolBar.getStyleClass().add("zettel-magnify-link-toolbar");
+
+    magnifyLinkNoteIdField = new TextField();
+    magnifyLinkNoteIdField.getStyleClass().add("zettel-magnify-link-note-id-field");
+    magnifyLinkNoteIdField.setPromptText("Zettel");
+    magnifyLinkNoteIdField.setPrefColumnCount(7);
+    magnifyLinkNoteIdField.setPrefWidth(90);
+    magnifyLinkNoteIdField.setTextFormatter(new TextFormatter<String>(change -> {
+      String next = change.getControlNewText();
+      return next.matches("\\d*") ? change : null;
+    }));
+
+    magnifyLinkIncomingDepthSlider = createDepthSlider();
+    magnifyLinkOutgoingDepthSlider = createDepthSlider();
+    magnifyLinkDirectedTraversalButton =
+        createMagnifyLinkTypeToggleButton(BaseIcon.ARROW_INOUT, "gerichtete Verweise");
+    magnifyLinkDirectedTraversalButton.getStyleClass().add("zettel-magnify-link-direction-toggle");
+
+    magnifyLinkSerieButton = createMagnifyLinkTypeToggleButton(BaseIcon.PAGE_LINK, "Folgezettel");
+    magnifyLinkIdeaButton = createMagnifyLinkTypeToggleButton(BaseIcon.PAGE_BULB_ON, "Idee");
+    magnifyLinkQuestionButton = createMagnifyLinkTypeToggleButton(BaseIcon.QUESTION, "Frage");
+    magnifyLinkCritiqueButton = createMagnifyLinkTypeToggleButton(BaseIcon.PAGE_LIGHTNING, "Kritik");
+    magnifyLinkTaskButton = createMagnifyLinkTypeToggleButton(BaseIcon.PAGE_EDIT, "Aufgabe");
+
+    magnifyLinkFilterField = new TextField();
+    magnifyLinkFilterField.getStyleClass().add("zettel-magnify-link-filter-field");
+    magnifyLinkFilterField.setPromptText("Titel filtern");
+    magnifyLinkFilterField.setPrefWidth(150);
+
+    Label lblIncoming = new Label("Von:");
+    lblIncoming.getStyleClass().add("zettel-magnify-link-depth-label");
+    Label lblOutgoing = new Label("Zu:");
+    lblOutgoing.getStyleClass().add("zettel-magnify-link-depth-label");
+
+    Region magnifySpacer = new Region();
+    HBox.setHgrow(magnifySpacer, Priority.ALWAYS);
+
+    magnifyLinkToolBar.getItems().addAll(
+        magnifyLinkNoteIdField,
+        new Separator(Orientation.VERTICAL),
+        lblIncoming,
+        magnifyLinkIncomingDepthSlider,
+        lblOutgoing,
+        magnifyLinkOutgoingDepthSlider,
+        magnifyLinkDirectedTraversalButton,
+        new Separator(Orientation.VERTICAL),
+        magnifyLinkSerieButton,
+        magnifyLinkIdeaButton,
+        magnifyLinkQuestionButton,
+        magnifyLinkCritiqueButton,
+        magnifyLinkTaskButton,
+        magnifySpacer,
+        magnifyLinkFilterField
+    );
+
+    magnifyLinkStatusLabel = new Label();
+    magnifyLinkStatusLabel.getStyleClass().add("zettel-magnify-link-status");
+    magnifyLinkStatusLabel.setWrapText(false);
+
+    magnifyLinkListBox = new VBox(4);
+    magnifyLinkListBox.getStyleClass().add("zettel-magnify-link-list");
+    magnifyLinkListBox.setFillWidth(true);
+
+    ScrollPane magnifyScrollPane = new ScrollPane(magnifyLinkListBox);
+    magnifyScrollPane.setFitToWidth(true);
+    magnifyScrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+    magnifyScrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+    magnifyScrollPane.getStyleClass().add("zettel-magnify-link-scroll");
+
+    VBox magnifyCenter = new VBox(8, magnifyLinkStatusLabel, magnifyScrollPane);
+    magnifyCenter.getStyleClass().add("zettel-magnify-link-content");
+    VBox.setVgrow(magnifyScrollPane, Priority.ALWAYS);
+    magnifyCenter.setFillWidth(true);
+
+    magnifyLinkPane.setTop(magnifyLinkToolBar);
+    magnifyLinkPane.setCenter(magnifyCenter);
+
+    selectAllMagnifyLinkTypeButtons();
+
+    keyPane = new BorderPane();
+    keyPane.getStyleClass().add("zettel-key-pane");
+
+    keyToolBar = new ToolBar();
+    keyToolBar.getStyleClass().add("zettel-key-toolbar");
+
+    keyFilterField = new TextField();
+    keyFilterField.getStyleClass().add("zettel-key-filter-field");
+    keyFilterField.setPromptText("Schlagwörter suchen");
+    keyFilterField.setPrefWidth(170);
+
+    keyKeepField = new TextField();
+    keyKeepField.getStyleClass().add("zettel-key-keep-field");
+    keyKeepField.setPromptText("Beibehalten");
+
+    keyReplaceField = new ComboBox<>();
+    keyReplaceField.getStyleClass().add("zettel-key-replace-field");
+    keyReplaceField.setEditable(true);
+    keyReplaceField.setPromptText("Ersetzen");
+    keyReplaceField.setMaxWidth(Double.MAX_VALUE);
+    keyReplaceField.setConverter(new StringConverter<>() {
+      @Override
+      public String toString(String object) {
+        return object == null ? "" : object;
+      }
+
+      @Override
+      public String fromString(String string) {
+        return string == null ? "" : string;
+      }
+    });
+
+    keyReplaceButton = BaseIcon.BULLET_GO.button("Ersetzen");
+    keyReplaceButton.getStyleClass().add("zettel-key-replace-button");
+
+    Region keySpacer = new Region();
+    HBox.setHgrow(keySpacer, Priority.ALWAYS);
+
+    keyToolBar.getItems().addAll(
+        keyFilterField,
+        new Separator(Orientation.VERTICAL),
+        keyKeepField,
+        keyReplaceButton,
+        keyReplaceField
+    );
+
+    keyStatusLabel = new Label();
+    keyStatusLabel.getStyleClass().add("zettel-key-status");
+
+    keyTable = new TableView<>();
+    keyTable.getStyleClass().add("zettel-key-table");
+    keyTable.setEditable(true);
+    keyTable.getSelectionModel().setCellSelectionEnabled(true);
+    keyTable.getSelectionModel().setSelectionMode(SelectionMode.SINGLE);
+    keyTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+
+    keyKeywordColumn = new TableColumn<>("Schlagwort");
+    keyKeywordColumn.setId("keyword");
+    keyKeywordColumn.setEditable(true);
+    keyKeywordColumn.setSortable(true);
+    keyKeywordColumn.setCellValueFactory(cellData ->
+                                             new ReadOnlyStringWrapper(cellData.getValue().getKeyword())
+    );
+    keyKeywordColumn.setCellFactory(col -> new KeyEditingTableCell());
+
+    keyCountColumn = new TableColumn<>("Häufigkeit");
+    keyCountColumn.setId("count");
+    keyCountColumn.setSortable(true);
+    keyCountColumn.setStyle("-fx-alignment: CENTER-RIGHT;");
+    keyCountColumn.setCellValueFactory(cellData ->
+                                           new ReadOnlyIntegerWrapper(cellData.getValue().getCount())
+    );
+
+    keyTable.getColumns().addAll(keyKeywordColumn, keyCountColumn);
+
+    keyTable.setRowFactory(table -> {
+      TableRow<KeyTableRow> row = new TableRow<>();
+      row.addEventFilter(MouseEvent.MOUSE_PRESSED, event -> {
+        if (event.getButton() != MouseButton.PRIMARY || row.isEmpty()) {
+          return;
+        }
+
+        Node target = event.getPickResult().getIntersectedNode();
+        while (target != null && target != row) {
+          if (target instanceof TableCell<?, ?> cell) {
+            if (cell.getTableColumn() == keyKeywordColumn) {
+              KeyTableRow item = row.getItem();
+              setKeyKeepKeyword(item.getKeyword());
+              Platform.runLater(() -> {
+                keyTable.getSelectionModel().clearAndSelect(row.getIndex(), keyKeywordColumn);
+                keyTable.edit(row.getIndex(), keyKeywordColumn);
+              });
+              break;
+            }
+          }
+          target = target.getParent();
+        }
+      });
+      return row;
+    });
+
+    VBox keyCenter = new VBox(8, keyStatusLabel, keyTable);
+    keyCenter.getStyleClass().add("zettel-key-content");
+    VBox.setVgrow(keyTable, Priority.ALWAYS);
+
+    keyPane.setTop(keyToolBar);
+    keyPane.setCenter(keyCenter);
+
     serviceArea.setTop(serviceAreaToolBar);
     serviceArea.setCenter(serviceAreaContentHost);
 
     workAreaSplitPane.getItems().addAll(noteEditorPane, keywordsTablePane, serviceArea);
     root.setCenter(workAreaSplitPane);
 
-    setServiceAreaContent(createModePlaceholder(ServiceAreaMode.MAGNIFY_LINK));
+    setServiceAreaContent(magnifyLinkPane);
     setActiveServiceAreaMode(ServiceAreaMode.MAGNIFY_LINK);
     updateServiceAreaToggleButton();
   }
@@ -247,15 +548,6 @@ public class ZettelWindowView {
   }
 
   /**
-   * Liefert den aktuell aktiven Modus der rechten Seitenleiste.
-   *
-   * @return aktiver Modus oder {@code null}
-   */
-  public ServiceAreaMode getActiveServiceAreaMode() {
-    return activeServiceAreaMode;
-  }
-
-  /**
    * Klappt den rechten Arbeitsbereich weg oder wieder auf.
    *
    * @param collapsed {@code true}, wenn der rechte Bereich verborgen werden soll
@@ -304,15 +596,6 @@ public class ZettelWindowView {
   }
 
   /**
-   * Prüft, ob der rechte Arbeitsbereich aktuell eingeklappt ist.
-   *
-   * @return {@code true}, wenn der rechte Bereich ausgeblendet ist
-   */
-  public boolean isServiceAreaCollapsed() {
-    return serviceAreaCollapsed;
-  }
-
-  /**
    * Aktualisiert Icon und Tooltip des Buttons zum Ein- und Ausklappen
    * des rechten Arbeitsbereichs.
    */
@@ -349,5 +632,374 @@ public class ZettelWindowView {
     pane.setPadding(new Insets(12));
     pane.setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE);
     return pane;
+  }
+
+  /**
+   * Erzeugt einen Tiefen-Slider für das Verweisfenster.
+   *
+   * @return konfigurierter Slider mit Werten von 0 bis 4
+   */
+  private Slider createDepthSlider() {
+    Slider slider = new Slider(0, 8, 0);
+    slider.getStyleClass().add("zettel-magnify-link-depth-slider");
+    slider.setMinWidth(90);
+    slider.setPrefWidth(90);
+    slider.setMaxWidth(90);
+    slider.setMajorTickUnit(2);
+    slider.setMinorTickCount(1);
+    slider.setSnapToTicks(true);
+    slider.setShowTickMarks(true);
+    slider.setShowTickLabels(true);
+    slider.setFocusTraversable(false);
+    return slider;
+  }
+
+  /**
+   * Erzeugt einen Toggle-Button für die LinkType-Filter der MAGNIFY_LINK-Toolbar.
+   *
+   * @param icon Icon des Linktyps
+   * @param tooltip Tooltiptext
+   * @return konfigurierter Toggle-Button
+   */
+  private ToggleButton createMagnifyLinkTypeToggleButton(BaseIcon icon, String tooltip) {
+    ToggleButton button = new ToggleButton();
+    button.getStyleClass().addAll("icon-button", "zettel-magnify-link-type-toggle");
+    button.setGraphic(icon.imageView());
+    button.setTooltip(new Tooltip(tooltip));
+    button.setFocusTraversable(false);
+    button.setMinWidth(34);
+    button.setPrefWidth(34);
+    button.setMinHeight(30);
+    button.setPrefHeight(30);
+    return button;
+  }
+
+  /**
+   * Setzt alle LinkType-Filter des Verweisfensters auf aktiv.
+   */
+  public void selectAllMagnifyLinkTypeButtons() {
+    magnifyLinkSerieButton.setSelected(true);
+    magnifyLinkIdeaButton.setSelected(true);
+    magnifyLinkQuestionButton.setSelected(true);
+    magnifyLinkCritiqueButton.setSelected(true);
+    magnifyLinkTaskButton.setSelected(true);
+  }
+
+  /**
+   * Leert die Verweisliste und setzt eine Statusmeldung.
+   *
+   * @param statusText anzuzeigende Statusmeldung
+   */
+  public void showMagnifyLinkStatus(String statusText) {
+    magnifyLinkStatusLabel.setText(statusText == null ? "" : statusText);
+    magnifyLinkListBox.getChildren().clear();
+  }
+
+  /**
+   * Setzt den Inhalt der Verweisliste neu.
+   *
+   * @param statusText Statusmeldung oberhalb der Liste
+   * @param rows darzustellende Zeilen
+   */
+  public void setMagnifyLinkRows(String statusText, List<? extends Node> rows) {
+    magnifyLinkStatusLabel.setText(statusText == null ? "" : statusText);
+    magnifyLinkListBox.getChildren().setAll(rows);
+  }
+
+  /**
+   * Setzt die Tabellenzeilen des KEY-Fensters neu.
+   *
+   * @param rows neue Tabellenzeilen
+   */
+  public void setKeyRows(List<KeyTableRow> rows) {
+    ObservableList<KeyTableRow> items = FXCollections.observableArrayList(rows);
+    keyTable.setItems(items);
+  }
+
+  /**
+   * Setzt den Bestandsstatus des KEY-Fensters neu.
+   * Dieser wird nur angezeigt, wenn aktuell kein Aktionsstatus aktiv ist.
+   *
+   * @param text Bestandsstatus
+   */
+  public void setKeyInventoryStatus(String text) {
+    keyInventoryStatusText = text == null ? "" : text;
+    refreshKeyStatusLabel();
+  }
+
+  /**
+   * Setzt einen Aktionsstatus für das KEY-Fenster.
+   *
+   * @param text Meldungstext
+   * @param type Typ der Meldung
+   */
+  public void setKeyActionStatus(String text, KeyStatusType type) {
+    keyActionStatusText = text == null ? "" : text;
+    keyActionStatusType = type == null ? KeyStatusType.INFO : type;
+    refreshKeyStatusLabel();
+  }
+
+  /**
+   * Löscht den Aktionsstatus des KEY-Fensters und zeigt wieder den Bestandsstatus.
+   */
+  public void clearKeyActionStatus() {
+    keyActionStatusText = "";
+    keyActionStatusType = KeyStatusType.INFO;
+    refreshKeyStatusLabel();
+  }
+
+  /**
+   * Aktualisiert das Statuslabel des KEY-Fensters gemäß Bestands- und Aktionsstatus.
+   */
+  private void refreshKeyStatusLabel() {
+    keyStatusLabel.getStyleClass().removeAll(
+        "zettel-key-status-info",
+        "zettel-key-status-success",
+        "zettel-key-status-warning",
+        "zettel-key-status-error"
+    );
+
+    if (!keyActionStatusText.isBlank()) {
+      keyStatusLabel.setText(keyActionStatusText);
+
+      String styleClass = switch (keyActionStatusType) {
+        case SUCCESS -> "zettel-key-status-success";
+        case WARNING -> "zettel-key-status-warning";
+        case ERROR -> "zettel-key-status-error";
+        case INFO -> "zettel-key-status-info";
+      };
+      keyStatusLabel.getStyleClass().add(styleClass);
+      return;
+    }
+
+    keyStatusLabel.setText(keyInventoryStatusText);
+    keyStatusLabel.getStyleClass().add("zettel-key-status-info");
+  }
+
+  /**
+   * Setzt die Vorschläge für das zweite Eingabefeld.
+   *
+   * @param suggestions Vorschlagsliste
+   */
+  public void setKeyReplaceSuggestions(List<String> suggestions) {
+    keyReplaceField.getItems().setAll(suggestions);
+  }
+
+  /**
+   * Öffnet das Vorschlags-Dropdown des zweiten Feldes, wenn Einträge vorhanden sind.
+   */
+  public void showKeyReplaceSuggestions() {
+    if (!keyReplaceField.getItems().isEmpty()) {
+      keyReplaceField.show();
+    }
+  }
+
+  /**
+   * Blendet das Vorschlags-Dropdown des zweiten Feldes aus.
+   */
+  public void hideKeyReplaceSuggestions() {
+    keyReplaceField.hide();
+  }
+
+  /**
+   * Füllt das erste Eingabefeld für die Ersetzungslogik.
+   *
+   * @param keyword Schlagworttext
+   */
+  public void setKeyKeepKeyword(String keyword) {
+    keyKeepField.setText(keyword == null ? "" : keyword);
+  }
+
+  /**
+   * Öffnet die Bearbeitung einer Tabellenzeile erneut und setzt dabei einen
+   * vorgegebenen Bearbeitungstext.
+   *
+   * @param keywordId ID der Zeile
+   * @param editText Text, der im Editmodus sichtbar bleiben soll
+   */
+  public void reopenKeyKeywordEdit(int keywordId, String editText) {
+    int rowIndex = findKeyRowIndex(keywordId);
+    if (rowIndex < 0) {
+      return;
+    }
+
+    pendingKeyEditRowId = keywordId;
+    pendingKeyEditText = editText == null ? "" : editText;
+
+    keyTable.getSelectionModel().clearAndSelect(rowIndex, keyKeywordColumn);
+    keyTable.scrollTo(rowIndex);
+
+    Platform.runLater(() -> keyTable.edit(rowIndex, keyKeywordColumn));
+  }
+
+  /**
+   * Ermittelt den Tabellenindex zu einer Schlagwort-ID.
+   *
+   * @param keywordId Schlagwort-ID
+   * @return Zeilenindex oder {@code -1}
+   */
+  private int findKeyRowIndex(int keywordId) {
+    ObservableList<KeyTableRow> items = keyTable.getItems();
+    for (int i = 0; i < items.size(); i++) {
+      if (items.get(i).getKeywordId() == keywordId) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * Tabellenzelle für Inline-Bearbeitung der Schlagwortspalte.
+   */
+  private final class KeyEditingTableCell extends TableCell<KeyTableRow, String> {
+    private TextField textField;
+
+    @Override
+    public void startEdit() {
+      if (isEmpty()) {
+        return;
+      }
+      super.startEdit();
+
+      if (textField == null) {
+        textField = new TextField(getItem());
+        textField.getStyleClass().add("zettel-key-inline-editor");
+
+        textField.setOnAction(e -> commitOrReject());
+
+        textField.focusedProperty().addListener((obs, oldValue, newValue) -> {
+          if (oldValue && !newValue) {
+            commitOrReject();
+          }
+        });
+      }
+
+      String startValue = getItem();
+      KeyTableRow row = getTableRow() == null ? null : getTableRow().getItem();
+      if (row != null && pendingKeyEditRowId != null && pendingKeyEditRowId == row.getKeywordId()) {
+        startValue = pendingKeyEditText == null ? row.getKeyword() : pendingKeyEditText;
+        pendingKeyEditRowId = null;
+        pendingKeyEditText = null;
+      }
+
+      textField.setText(startValue == null ? "" : startValue);
+      setText(null);
+      setGraphic(textField);
+
+      Platform.runLater(() -> {
+        textField.requestFocus();
+        textField.selectAll();
+      });
+    }
+
+    @Override
+    public void cancelEdit() {
+      super.cancelEdit();
+      setText(getItem());
+      setGraphic(null);
+    }
+
+    @Override
+    protected void updateItem(String item, boolean empty) {
+      super.updateItem(item, empty);
+
+      if (empty) {
+        setText(null);
+        setGraphic(null);
+        return;
+      }
+
+      if (isEditing() && textField != null) {
+        setText(null);
+        setGraphic(textField);
+      } else {
+        setText(item);
+        setGraphic(null);
+      }
+    }
+
+    private void commitOrReject() {
+      if (!isEditing()) {
+        return;
+      }
+
+      KeyTableRow row = getTableRow() == null ? null : getTableRow().getItem();
+      if (row == null || keyKeywordEditCommitHandler == null) {
+        cancelEdit();
+        return;
+      }
+
+      String newValue = textField.getText();
+      boolean accepted = keyKeywordEditCommitHandler.handleCommit(row, newValue);
+
+      if (accepted) {
+        super.commitEdit(newValue);
+      } else {
+        Platform.runLater(() -> reopenKeyKeywordEdit(row.getKeywordId(), newValue));
+      }
+    }
+  }
+
+  /**
+   * Liest den aktuell sichtbaren primären Sortierzustand der KEY-Tabelle aus.
+   * Diese Methode muss vor einem Daten-Refresh aufgerufen werden, solange die
+   * Tabelle ihren Sortierzustand noch besitzt.
+   *
+   * @return Sortierzustand oder {@code null}, wenn aktuell nicht sortiert wird
+   */
+  public KeyTableSortState snapshotKeyTableSortState() {
+    if (keyTable.getSortOrder().isEmpty()) {
+      return null;
+    }
+
+    TableColumn<KeyTableRow, ?> column = keyTable.getSortOrder().get(0);
+    if (column == null || column.getId() == null || column.getSortType() == null) {
+      return null;
+    }
+
+    return new KeyTableSortState(column.getId(), column.getSortType());
+  }
+
+  /**
+   * Stellt einen zuvor gesicherten primären Sortierzustand der KEY-Tabelle
+   * nach einem Refresh wieder her.
+   *
+   * @param state zuvor gesicherter Sortierzustand; {@code null} bedeutet:
+   *              keine explizite Sortierung wiederherstellen
+   */
+  public void restoreKeyTableSortState(KeyTableSortState state) {
+    keyTable.getSortOrder().clear();
+
+    if (state == null || state.columnId() == null || state.sortType() == null) {
+      return;
+    }
+
+    TableColumn<KeyTableRow, ?> column = findKeySortColumnById(state.columnId());
+    if (column == null) {
+      return;
+    }
+
+    column.setSortType(state.sortType());
+    keyTable.getSortOrder().add(column);
+    keyTable.sort();
+  }
+
+  /**
+   * Findet eine KEY-Spalte anhand ihrer ID.
+   *
+   * @param columnId ID der Spalte
+   * @return gefundene Spalte oder {@code null}
+   */
+  private TableColumn<KeyTableRow, ?> findKeySortColumnById(String columnId) {
+    if (columnId == null || columnId.isBlank()) {
+      return null;
+    }
+
+    for (TableColumn<KeyTableRow, ?> column : keyTable.getColumns()) {
+      if (columnId.equals(column.getId())) {
+        return column;
+      }
+    }
+    return null;
   }
 }

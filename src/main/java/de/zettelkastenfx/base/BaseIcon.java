@@ -13,6 +13,12 @@ public enum BaseIcon {
 
   ADD("add", "Hinzufügen"),
 
+  ARROW_IN("arrow_in", "Inwärts"),
+  ARROW_INOUT("arrow_inout", "In-/Auswärts"),
+  ARROW_OUT("arrow_out", "Auswärts"),
+
+  ARROW_RIGHT("arrow_right", "Nach rechts"),
+
   ARROW_REFRESH("arrow_refresh", "Aktualisieren"),
 
   BOOK("book", "Bibliografie"),
@@ -20,8 +26,10 @@ public enum BaseIcon {
   BOOK_DELETE("book_delete", "Buch löschen"),
   BOOK_EDIT("book_edit", "Buch editieren"),
 
+  BULLET_ARROW_DOWN("bullet_arrow_down", "Hoch"),
   BULLET_ARROW_LEFT("bullet_arrow_left", "Zurück"),
   BULLET_ARROW_RIGHT("bullet_arrow_right", "Vor"),
+  BULLET_ARROW_UP("bullet_arrow_up", "Runter"),
   BULLET_GO("bullet_go", "Weiter"),
   BULLET_GREEN("bullet_green", "geöffnet"),
   BULLET_RED("bullet_red", "gesperrt"),

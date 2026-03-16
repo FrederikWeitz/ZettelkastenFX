@@ -283,8 +283,209 @@
 .note-info-value, .note-info-link { -fx-text-fill: white; }
 .note-info-muted { -fx-text-fill: #9a9a9a; }
 
+/* KEY */
+.zettel-key-content {
+    -fx-fill-width: true;
+}
+
+.zettel-key-filter-field {
+    -fx-pref-width: 170;
+}
+
+.zettel-key-keep-field {
+    -fx-pref-width: 140;
+}
+
+.zettel-key-replace-field {
+    -fx-pref-width: 180;
+}
+
+.zettel-key-replace-button {
+    -fx-min-width: 34;
+    -fx-pref-width: 34;
+    -fx-min-height: 30;
+    -fx-pref-height: 30;
+}
+
+.zettel-key-status {
+    -fx-font-size: 12px;
+    -fx-text-fill: -fx-text-inner-color;
+}
+
+.zettel-key-table .column-header {
+    -fx-cursor: hand;
+}
+
+.zettel-key-inline-editor {
+    -fx-padding: 2 4 2 4;
+}
+
+.zettel-key-status-info {
+    -fx-text-fill: -fx-text-inner-color;
+}
+
+.zettel-key-status-success {
+    -fx-text-fill: #2e7d32;
+}
+
+.zettel-key-status-warning {
+    -fx-text-fill: #a66a00;
+}
+
+.zettel-key-status-error {
+    -fx-text-fill: #b3261e;
+}
+
+/* Link-Edit-Popup */
+.zettel-link-edit-popup {
+    -fx-background-color: -fx-control-inner-background;
+    -fx-border-color: -fx-box-border;
+    -fx-border-width: 1;
+    -fx-background-radius: 10;
+    -fx-border-radius: 10;
+    -fx-effect: dropshadow(gaussian, rgba(0,0,0,0.18), 18, 0.18, 0, 4);
+}
+
+.zettel-link-edit-heading {
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+}
+
+.zettel-link-edit-title-bar {
+    -fx-alignment: center-left;
+    -fx-cursor: hand;
+    -fx-padding: 0 0 2 0;
+}
+
+.zettel-link-edit-row {
+    -fx-alignment: center-left;
+}
+
+.zettel-link-edit-meta-row {
+    -fx-alignment: center-left;
+}
+
+.zettel-link-edit-toggle-row {
+    -fx-alignment: center-left;
+}
+
+.zettel-link-edit-title {
+    -fx-font-size: 12px;
+    -fx-font-weight: bold;
+}
+
+.zettel-link-edit-status {
+    -fx-font-size: 12px;
+}
+
+.zettel-link-edit-status-neutral {
+    -fx-text-fill: -fx-text-inner-color;
+}
+
+.zettel-link-edit-status-warning {
+    -fx-text-fill: #8a6d3b;
+}
+
+.zettel-link-edit-status-error {
+    -fx-text-fill: #b94a48;
+}
+
+.zettel-link-type-toggle {
+    -fx-background-radius: 6;
+}
+
+/* MAGNIFY_LINK */
+.zettel-magnify-link-content {
+    -fx-fill-width: true;
+}
+
+.zettel-magnify-link-note-id-field {
+    -fx-pref-width: 90;
+}
+
+.zettel-magnify-link-filter-field {
+    -fx-pref-width: 150;
+}
+
+.zettel-magnify-link-depth-label {
+    -fx-font-size: 12px;
+}
+
+.zettel-magnify-link-depth-slider {
+    -fx-pref-width: 90;
+}
+
+.zettel-magnify-link-direction-toggle {
+    -fx-background-radius: 6;
+}
+
+.zettel-magnify-link-type-toggle {
+    -fx-background-radius: 6;
+}
+
+.zettel-magnify-link-row-button {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+    -fx-background-radius: 0;
+    -fx-border-color: transparent;
+    -fx-border-width: 0;
+    -fx-alignment: center-left;
+    -fx-padding: 2 6 2 0;
+}
+
+.zettel-magnify-link-row-button:hover {
+    -fx-background-color: rgba(0,0,0,0.05);
+}
+
+.zettel-magnify-link-row-button:pressed {
+    -fx-background-color: rgba(0,0,0,0.09);
+}
+
+.zettel-magnify-link-row-graphic {
+    -fx-alignment: center-left;
+}
+
+.zettel-magnify-link-row-label {
+    -fx-text-overrun: ellipsis;
+}
+
+.zettel-magnify-link-indent-region {
+    -fx-min-width: 0;
+}
+
 .zettel-root {
     -fx-background-color: -fx-background;
+}
+
+.zettel-magnify-link-static-icon {
+    -fx-alignment: center-left;
+    -fx-content-display: graphic-only;
+}
+
+.zettel-magnify-link-branch-button {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+    -fx-background-radius: 0;
+    -fx-border-color: transparent;
+    -fx-border-width: 0;
+    -fx-padding: 0;
+    -fx-alignment: center-left;
+}
+
+.zettel-magnify-link-branch-button-expandable {
+    -fx-cursor: hand;
+}
+
+.zettel-magnify-link-branch-button-expandable:hover {
+    -fx-background-color: rgba(0,0,0,0.05);
+}
+
+.zettel-magnify-link-branch-button-expandable:pressed {
+    -fx-background-color: rgba(0,0,0,0.09);
+}
+
+.zettel-magnify-link-branch-button-static {
+    -fx-opacity: 1.0;
 }
 
 .zettel-top-area {

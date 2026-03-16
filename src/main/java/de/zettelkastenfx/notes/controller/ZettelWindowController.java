@@ -14,12 +14,14 @@ import de.zettelkastenfx.notes.editor.NoteEditorPane;
 import de.zettelkastenfx.notes.editor.format.InlineCssStyleUtil;
 import de.zettelkastenfx.notes.model.*;
 import de.zettelkastenfx.persistence.NoteRepository;
+import de.zettelkastenfx.notes.controller.ZettelWindowView.KeyTableRow;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.*;
 import javafx.stage.Popup;
@@ -64,6 +66,8 @@ public class ZettelWindowController {
   // Popup zum manuellen Bearbeiten von Verweisen
   private final Popup linkEditPopup = new Popup();
   private final VBox linkEditRoot = new VBox(10);
+  private double linkEditPopupDragOffsetX; // für das Drag des Popups
+  private double linkEditPopupDragOffsetY; // für das Drag des Popups
 
   private TextField linkEditNoteIdField;
   private Label linkEditTitleLabel;
@@ -77,6 +81,16 @@ public class ZettelWindowController {
   private ToggleButton linkEditTaskButton;
 
   private boolean updatingLinkEditUi;
+  private enum LinkEditStatusTone {
+    NEUTRAL,
+    WARNING,
+    ERROR
+  }
+
+  private final Set<String> collapsedMagnifyIncomingBranches = new HashSet<>();
+  private final Set<String> collapsedMagnifyOutgoingBranches = new HashSet<>();
+  private Integer lastMagnifyRenderedSourceNoteId;
+  private record MagnifyBranchReference(NoteReferenceInfo reference, boolean incoming) {}
 
   public ZettelWindowController(Stage stage, ZettelWindowView view) {
     this.stage = stage;
@@ -94,6 +108,7 @@ public class ZettelWindowController {
   public void applyInitialState() {
     // Startlayout: drei Bereiche ungefähr gleich
     Platform.runLater(() -> view.getWorkAreaSplitPane().setDividerPositions(0.33, 0.66));
+    syncMagnifyLinkSourceNoteFromCurrentNote();
     refreshServiceAreaForCurrentState();
   }
 
@@ -112,12 +127,16 @@ public class ZettelWindowController {
     view.getToolButtonLinkEdit().setOnAction(event -> toggleLinkEditPopup());
     view.getToolButtonToggleServiceArea().setOnAction(event -> toggleServiceArea());
 
-
+    // Toolbar: Service-Fenster
     view.getServiceAreaMagnifyLinkButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.MAGNIFY_LINK));
     view.getServiceAreaKeyButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.KEY));
     view.getServiceAreaBookButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.BOOK));
     view.getServiceAreaListButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.LIST));
     view.getServiceAreaClusterButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.PERFORMANCE_ANALYSIS));
+
+    // Verdrahtet Service-Fenster-Inhalte
+    wireMagnifyLinkEvents();
+    wireKeyEvents();
 
     // Dropdown für Folgezettel
     view.getMiFollowing().setOnAction(e -> createTypedFollowUpNote(LinkType.SERIE));
@@ -134,8 +153,14 @@ public class ZettelWindowController {
     view.getMenuFile().getItems().getLast().setOnAction(event -> stage.close());
 
     view.getKeywordsTablePane().setOnKeywordsCommitted(() -> {
-      saveCurrentIfValid();   // erst persistieren
-      refreshKeywordCounts(); // dann counts aktualisieren
+      saveCurrentIfValid();
+
+      if (currentNote != null) {
+        view.getKeywordsTablePane().setKeywords(currentNote.getKeywords());
+      }
+
+      refreshKeywordViews();
+      view.clearKeyActionStatus();
     });
 
     wireBottomToolbar();
@@ -146,6 +171,31 @@ public class ZettelWindowController {
       linkEditPopup.hide();
       saveOrDiscardCurrentNoteBeforeLeave();
     });
+  }
+
+  /**
+   * Verdrahtet die Bedienelemente des integrierten MAGNIFY_LINK-Fensters.
+   */
+  private void wireMagnifyLinkEvents() {
+    view.getMagnifyLinkNoteIdField().setOnAction(e -> refreshMagnifyLinkWindow());
+
+    view.getMagnifyLinkNoteIdField().focusedProperty().addListener((obs, oldValue, newValue) -> {
+      if (oldValue && !newValue) {
+        refreshMagnifyLinkWindow();
+      }
+    });
+
+    view.getMagnifyLinkIncomingDepthSlider().valueProperty().addListener((obs, oldValue, newValue) -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkOutgoingDepthSlider().valueProperty().addListener((obs, oldValue, newValue) -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkDirectedTraversalButton().setOnAction(e -> refreshMagnifyLinkWindow());
+
+    view.getMagnifyLinkSerieButton().setOnAction(e -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkIdeaButton().setOnAction(e -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkQuestionButton().setOnAction(e -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkCritiqueButton().setOnAction(e -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkTaskButton().setOnAction(e -> refreshMagnifyLinkWindow());
+
+    view.getMagnifyLinkFilterField().textProperty().addListener((obs, oldValue, newValue) -> refreshMagnifyLinkWindow());
   }
 
   private void wireTitleEditing(NoteEditorPane editor) {
@@ -334,14 +384,7 @@ public class ZettelWindowController {
     linkEditRoot.setPrefWidth(460);
     linkEditRoot.setMinWidth(460);
     linkEditRoot.setMaxWidth(460);
-    linkEditRoot.setStyle(
-        "-fx-background-color: -fx-control-inner-background;" +
-            "-fx-border-color: -fx-box-border;" +
-            "-fx-border-width: 1;" +
-            "-fx-background-radius: 10;" +
-            "-fx-border-radius: 10;" +
-            "-fx-effect: dropshadow(gaussian, rgba(0,0,0,0.18), 18, 0.18, 0, 4);"
-    );
+    linkEditRoot.getStyleClass().add("zettel-link-edit-popup");
 
     linkEditPopup.setAutoHide(false);
     linkEditPopup.getContent().setAll(linkEditRoot);
@@ -354,14 +397,21 @@ public class ZettelWindowController {
    */
   private void buildLinkEditPopupContent() {
     Label heading = new Label("Verweise anlegen und entfernen");
-    heading.setStyle(
-        "-fx-font-size: 14px;" +
-            "-fx-font-weight: bold;"
-    );
+    heading.getStyleClass().add("zettel-link-edit-heading");
+
+    Region headingSpacer = new Region();
+    HBox.setHgrow(headingSpacer, Priority.ALWAYS);
+
+    HBox titleBar = new HBox(8, heading, headingSpacer);
+    titleBar.getStyleClass().add("zettel-link-edit-title-bar");
+    titleBar.setAlignment(Pos.CENTER_LEFT);
+
+    enableLinkEditPopupDragging(titleBar);
 
     Separator separator = new Separator();
 
     HBox row1 = new HBox(6);
+    row1.getStyleClass().add("zettel-link-edit-row");
     row1.setAlignment(Pos.CENTER_LEFT);
 
     linkEditNoteIdField = new TextField();
@@ -373,6 +423,17 @@ public class ZettelWindowController {
       return next.matches("\\d*") ? change : null;
     }));
     linkEditNoteIdField.textProperty().addListener((obs, oldValue, newValue) -> refreshLinkEditSelectionState());
+    linkEditNoteIdField.addEventFilter(KeyEvent.KEY_PRESSED, event -> {
+      if (event.getCode() == KeyCode.ENTER) {
+        refreshLinkEditSelectionState();
+        event.consume();
+      }
+    });
+    linkEditNoteIdField.addEventFilter(KeyEvent.KEY_RELEASED, event -> {
+      if (event.getCode() == KeyCode.ENTER) {
+        event.consume();
+      }
+    });
 
     Button btnPrev = BaseIcon.BULLET_ARROW_LEFT.button();
     Button btnNext = BaseIcon.BULLET_ARROW_RIGHT.button();
@@ -406,25 +467,27 @@ public class ZettelWindowController {
     );
 
     HBox row2 = new HBox(8);
+    row2.getStyleClass().add("zettel-link-edit-meta-row");
     row2.setAlignment(Pos.CENTER_LEFT);
     row2.setPadding(new Insets(2, 0, 2, 0));
 
     linkEditTitleLabel = new Label("—");
+    linkEditTitleLabel.getStyleClass().add("zettel-link-edit-title");
     linkEditTitleLabel.setWrapText(false);
     linkEditTitleLabel.setMaxWidth(Double.MAX_VALUE);
     linkEditTitleLabel.setEllipsisString("…");
-    linkEditTitleLabel.setStyle(
-        "-fx-font-size: 12px;" +
-            "-fx-font-weight: bold;"
-    );
     HBox.setHgrow(linkEditTitleLabel, Priority.ALWAYS);
 
     linkEditStatusLabel = new Label("");
-    linkEditStatusLabel.setStyle("-fx-text-fill: -fx-text-inner-color;");
+    linkEditStatusLabel.getStyleClass().addAll(
+        "zettel-link-edit-status",
+        "zettel-link-edit-status-neutral"
+    );
 
     row2.getChildren().addAll(linkEditTitleLabel, linkEditStatusLabel);
 
     HBox row3 = new HBox(6);
+    row3.getStyleClass().add("zettel-link-edit-toggle-row");
     row3.setAlignment(Pos.CENTER_LEFT);
     row3.setPadding(new Insets(4, 0, 0, 0));
 
@@ -444,7 +507,33 @@ public class ZettelWindowController {
         linkEditTaskButton
     );
 
-    linkEditRoot.getChildren().setAll(heading, separator, row1, row2, row3);
+    linkEditRoot.getChildren().setAll(titleBar, separator, row1, row2, row3);
+  }
+
+  /**
+   * Macht die Titelzeile des Link-Edit-Popups zum Drag-Bereich.
+   * Das Popup kann dadurch per Maus über die Titelzeile verschoben werden.
+   *
+   * @param dragHandle Knoten, über den das Popup verschoben werden soll
+   */
+  private void enableLinkEditPopupDragging(Node dragHandle) {
+    if (dragHandle == null) {
+      return;
+    }
+
+    dragHandle.setOnMousePressed(event -> {
+      linkEditPopupDragOffsetX = event.getScreenX() - linkEditPopup.getX();
+      linkEditPopupDragOffsetY = event.getScreenY() - linkEditPopup.getY();
+    });
+
+    dragHandle.setOnMouseDragged(event -> {
+      if (!linkEditPopup.isShowing()) {
+        return;
+      }
+
+      linkEditPopup.setX(event.getScreenX() - linkEditPopupDragOffsetX);
+      linkEditPopup.setY(event.getScreenY() - linkEditPopupDragOffsetY);
+    });
   }
 
   /**
@@ -461,7 +550,7 @@ public class ZettelWindowController {
                                                   LinkType linkType,
                                                   ToggleGroup group) {
     ToggleButton button = new ToggleButton();
-    button.getStyleClass().add("icon-button");
+    button.getStyleClass().addAll("icon-button", "zettel-link-type-toggle");
     button.setGraphic(icon.imageView());
     button.setTooltip(new Tooltip(tooltip));
     button.setFocusTraversable(false);
@@ -470,7 +559,6 @@ public class ZettelWindowController {
     button.setPrefWidth(34);
     button.setMinHeight(30);
     button.setPrefHeight(30);
-    button.setStyle("-fx-background-radius: 6;");
     button.setOnAction(e -> handleLinkTypeToggle(linkType, button.isSelected()));
     return button;
   }
@@ -561,8 +649,7 @@ public class ZettelWindowController {
     Integer selectedNoteId = parseLinkEditSelectedNoteId();
     if (selectedNoteId == null || selectedNoteId <= 0) {
       linkEditTitleLabel.setText("—");
-      linkEditStatusLabel.setText("Zettelnummer eingeben");
-      linkEditStatusLabel.setStyle("-fx-text-fill: #8a6d3b;");
+      setLinkEditStatus("Zettelnummer eingeben", LinkEditStatusTone.WARNING);
       selectLinkTypeToggle(null);
       setLinkTypeButtonsDisabled(true);
       if (linkEditReverseButton != null) {
@@ -574,8 +661,7 @@ public class ZettelWindowController {
     boolean exists = noteRepository.existsNote(selectedNoteId);
     if (!exists) {
       linkEditTitleLabel.setText("—");
-      linkEditStatusLabel.setText("Zettel existiert nicht");
-      linkEditStatusLabel.setStyle("-fx-text-fill: #b94a48;");
+      setLinkEditStatus("Zettel existiert nicht", LinkEditStatusTone.ERROR);
       selectLinkTypeToggle(null);
       setLinkTypeButtonsDisabled(true);
       if (linkEditReverseButton != null) {
@@ -588,8 +674,7 @@ public class ZettelWindowController {
     linkEditTitleLabel.setText(title.isBlank() ? "—" : title);
 
     if (currentNote != null && currentNote.getId() > 0 && selectedNoteId == currentNote.getId()) {
-      linkEditStatusLabel.setText("Selbstverweis ist nicht erlaubt");
-      linkEditStatusLabel.setStyle("-fx-text-fill: #b94a48;");
+      setLinkEditStatus("Selbstverweis ist nicht erlaubt", LinkEditStatusTone.ERROR);
       selectLinkTypeToggle(null);
       setLinkTypeButtonsDisabled(true);
       if (linkEditReverseButton != null) {
@@ -598,8 +683,17 @@ public class ZettelWindowController {
       return;
     }
 
-    linkEditStatusLabel.setText("");
-    linkEditStatusLabel.setStyle("-fx-text-fill: -fx-text-inner-color;");
+    if (hasIncomingLinkFrom(selectedNoteId)) {
+      setLinkEditStatus("eingehender Verweis", LinkEditStatusTone.WARNING);
+      selectLinkTypeToggle(null);
+      setLinkTypeButtonsDisabled(true);
+      if (linkEditReverseButton != null) {
+        linkEditReverseButton.setDisable(true);
+      }
+      return;
+    }
+
+    clearLinkEditStatus();
     setLinkTypeButtonsDisabled(false);
     if (linkEditReverseButton != null) {
       linkEditReverseButton.setDisable(false);
@@ -686,7 +780,7 @@ public class ZettelWindowController {
                                      .toList();
 
     if (successorIds.isEmpty()) {
-      linkEditStatusLabel.setText("Keine Folgezettel vorhanden");
+      setLinkEditStatus("Keine Folgezettel vorhanden", LinkEditStatusTone.WARNING);
       return;
     }
 
@@ -718,43 +812,43 @@ public class ZettelWindowController {
 
     Integer selectedNoteId = parseLinkEditSelectedNoteId();
     if (selectedNoteId == null || selectedNoteId <= 0) {
-      linkEditStatusLabel.setText("Zettelnummer eingeben");
-      linkEditStatusLabel.setStyle("-fx-text-fill: #8a6d3b;");
+      setLinkEditStatus("Zettelnummer eingeben", LinkEditStatusTone.WARNING);
       return;
     }
 
     if (!noteRepository.existsNote(selectedNoteId)) {
-      linkEditStatusLabel.setText("Zettel existiert nicht");
-      linkEditStatusLabel.setStyle("-fx-text-fill: #b94a48;");
+      setLinkEditStatus("Zettel existiert nicht", LinkEditStatusTone.ERROR);
       return;
     }
 
     if (selectedNoteId == currentNote.getId()) {
-      linkEditStatusLabel.setText("Selbstverweis ist nicht erlaubt");
-      linkEditStatusLabel.setStyle("-fx-text-fill: #b94a48;");
+      setLinkEditStatus("Selbstverweis ist nicht erlaubt", LinkEditStatusTone.ERROR);
+      return;
+    }
+
+    if (hasIncomingLinkFrom(selectedNoteId)) {
+      setLinkEditStatus("eingehender Verweis", LinkEditStatusTone.WARNING);
       return;
     }
 
     LinkType currentType = findCurrentLinkTypeTo(selectedNoteId);
     if (currentType == null) {
-      linkEditStatusLabel.setText("Kein Verweis zum Umdrehen vorhanden");
-      linkEditStatusLabel.setStyle("-fx-text-fill: #8a6d3b;");
+      setLinkEditStatus("Kein Verweis zum Umdrehen vorhanden", LinkEditStatusTone.WARNING);
       return;
     }
 
     boolean reversed = noteRepository.reverseSuccessorLink(currentNote.getId(), selectedNoteId);
     if (!reversed) {
-      linkEditStatusLabel.setText("Verweis konnte nicht umgedreht werden");
-      linkEditStatusLabel.setStyle("-fx-text-fill: #b94a48;");
+      setLinkEditStatus("Verweis konnte nicht umgedreht werden", LinkEditStatusTone.ERROR);
       return;
     }
 
     refreshCurrentSuccessorsFromRepository();
     syncInfoPopup(currentNote);
     refreshLinkEditSelectionState();
+    refreshMagnifyLinkWindow();
 
-    linkEditStatusLabel.setText("Verweis wurde umgedreht");
-    linkEditStatusLabel.setStyle("-fx-text-fill: -fx-text-inner-color;");
+    setLinkEditStatus("Verweis wurde umgedreht", LinkEditStatusTone.NEUTRAL);
   }
 
   /**
@@ -775,10 +869,19 @@ public class ZettelWindowController {
     }
 
     if (targetId == currentNote.getId()) {
-      linkEditStatusLabel.setText("Selbstverweis ist nicht erlaubt");
-      linkEditStatusLabel.setStyle("-fx-text-fill: #b94a48;");
+      setLinkEditStatus("Selbstverweis ist nicht erlaubt", LinkEditStatusTone.ERROR);
       selectLinkTypeToggle(null);
       setLinkTypeButtonsDisabled(true);
+      return;
+    }
+
+    if (hasIncomingLinkFrom(targetId)) {
+      setLinkEditStatus("eingehender Verweis", LinkEditStatusTone.WARNING);
+      selectLinkTypeToggle(null);
+      setLinkTypeButtonsDisabled(true);
+      if (linkEditReverseButton != null) {
+        linkEditReverseButton.setDisable(true);
+      }
       return;
     }
 
@@ -788,6 +891,7 @@ public class ZettelWindowController {
         noteRepository.removeSuccessorLink(currentNote.getId(), targetId);
         refreshCurrentSuccessorsFromRepository();
         syncInfoPopup(currentNote);
+        refreshMagnifyLinkWindow();
       }
       refreshLinkEditSelectionState();
       return;
@@ -796,6 +900,7 @@ public class ZettelWindowController {
     noteRepository.addSuccessorLink(currentNote.getId(), targetId, linkType);
     refreshCurrentSuccessorsFromRepository();
     syncInfoPopup(currentNote);
+    refreshMagnifyLinkWindow();
     refreshLinkEditSelectionState();
   }
 
@@ -827,6 +932,30 @@ public class ZettelWindowController {
       }
     }
     return null;
+  }
+
+  /**
+   * Prüft, ob vom ausgewählten Zettel bereits ein eingehender Verweis
+   * auf den aktuell geöffneten Zettel existiert.
+   *
+   * @param sourceNoteId potenzieller Quellzettel des eingehenden Verweises
+   * @return {@code true}, wenn ein eingehender Verweis auf den aktuellen Zettel existiert
+   */
+  private boolean hasIncomingLinkFrom(int sourceNoteId) {
+    if (currentNote == null || currentNote.getId() <= 0 || sourceNoteId <= 0) {
+      return false;
+    }
+
+    List<NoteReferenceInfo> incomingReferences =
+        noteRepository.loadIncomingReferenceInfos(currentNote.getId());
+
+    for (NoteReferenceInfo reference : incomingReferences) {
+      if (reference != null && reference.noteId() == sourceNoteId) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
@@ -862,6 +991,40 @@ public class ZettelWindowController {
     linkEditQuestionButton.setDisable(disabled);
     linkEditCritiqueButton.setDisable(disabled);
     linkEditTaskButton.setDisable(disabled);
+  }
+
+  /**
+   * Setzt Text und Farbstil der Statusanzeige im Link-Edit-Popup.
+   *
+   * @param text anzuzeigender Text
+   * @param tone gewünschter Farbton
+   */
+  private void setLinkEditStatus(String text, LinkEditStatusTone tone) {
+    if (linkEditStatusLabel == null) {
+      return;
+    }
+
+    linkEditStatusLabel.setText(text == null ? "" : text);
+    linkEditStatusLabel.getStyleClass().removeAll(
+        "zettel-link-edit-status-neutral",
+        "zettel-link-edit-status-warning",
+        "zettel-link-edit-status-error"
+    );
+
+    String toneClass = switch (tone) {
+      case WARNING -> "zettel-link-edit-status-warning";
+      case ERROR -> "zettel-link-edit-status-error";
+      case NEUTRAL -> "zettel-link-edit-status-neutral";
+    };
+
+    linkEditStatusLabel.getStyleClass().add(toneClass);
+  }
+
+  /**
+   * Leert die Statusanzeige im Link-Edit-Popup und setzt sie auf neutral zurück.
+   */
+  private void clearLinkEditStatus() {
+    setLinkEditStatus("", LinkEditStatusTone.NEUTRAL);
   }
 
   private void beginTitleEdit(NoteEditorPane editor) {
@@ -984,6 +1147,92 @@ public class ZettelWindowController {
   private void refreshKeywordCounts() {
     var counts = noteRepository.loadKeywordCounts();
     view.getKeywordsTablePane().applyCounts(counts);
+  }
+
+  /**
+   * Aktualisiert beide Schlagwort-Ansichten:
+   * die linke Schlagwortliste des aktuellen Zettels (Zählspalte)
+   * sowie das KEY-Fenster in der Service-Area.
+   */
+  private void refreshKeywordViews() {
+    refreshKeywordCounts();
+    refreshKeyWindow();
+  }
+
+  /**
+   * Synchronisiert die Schlagwörter des aktuell sichtbaren Zettels nach einer
+   * globalen Umbenennung oder Zusammenführung aus dem KEY-Fenster.
+   * Dabei werden nur die Keywords im linken Schlagwortbereich angepasst;
+   * andere Inhalte des Zettels bleiben unberührt.
+   *
+   * @param sourceKeyword altes bzw. zu entfernendes Schlagwort
+   * @param targetKeyword neues bzw. beizubehaltendes Schlagwort;
+   *                      bei {@code null} oder Leerstring wird das alte nur entfernt
+   */
+  private void syncCurrentNoteKeywordsAfterRepositoryChange(String sourceKeyword, String targetKeyword) {
+    String normalizedSource = normalizeKeyword(sourceKeyword);
+    String normalizedTarget = normalizeKeyword(targetKeyword);
+
+    if (normalizedSource.isBlank()) {
+      return;
+    }
+
+    List<String> currentKeywords = new ArrayList<>(view.getKeywordsTablePane().getKeywords());
+    List<String> updatedKeywords = new ArrayList<>();
+    boolean targetAlreadyPresent = false;
+
+    for (String keyword : currentKeywords) {
+      String normalizedKeyword = normalizeKeyword(keyword);
+
+      if (normalizedKeyword.equalsIgnoreCase(normalizedSource)) {
+        if (!normalizedTarget.isBlank()) {
+          if (!containsKeywordIgnoreCase(updatedKeywords, normalizedTarget)) {
+            updatedKeywords.add(normalizedTarget);
+            targetAlreadyPresent = true;
+          }
+        }
+        continue;
+      }
+
+      updatedKeywords.add(keyword);
+
+      if (!normalizedTarget.isBlank() && normalizedKeyword.equalsIgnoreCase(normalizedTarget)) {
+        targetAlreadyPresent = true;
+      }
+    }
+
+    if (!normalizedTarget.isBlank()
+            && containsKeywordIgnoreCase(currentKeywords, normalizedSource)
+            && !targetAlreadyPresent
+            && !containsKeywordIgnoreCase(updatedKeywords, normalizedTarget)) {
+      updatedKeywords.add(normalizedTarget);
+    }
+
+    view.getKeywordsTablePane().setKeywords(updatedKeywords);
+    currentNote.setKeywords(updatedKeywords);
+    refreshKeywordCounts();
+  }
+
+  /**
+   * Prüft, ob eine Keyword-Liste einen bestimmten Eintrag bereits
+   * case-insensitiv enthält.
+   *
+   * @param keywords zu prüfende Liste
+   * @param keyword gesuchtes Schlagwort
+   * @return {@code true}, wenn bereits enthalten
+   */
+  private boolean containsKeywordIgnoreCase(List<String> keywords, String keyword) {
+    String normalizedKeyword = normalizeKeyword(keyword);
+    if (normalizedKeyword.isBlank()) {
+      return false;
+    }
+
+    for (String entry : keywords) {
+      if (normalizeKeyword(entry).equalsIgnoreCase(normalizedKeyword)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private void handleNoteIdCommit() {
@@ -1109,6 +1358,8 @@ public class ZettelWindowController {
 
       view.getNoteEditorPane().setOnNavigateToNote(this::openNoteViaToolbar);
       view.getNoteEditorPane().setBibliographyVisible(view.getBottomToolbar().bookToggle().isSelected());
+      resetMagnifyBranchCollapseState();
+      refreshMagnifyLinkWindow();
       if (linkEditPopup.isShowing()) {
         refreshCurrentSuccessorsFromRepository();
         refreshLinkEditSelectionState();
@@ -1292,6 +1543,7 @@ public class ZettelWindowController {
     showCurrentDraftNote();
 
     setNoteIdField(currentNote.getId());
+    refreshMagnifyLinkWindow();
     updateHistoryButtons();
   }
 
@@ -1450,6 +1702,7 @@ public class ZettelWindowController {
 
     refreshCurrentSuccessorsFromRepository();
     syncInfoPopup(currentNote);
+    refreshMagnifyLinkWindow();
     renderBibliographyHost();
     syncBottomToolbar(currentNote);
 
@@ -3032,6 +3285,9 @@ public class ZettelWindowController {
     view.toggleServiceAreaCollapsed();
 
     if (wasCollapsed && view.getActiveServiceAreaMode() != null) {
+      if (view.getActiveServiceAreaMode() == ZettelWindowView.ServiceAreaMode.MAGNIFY_LINK) {
+        syncMagnifyLinkSourceNoteFromCurrentNote();
+      }
       refreshServiceAreaForCurrentState();
     }
   }
@@ -3047,17 +3303,23 @@ public class ZettelWindowController {
     if (view.getActiveServiceAreaMode() == mode) {
       view.setActiveServiceAreaMode(null);
       view.setServiceAreaContent(new Pane());
+      view.getMagnifyLinkDirectedTraversalButton().setSelected(false);
       return;
     }
 
     view.setActiveServiceAreaMode(mode);
+
+    if (mode == ZettelWindowView.ServiceAreaMode.MAGNIFY_LINK) {
+      syncMagnifyLinkSourceNoteFromCurrentNote();
+      view.selectAllMagnifyLinkTypeButtons();
+    }
+
     refreshServiceAreaForCurrentState();
   }
 
   /**
    * Aktualisiert den sichtbaren Inhalt des rechten Arbeitsbereichs
    * passend zum aktuell gewählten Modus.
-   * Für den aktuellen Ausbauschritt werden noch Platzhalteransichten verwendet.
    */
   private void refreshServiceAreaForCurrentState() {
     ZettelWindowView.ServiceAreaMode mode = view.getActiveServiceAreaMode();
@@ -3066,10 +3328,856 @@ public class ZettelWindowController {
       return;
     }
 
+    if (mode == ZettelWindowView.ServiceAreaMode.MAGNIFY_LINK) {
+      view.setServiceAreaContent(view.getMagnifyLinkPane());
+      refreshMagnifyLinkWindow();
+      return;
+    }
+
+    if (mode == ZettelWindowView.ServiceAreaMode.KEY) {
+      view.setServiceAreaContent(view.getKeyPane());
+      refreshKeyWindow();
+      return;
+    }
+
     view.setServiceAreaContent(view.createModePlaceholder(mode));
   }
 
+  /**
+   * Setzt das Zettelnummernfeld des MAGNIFY_LINK-Fensters auf den aktuell
+   * im Editor sichtbaren Zettel. Diese Synchronisation geschieht bewusst nur
+   * beim Öffnen des Fensters bzw. beim Umschalten auf MAGNIFY_LINK.
+   * Dabei wird der temporäre Klappzustand der Verweisliste zurückgesetzt.
+   */
+  private void syncMagnifyLinkSourceNoteFromCurrentNote() {
+    resetMagnifyBranchCollapseState();
 
+    if (currentNote == null || currentNote.getId() <= 0) {
+      view.getMagnifyLinkNoteIdField().clear();
+      return;
+    }
+
+    view.getMagnifyLinkNoteIdField().setText(Integer.toString(currentNote.getId()));
+  }
+
+  /**
+   * Aktualisiert den gesamten sichtbaren Inhalt des MAGNIFY_LINK-Fensters.
+   * Die Darstellung liest ausschließlich aus der Datenbank.
+   */
+  private void refreshMagnifyLinkWindow() {
+    if (view.getActiveServiceAreaMode() != ZettelWindowView.ServiceAreaMode.MAGNIFY_LINK) {
+      return;
+    }
+
+    Integer sourceNoteId = parseMagnifyLinkSourceNoteId();
+    if (sourceNoteId == null || sourceNoteId <= 0) {
+      view.showMagnifyLinkStatus("Zettelnummer eingeben");
+      return;
+    }
+
+    if (!noteRepository.existsNote(sourceNoteId)) {
+      view.showMagnifyLinkStatus("Zettel " + sourceNoteId + " existiert nicht in der Datenbank");
+      return;
+    }
+
+    if (!Objects.equals(lastMagnifyRenderedSourceNoteId, sourceNoteId)) {
+      resetMagnifyBranchCollapseState();
+      lastMagnifyRenderedSourceNoteId = sourceNoteId;
+    }
+
+    String rootTitle = noteRepository.loadNoteTitle(sourceNoteId).orElse("—");
+    List<Node> rows = new ArrayList<>();
+
+    rows.add(createMagnifyRootButton(sourceNoteId, rootTitle));
+
+    int incomingDepth = (int) Math.round(view.getMagnifyLinkIncomingDepthSlider().getValue());
+    int outgoingDepth = (int) Math.round(view.getMagnifyLinkOutgoingDepthSlider().getValue());
+
+    if (incomingDepth > 0) {
+      appendMagnifyBranchRows(
+          rows,
+          sourceNoteId,
+          true,
+          1,
+          incomingDepth,
+          new LinkedHashSet<>(Set.of(sourceNoteId)),
+          null,
+          false
+      );
+    }
+
+    if (outgoingDepth > 0) {
+      appendMagnifyBranchRows(
+          rows,
+          sourceNoteId,
+          false,
+          1,
+          outgoingDepth,
+          new LinkedHashSet<>(Set.of(sourceNoteId)),
+          null,
+          false
+      );
+    }
+
+    int hitCount = Math.max(0, rows.size() - 1);
+    String status = buildMagnifyStatusText(sourceNoteId, hitCount);
+    view.setMagnifyLinkRows(status, rows);
+  }
+
+  /**
+   * Erzeugt den Statustext für das MAGNIFY_LINK-Fenster einschließlich
+   * der aktuell sichtbaren Trefferzahl ohne Wurzelzeile.
+   *
+   * @param sourceNoteId ID des Quellzettels
+   * @param hitCount Anzahl der sichtbaren Verweiszeilen
+   * @return formatierter Statustext
+   */
+  private String buildMagnifyStatusText(int sourceNoteId, int hitCount) {
+    String hitLabel = hitCount == 1 ? "Treffer" : "Treffer";
+    return "Zettel " + sourceNoteId + " · " + hitCount + " " + hitLabel;
+  }
+
+  /**
+   * Liest die aktuell im MAGNIFY_LINK-Fenster eingetragene Zettelnummer.
+   *
+   * @return Zettelnummer oder {@code null}, wenn die Eingabe leer oder ungültig ist
+   */
+  private Integer parseMagnifyLinkSourceNoteId() {
+    String text = view.getMagnifyLinkNoteIdField().getText();
+    if (text == null || text.isBlank()) {
+      return null;
+    }
+
+    try {
+      return Integer.parseInt(text.trim());
+    } catch (NumberFormatException ex) {
+      return null;
+    }
+  }
+
+  /**
+   * Baut rekursiv die Verweiszeilen für eine Richtung auf.
+   * Im Normalfall bleibt die Rekursion richtungsrein.
+   * Ist der Toggle für gerichtete Verweise aktiv, können ab freigegebenen Ebenen
+   * sowohl eingehende als auch ausgehende Verweise weiter verfolgt werden.
+   *
+   * Zusätzlich wird der unmittelbar vorhergehende Zettel nur für die direkt
+   * nächste Ebene ausgefiltert, damit kein unmittelbarer Rücksprung als Kind
+   * desselben Listeneintrags erscheint.
+   *
+   * @param rows Ziel-Liste für die UI-Zeilen
+   * @param sourceNoteId Ausgangszettel
+   * @param incoming {@code true} für übergeordnete, {@code false} für untergeordnete Zettel
+   * @param depth aktuelle Tiefe ab 1
+   * @param maxDepth maximal darzustellende Tiefe
+   * @param branchVisited pro Ast bereits besuchte Zettel zur Zyklusvermeidung
+   * @param immediatePreviousNoteId Zettel-ID des direkt vorhergehenden Eintrags;
+   *                                dieser wird nur auf der nächsten Ebene ausgefiltert
+   * @param allowBidirectionalTraversal {@code true}, wenn ab dieser Ebene beide Richtungen
+   *                                    gemeinsam verfolgt werden dürfen
+   */
+  private void appendMagnifyBranchRows(List<Node> rows,
+                                       int sourceNoteId,
+                                       boolean incoming,
+                                       int depth,
+                                       int maxDepth,
+                                       Set<Integer> branchVisited,
+                                       Integer immediatePreviousNoteId,
+                                       boolean allowBidirectionalTraversal) {
+    if (depth > maxDepth) {
+      return;
+    }
+
+    List<MagnifyBranchReference> references =
+        loadVisibleMagnifyBranchReferences(sourceNoteId, incoming, allowBidirectionalTraversal);
+
+    for (MagnifyBranchReference branchReference : references) {
+      NoteReferenceInfo reference = branchReference.reference();
+      if (reference == null || reference.noteId() <= 0) {
+        continue;
+      }
+
+      if (immediatePreviousNoteId != null && reference.noteId() == immediatePreviousNoteId) {
+        continue;
+      }
+
+      boolean branchDirection = branchReference.incoming();
+      boolean expandable = depth < maxDepth && hasVisibleMagnifyChildren(reference.noteId(), branchDirection);
+      boolean collapsed = expandable && isMagnifyBranchCollapsed(reference.noteId(), branchDirection);
+
+      rows.add(createMagnifyReferenceRow(reference, branchDirection, depth, expandable, collapsed));
+
+      if (!expandable || collapsed) {
+        continue;
+      }
+
+      if (branchVisited.contains(reference.noteId())) {
+        continue;
+      }
+
+      Set<Integer> nextVisited = new LinkedHashSet<>(branchVisited);
+      nextVisited.add(reference.noteId());
+
+      appendMagnifyBranchRows(
+          rows,
+          reference.noteId(),
+          branchDirection,
+          depth + 1,
+          maxDepth,
+          nextVisited,
+          sourceNoteId,
+          isDirectedMagnifyTraversalEnabled()
+      );
+    }
+  }
+
+  /**
+   * Lädt die für die aktuelle Rekursion sichtbaren Referenzen eines Zettels.
+   * Ohne freigegebene bidirektionale Traversierung wird nur die aktuelle Richtung verwendet.
+   * Mit freigegebener bidirektionaler Traversierung werden beide Richtungen geladen.
+   *
+   * @param noteId Zettel-ID
+   * @param incoming aktuelle Grundrichtung
+   * @param allowBidirectionalTraversal {@code true}, wenn beide Richtungen geladen werden dürfen
+   * @return sichtbare Referenzen inklusive Richtungsinformation je Eintrag
+   */
+  private List<MagnifyBranchReference> loadVisibleMagnifyBranchReferences(int noteId,
+                                                                          boolean incoming,
+                                                                          boolean allowBidirectionalTraversal) {
+    List<MagnifyBranchReference> visible = new ArrayList<>();
+
+    appendVisibleMagnifyBranchReferences(visible, noteId, incoming);
+
+    if (allowBidirectionalTraversal) {
+      appendVisibleMagnifyBranchReferences(visible, noteId, !incoming);
+    }
+
+    return visible;
+  }
+
+  /**
+   * Ergänzt sichtbare Referenzen einer Richtung in die Ziel-Liste.
+   *
+   * @param target Zielliste
+   * @param noteId Zettel-ID
+   * @param incoming Richtung der zu ladenden Referenzen
+   */
+  private void appendVisibleMagnifyBranchReferences(List<MagnifyBranchReference> target,
+                                                    int noteId,
+                                                    boolean incoming) {
+    List<NoteReferenceInfo> references = loadVisibleMagnifyReferences(noteId, incoming);
+    for (NoteReferenceInfo reference : references) {
+      if (reference != null && reference.noteId() > 0) {
+        target.add(new MagnifyBranchReference(reference, incoming));
+      }
+    }
+  }
+
+  /**
+   * Prüft, ob die gerichtete Traversierung im MAGNIFY_LINK-Fenster aktiv ist.
+   *
+   * @return {@code true}, wenn eingehende und ausgehende Verweise gemeinsam verfolgt werden sollen
+   */
+  private boolean isDirectedMagnifyTraversalEnabled() {
+    return view.getMagnifyLinkDirectedTraversalButton().isSelected();
+  }
+
+  /**
+   * Lädt die für die aktuelle MAGNIFY_LINK-Ansicht sichtbaren Referenzen
+   * eines Zettels in einer Richtung.
+   *
+   * @param noteId Zettel-ID
+   * @param incoming {@code true} für eingehende, {@code false} für ausgehende Referenzen
+   * @return gefilterte Referenzen
+   */
+  private List<NoteReferenceInfo> loadVisibleMagnifyReferences(int noteId, boolean incoming) {
+    List<NoteReferenceInfo> references = incoming
+                                             ? noteRepository.loadIncomingReferenceInfos(noteId)
+                                             : noteRepository.loadOutgoingReferenceInfos(noteId);
+
+    List<NoteReferenceInfo> visible = new ArrayList<>();
+    for (NoteReferenceInfo reference : references) {
+      if (isMagnifyReferenceVisible(reference)) {
+        visible.add(reference);
+      }
+    }
+    return visible;
+  }
+
+  /**
+   * Prüft, ob ein MAGNIFY_LINK-Eintrag in der aktuellen Traversierungslogik
+   * sichtbare direkte Kinder besitzt.
+   *
+   * @param noteId Zettel-ID des Eintrags
+   * @param incoming Grundrichtung des Astes
+   * @return {@code true}, wenn direkte sichtbare Kinder existieren
+   */
+  private boolean hasVisibleMagnifyChildren(int noteId, boolean incoming) {
+    return !loadVisibleMagnifyBranchReferences(
+        noteId,
+        incoming,
+        isDirectedMagnifyTraversalEnabled()
+    ).isEmpty();
+  }
+
+  /**
+   * Setzt den temporären Klappzustand der MAGNIFY_LINK-Liste zurück.
+   * Dieser Zustand wird bewusst nicht persistiert.
+   */
+  private void resetMagnifyBranchCollapseState() {
+    collapsedMagnifyIncomingBranches.clear();
+    collapsedMagnifyOutgoingBranches.clear();
+    lastMagnifyRenderedSourceNoteId = null;
+  }
+
+  /**
+   * Prüft, ob ein bestimmter Listenast aktuell eingeklappt ist.
+   *
+   * @param noteId Zettel-ID des Astes
+   * @param incoming {@code true} für übergeordnete Richtung, {@code false} für untergeordnete
+   * @return {@code true}, wenn der Ast eingeklappt ist
+   */
+  private boolean isMagnifyBranchCollapsed(int noteId, boolean incoming) {
+    String key = buildMagnifyBranchKey(noteId);
+    return incoming
+               ? collapsedMagnifyIncomingBranches.contains(key)
+               : collapsedMagnifyOutgoingBranches.contains(key);
+  }
+
+  /**
+   * Schaltet den temporären Klappzustand eines MAGNIFY_LINK-Astes um.
+   *
+   * @param noteId Zettel-ID des Astes
+   * @param incoming {@code true} für übergeordnete Richtung, {@code false} für untergeordnete
+   */
+  private void toggleMagnifyBranchCollapsed(int noteId, boolean incoming) {
+    String key = buildMagnifyBranchKey(noteId);
+    Set<String> target = incoming ? collapsedMagnifyIncomingBranches : collapsedMagnifyOutgoingBranches;
+
+    if (target.contains(key)) {
+      target.remove(key);
+    } else {
+      target.add(key);
+    }
+  }
+
+  /**
+   * Erzeugt den internen Schlüssel für einen MAGNIFY_LINK-Ast.
+   *
+   * @param noteId Zettel-ID des Astes
+   * @return Schlüsseltext
+   */
+  private String buildMagnifyBranchKey(int noteId) {
+    return Integer.toString(noteId);
+  }
+
+  /**
+   * Prüft, ob eine Referenz unter den aktuell gesetzten Filtern sichtbar sein soll.
+   *
+   * @param reference zu prüfende Referenz
+   * @return {@code true}, wenn die Referenz angezeigt werden soll
+   */
+  private boolean isMagnifyReferenceVisible(NoteReferenceInfo reference) {
+    if (reference == null) {
+      return false;
+    }
+
+    if (!isMagnifyLinkTypeSelected(reference.linkType())) {
+      return false;
+    }
+
+    String filter = normalizeMagnifyFilterText();
+    if (filter.isEmpty()) {
+      return true;
+    }
+
+    String title = reference.title() == null ? "" : reference.title();
+    return title.toLowerCase(Locale.ROOT).contains(filter);
+  }
+
+  /**
+   * Prüft, ob der angegebene Linktyp aktuell im Verweisfenster aktiviert ist.
+   *
+   * @param linkType zu prüfender Linktyp
+   * @return {@code true}, wenn der Typ sichtbar ist
+   */
+  private boolean isMagnifyLinkTypeSelected(LinkType linkType) {
+    if (linkType == null) {
+      return false;
+    }
+
+    return switch (linkType) {
+      case SERIE -> view.getMagnifyLinkSerieButton().isSelected();
+      case IDEE -> view.getMagnifyLinkIdeaButton().isSelected();
+      case FRAGE -> view.getMagnifyLinkQuestionButton().isSelected();
+      case KRITIK -> view.getMagnifyLinkCritiqueButton().isSelected();
+      case AUFGABE -> view.getMagnifyLinkTaskButton().isSelected();
+    };
+  }
+
+  /**
+   * Liefert den normalisierten Textfilter des Verweisfensters.
+   *
+   * @return kleingeschriebener Filtertext oder leerer String
+   */
+  private String normalizeMagnifyFilterText() {
+    String filter = view.getMagnifyLinkFilterField().getText();
+    return filter == null ? "" : filter.trim().toLowerCase(Locale.ROOT);
+  }
+
+  /**
+   * Erzeugt die Wurzelzeile für den aktuell ausgewählten Zettel.
+   * Icon und Titel sind getrennt aufgebaut; nur der Titel ist anklickbar.
+   *
+   * @param noteId Zettel-ID
+   * @param title Zettelüberschrift
+   * @return Zeile als UI-Knoten
+   */
+  private Node createMagnifyRootButton(int noteId, String title) {
+    String safeTitle = (title == null || title.isBlank()) ? "—" : title;
+
+    Region indentRegion = createMagnifyIndentRegion(0);
+
+    Label iconLabel = createMagnifyStaticIconLabel(BaseIcon.PAGE_LINK);
+
+    Button titleButton = createMagnifyTitleButton(noteId + ": " + safeTitle);
+    titleButton.setTooltip(new Tooltip("PAGE_LINK: " + safeTitle));
+    titleButton.setOnAction(e -> openNoteViaToolbar(noteId));
+
+    HBox row = new HBox(4, indentRegion, iconLabel, titleButton);
+    row.getStyleClass().add("zettel-magnify-link-row");
+    row.setAlignment(Pos.CENTER_LEFT);
+    HBox.setHgrow(titleButton, Priority.ALWAYS);
+    return row;
+  }
+
+  /**
+   * Erzeugt eine einzelne Verweiszeile für einen über- oder untergeordneten Zettel.
+   * Pfeilbutton und Titelbutton sind bewusst getrennt:
+   * Nur der Pfeil klappt Äste auf oder zu, nur der Titel öffnet den Zettel.
+   *
+   * @param reference Referenzdaten
+   * @param incoming Richtung der Referenz
+   * @param depth Einrückungstiefe ab 1
+   * @param expandable {@code true}, wenn der Ast sichtbare Kinder besitzt
+   * @param collapsed {@code true}, wenn der Ast aktuell eingeklappt ist
+   * @return UI-Zeile
+   */
+  private Node createMagnifyReferenceRow(NoteReferenceInfo reference,
+                                         boolean incoming,
+                                         int depth,
+                                         boolean expandable,
+                                         boolean collapsed) {
+    String title = reference.title() == null || reference.title().isBlank() ? "—" : reference.title();
+    String text = reference.linkType() + ": " + title;
+
+    Region indentRegion = createMagnifyIndentRegion(depth * 16.0);
+
+    Button arrowButton = createMagnifyBranchToggleButton(reference, incoming, expandable, collapsed);
+
+    Button titleButton = createMagnifyTitleButton(text);
+    titleButton.setTooltip(new Tooltip(reference.tooltipText()));
+    titleButton.setOnAction(e -> openNoteViaToolbar(reference.noteId()));
+
+    HBox row = new HBox(4, indentRegion, arrowButton, titleButton);
+    row.getStyleClass().add("zettel-magnify-link-row");
+    row.setAlignment(Pos.CENTER_LEFT);
+    HBox.setHgrow(titleButton, Priority.ALWAYS);
+    return row;
+  }
+
+  /**
+   * Erzeugt den Pfeilbutton einer MAGNIFY_LINK-Zeile.
+   * Nur dieser Button ist für das Auf- und Zuklappen zuständig.
+   *
+   * @param reference Referenzdaten
+   * @param incoming Richtung der Referenz
+   * @param expandable {@code true}, wenn sichtbare Kinder vorhanden sind
+   * @param collapsed aktueller Klappzustand
+   * @return konfigurierter Pfeilbutton
+   */
+  private Button createMagnifyBranchToggleButton(NoteReferenceInfo reference,
+                                                 boolean incoming,
+                                                 boolean expandable,
+                                                 boolean collapsed) {
+    BaseIcon icon;
+    if (incoming) {
+      icon = collapsed ? BaseIcon.BULLET_ARROW_UP : BaseIcon.BULLET_ARROW_LEFT;
+    } else {
+      icon = collapsed ? BaseIcon.BULLET_ARROW_DOWN : BaseIcon.BULLET_ARROW_RIGHT;
+    }
+
+    Button button = new Button();
+    button.getStyleClass().add("zettel-magnify-link-branch-button");
+    if (expandable) {
+      button.getStyleClass().add("zettel-magnify-link-branch-button-expandable");
+      button.setTooltip(new Tooltip(collapsed ? "Zweig aufklappen" : "Zweig einklappen"));
+      button.setOnAction(e -> {
+        toggleMagnifyBranchCollapsed(reference.noteId(), incoming);
+        refreshMagnifyLinkWindow();
+      });
+    } else {
+      button.getStyleClass().add("zettel-magnify-link-branch-button-static");
+      button.setMouseTransparent(true);
+    }
+
+    button.setGraphic(icon.imageView());
+    button.setFocusTraversable(false);
+    button.setMinWidth(18);
+    button.setPrefWidth(18);
+    button.setMaxWidth(18);
+    button.setMinHeight(18);
+    button.setPrefHeight(18);
+    button.setMaxHeight(18);
+    return button;
+  }
+
+  /**
+   * Erzeugt das Einrückungs-Element für eine MAGNIFY_LINK-Zeile.
+   * Pfeil und Titel werden dadurch gemeinsam eingerückt.
+   *
+   * @param leftIndent linke Einrückung in Pixeln
+   * @return Einrückungs-Region
+   */
+  private Region createMagnifyIndentRegion(double leftIndent) {
+    Region indentRegion = new Region();
+    indentRegion.getStyleClass().add("zettel-magnify-link-indent-region");
+    indentRegion.setMinWidth(leftIndent);
+    indentRegion.setPrefWidth(leftIndent);
+    indentRegion.setMaxWidth(leftIndent);
+    return indentRegion;
+  }
+
+  /**
+   * Erzeugt ein statisches Icon-Label für nicht klappbare Zeilen,
+   * etwa für die Wurzelzeile.
+   *
+   * @param icon darzustellendes Icon
+   * @return Label mit Icon
+   */
+  private Label createMagnifyStaticIconLabel(BaseIcon icon) {
+    Label label = new Label();
+    label.getStyleClass().add("zettel-magnify-link-static-icon");
+    label.setGraphic(icon.imageView());
+    label.setMinWidth(18);
+    label.setPrefWidth(18);
+    label.setMaxWidth(18);
+    return label;
+  }
+
+  /**
+   * Erzeugt den labelartig aussehenden Titelbutton einer MAGNIFY_LINK-Zeile.
+   * Nur dieser Button öffnet den referenzierten Zettel.
+   *
+   * @param text anzuzeigender Text
+   * @return konfigurierter Titelbutton
+   */
+  private Button createMagnifyTitleButton(String text) {
+    Label label = new Label(text == null ? "" : text);
+    label.getStyleClass().add("zettel-magnify-link-row-label");
+    label.setWrapText(false);
+    label.setMaxWidth(Double.MAX_VALUE);
+    label.setEllipsisString("…");
+
+    HBox graphic = new HBox(label);
+    graphic.getStyleClass().add("zettel-magnify-link-row-graphic");
+    graphic.setAlignment(Pos.CENTER_LEFT);
+    HBox.setHgrow(label, Priority.ALWAYS);
+    graphic.setMaxWidth(Double.MAX_VALUE);
+
+    Button button = new Button();
+    button.getStyleClass().add("zettel-magnify-link-row-button");
+    button.setGraphic(graphic);
+    button.setMaxWidth(Double.MAX_VALUE);
+    button.setAlignment(Pos.CENTER_LEFT);
+    button.setContentDisplay(ContentDisplay.GRAPHIC_ONLY);
+    button.setPadding(new Insets(2, 6, 2, 0));
+    button.setFocusTraversable(false);
+    return button;
+  }
+
+  /**
+   * Verdrahtet die Bedienelemente des KEY-Fensters.
+   */
+  private void wireKeyEvents() {
+    view.setKeyKeywordEditCommitHandler(this::handleKeyTableKeywordCommit);
+
+    view.getKeyReplaceButton().setOnAction(e -> handleKeyReplaceAction());
+
+    view.getKeyKeepField().textProperty().addListener((obs, oldValue, newValue) ->
+                                                          view.clearKeyActionStatus()
+    );
+
+    view.getKeyReplaceField().getEditor().textProperty().addListener((obs, oldValue, newValue) -> {
+      view.clearKeyActionStatus();
+      refreshKeyReplaceSuggestions(newValue);
+    });
+
+    view.getKeyFilterField().textProperty().addListener((obs, oldValue, newValue) -> {
+      refreshKeyWindow();
+      view.clearKeyActionStatus();
+    });
+
+    // Kein setOnAction am ComboBox-Feld: Der Ersetzen-Dialog darf ausschließlich über den Button ausgelöst werden.
+  }
+
+  /**
+   * Lädt das KEY-Fenster aus der Datenbank neu.
+   * Ein vorhandener Sortierzustand der KEY-Tabelle wird vor dem Refresh
+   * gesichert und danach wiederhergestellt.
+   */
+  private void refreshKeyWindow() {
+    ZettelWindowView.KeyTableSortState sortState = view.snapshotKeyTableSortState();
+
+    String filterText = normalizeKeyword(view.getKeyFilterField().getText());
+    List<ZettelWindowView.KeyTableRow> rows = new ArrayList<>();
+
+    for (NoteRepository.KeywordUsageRow row : noteRepository.loadKeywordUsageRows()) {
+      rows.add(new KeyTableRow(row.id(), row.keyword(), row.count()));
+    }
+
+    List<ZettelWindowView.KeyTableRow> visibleRows = applyKeyFilter(rows, filterText);
+
+    view.setKeyRows(visibleRows);
+    view.restoreKeyTableSortState(sortState);
+    view.setKeyInventoryStatus(buildKeyInventoryStatusText(visibleRows.size(), filterText, rows.size()));
+  }
+
+  /**
+   * Filtert und sortiert die KEY-Zeilen gemäß aktuellem Suchtext.
+   * Ohne Suchtext werden alle Zeilen unverändert zurückgegeben.
+   *
+   * @param rows vollständige Zeilenliste
+   * @param filterText Suchtext
+   * @return gefilterte und ggf. vorsortierte Liste
+   */
+  private List<ZettelWindowView.KeyTableRow> applyKeyFilter(List<ZettelWindowView.KeyTableRow> rows, String filterText) {
+    if (filterText.isBlank()) {
+      return rows;
+    }
+
+    String lowerFilter = filterText.toLowerCase(Locale.ROOT);
+
+    return rows.stream()
+               .filter(row -> row.getKeyword() != null
+                                  && row.getKeyword().toLowerCase(Locale.ROOT).contains(lowerFilter))
+               .sorted((left, right) -> compareKeyRowsByFilterMatch(left, right, lowerFilter))
+               .toList();
+  }
+
+  /**
+   * Vergleicht zwei KEY-Zeilen anhand der Position des Suchtreffers.
+   * Frühere Trefferpositionen kommen zuerst, danach wird alphabetisch sortiert.
+   *
+   * @param left linke Zeile
+   * @param right rechte Zeile
+   * @param lowerFilter Suchtext in Kleinschreibung
+   * @return Vergleichsergebnis
+   */
+  private int compareKeyRowsByFilterMatch(
+      ZettelWindowView.KeyTableRow left,
+      ZettelWindowView.KeyTableRow right,
+      String lowerFilter) {
+
+    String leftKeyword = left.getKeyword() == null ? "" : left.getKeyword();
+    String rightKeyword = right.getKeyword() == null ? "" : right.getKeyword();
+
+    int leftIndex = leftKeyword.toLowerCase(Locale.ROOT).indexOf(lowerFilter);
+    int rightIndex = rightKeyword.toLowerCase(Locale.ROOT).indexOf(lowerFilter);
+
+    int byPosition = Integer.compare(leftIndex, rightIndex);
+    if (byPosition != 0) {
+      return byPosition;
+    }
+
+    return String.CASE_INSENSITIVE_ORDER.compare(leftKeyword, rightKeyword);
+  }
+
+  /**
+   * Erzeugt den Bestandsstatus für das KEY-Fenster.
+   *
+   * @param visibleKeywordCount Anzahl aktuell sichtbarer Schlagwörter
+   * @param filterText aktueller Suchtext
+   * @param totalKeywordCount Gesamtanzahl aller Schlagwörter
+   * @return formatierter Status
+   */
+  private String buildKeyInventoryStatusText(int visibleKeywordCount, String filterText, int totalKeywordCount) {
+    if (filterText.isBlank()) {
+      if (visibleKeywordCount <= 0) {
+        return "Keine Schlagwörter vorhanden";
+      }
+      if (visibleKeywordCount == 1) {
+        return "1 Schlagwort";
+      }
+      return visibleKeywordCount + " Schlagwörter";
+    }
+
+    if (visibleKeywordCount <= 0) {
+      return "Keine Treffer für „" + filterText + "“";
+    }
+
+    if (visibleKeywordCount == 1) {
+      return "1 Treffer für „" + filterText + "“ in " + totalKeywordCount + " Schlagwörtern";
+    }
+
+    return visibleKeywordCount + " Treffer für „" + filterText + "“ in " + totalKeywordCount + " Schlagwörtern";
+  }
+
+  /**
+   * Aktualisiert die Suchvorschläge für das zweite Eingabefeld.
+   *
+   * @param text aktueller Eingabetext
+   */
+  private void refreshKeyReplaceSuggestions(String text) {
+    String normalized = normalizeKeyword(text);
+    if (normalized.length() < 3) {
+      view.setKeyReplaceSuggestions(List.of());
+      view.hideKeyReplaceSuggestions();
+      return;
+    }
+
+    List<String> suggestions = noteRepository.searchKeywordsContainingIgnoreCase(normalized, 15);
+    view.setKeyReplaceSuggestions(suggestions);
+
+    if (suggestions.isEmpty()) {
+      view.hideKeyReplaceSuggestions();
+    } else {
+      view.showKeyReplaceSuggestions();
+    }
+  }
+
+  /**
+   * Reagiert auf das Abschließen einer Inline-Bearbeitung in der Schlagworttabelle.
+   *
+   * @param row bearbeitete Tabellenzeile
+   * @param newKeyword neu eingegebener Wert
+   * @return {@code true}, wenn die Änderung übernommen wurde
+   */
+  private boolean handleKeyTableKeywordCommit(ZettelWindowView.KeyTableRow row, String newKeyword) {
+    if (row == null) {
+      return false;
+    }
+
+    String normalized = normalizeKeyword(newKeyword);
+
+    if (normalized.isBlank()) {
+      noteRepository.deleteKeyword(row.getKeywordId());
+      syncCurrentNoteKeywordsAfterRepositoryChange(row.getKeyword(), "");
+      refreshKeyWindow();
+      view.setKeyKeepKeyword("");
+      view.setKeyActionStatus("Schlagwort gelöscht", ZettelWindowView.KeyStatusType.SUCCESS);
+      return true;
+    }
+
+    Optional<NoteRepository.KeywordUsageRow> existing =
+        noteRepository.findKeywordByExactIgnoreCase(normalized);
+
+    if (existing.isPresent() && existing.get().id() != row.getKeywordId()) {
+      Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+      alert.initOwner(stage);
+      alert.setTitle("Schlagwörter zusammenführen");
+      alert.setHeaderText("Schlagwort existiert bereits");
+      alert.setContentText(
+          "Das Schlagwort „" + normalized + "“ existiert bereits.\n" +
+              "Soll „" + row.getKeyword() + "“ mit diesem Schlagwort zusammengeführt werden?"
+      );
+
+      Optional<ButtonType> result = alert.showAndWait();
+      if (result.isPresent() && result.get() == ButtonType.OK) {
+        noteRepository.mergeKeywords(existing.get().id(), row.getKeywordId());
+        syncCurrentNoteKeywordsAfterRepositoryChange(row.getKeyword(), existing.get().keyword());
+        refreshKeyWindow();
+        view.setKeyKeepKeyword(existing.get().keyword());
+        view.setKeyActionStatus("Schlagwörter zusammengeführt", ZettelWindowView.KeyStatusType.SUCCESS);
+        return true;
+      }
+
+      view.setKeyActionStatus("Zusammenführen abgebrochen", ZettelWindowView.KeyStatusType.WARNING);
+      return false;
+    }
+
+    noteRepository.renameKeyword(row.getKeywordId(), normalized);
+    syncCurrentNoteKeywordsAfterRepositoryChange(row.getKeyword(), normalized);
+    refreshKeyWindow();
+    view.setKeyKeepKeyword(normalized);
+    view.setKeyActionStatus("Schlagwort umbenannt", ZettelWindowView.KeyStatusType.SUCCESS);
+    return true;
+  }
+
+  /**
+   * Führt die Ersetzungslogik des KEY-Fensters aus.
+   * Der Dialog erscheint ausschließlich über den Button „Ersetzen“.
+   * Existiert das Schlagwort aus dem zweiten Feld nicht in der Datenbank,
+   * wird keine Änderung vorgenommen.
+   */
+  private void handleKeyReplaceAction() {
+    String keepKeyword = normalizeKeyword(view.getKeyKeepField().getText());
+    String replaceKeyword = normalizeKeyword(view.getKeyReplaceField().getEditor().getText());
+
+    if (keepKeyword.isBlank() || replaceKeyword.isBlank()) {
+      view.setKeyActionStatus("Beide Eingabefelder müssen gefüllt sein", ZettelWindowView.KeyStatusType.ERROR);
+      return;
+    }
+
+    if (keepKeyword.equalsIgnoreCase(replaceKeyword)) {
+      view.setKeyActionStatus("Die Schlagwörter sind identisch", ZettelWindowView.KeyStatusType.WARNING);
+      return;
+    }
+
+    Optional<NoteRepository.KeywordUsageRow> replaceRow =
+        noteRepository.findKeywordByExactIgnoreCase(replaceKeyword);
+
+    // Existiert das zweite Schlagwort nicht, geschieht fachlich nichts. Also: kein Dialog, keine DB-Änderung.
+    if (replaceRow.isEmpty()) {
+      view.setKeyActionStatus("Das zu ersetzende Schlagwort existiert nicht", ZettelWindowView.KeyStatusType.WARNING);
+      return;
+    }
+
+    Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+    alert.initOwner(stage);
+    alert.setTitle("Schlagwort ersetzen");
+    alert.setHeaderText("Ersetzen bestätigen");
+    alert.setContentText(
+        "Soll das Schlagwort „" + keepKeyword + "“ über das Schlagwort „" + replaceRow.get().keyword() + "“ geschrieben werden?"
+    );
+
+    Optional<ButtonType> result = alert.showAndWait();
+    if (result.isEmpty() || result.get() != ButtonType.OK) {
+      view.setKeyActionStatus("Ersetzen abgebrochen", ZettelWindowView.KeyStatusType.WARNING);
+      return;
+    }
+
+    Optional<NoteRepository.KeywordUsageRow> keepRow =
+        noteRepository.findKeywordByExactIgnoreCase(keepKeyword);
+
+    String effectiveReplaceKeyword = replaceRow.get().keyword();
+    String effectiveKeepKeyword;
+
+    if (keepRow.isPresent()) {
+      noteRepository.mergeKeywords(keepRow.get().id(), replaceRow.get().id());
+      effectiveKeepKeyword = keepRow.get().keyword();
+    } else {
+      noteRepository.renameKeyword(replaceRow.get().id(), keepKeyword);
+      effectiveKeepKeyword = keepKeyword;
+    }
+
+    syncCurrentNoteKeywordsAfterRepositoryChange(effectiveReplaceKeyword, effectiveKeepKeyword);
+    refreshKeyWindow();
+    view.setKeyKeepKeyword(effectiveKeepKeyword);
+    view.getKeyReplaceField().getEditor().setText("");
+    view.hideKeyReplaceSuggestions();
+    view.setKeyActionStatus("Schlagwort erfolgreich ersetzt", ZettelWindowView.KeyStatusType.SUCCESS);
+  }
+
+  /**
+   * Normalisiert einen Schlagworttext.
+   *
+   * @param value Rohtext
+   * @return getrimmter Text oder Leerstring
+   */
+  private String normalizeKeyword(String value) {
+    return value == null ? "" : value.trim();
+  }
 }
 
 
