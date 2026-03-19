@@ -336,6 +336,41 @@
     -fx-text-fill: #b3261e;
 }
 
+.zettel-key-show-headers-toggle {
+    -fx-min-width: 34;
+    -fx-pref-width: 34;
+    -fx-min-height: 30;
+    -fx-pref-height: 30;
+}
+
+.zettel-key-split-pane {
+    -fx-padding: 0;
+}
+
+.zettel-key-header-pane {
+    -fx-padding: 0;
+}
+
+.zettel-key-header-table .column-header-background,
+.zettel-key-header-table .column-header,
+.zettel-key-header-table .filler {
+    -fx-min-height: 0;
+    -fx-pref-height: 0;
+    -fx-max-height: 0;
+}
+
+.zettel-key-header-table .column-header-background {
+    visibility: hidden;
+}
+
+.zettel-key-header-table .table-cell {
+    -fx-text-overrun: ellipsis;
+}
+
+.zettel-key-header-table .table-row-cell {
+    -fx-cell-size: 24px;
+}
+
 /* Link-Edit-Popup */
 .zettel-link-edit-popup {
     -fx-background-color: -fx-control-inner-background;

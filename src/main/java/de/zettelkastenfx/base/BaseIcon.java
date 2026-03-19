@@ -1,6 +1,7 @@
 package de.zettelkastenfx.base;
 
 import javafx.scene.control.Button;
+import javafx.scene.control.ToggleButton;
 import javafx.scene.control.Tooltip;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
@@ -25,6 +26,7 @@ public enum BaseIcon {
   BOOK_ADD("book_add", "Buch hinzufügen"),
   BOOK_DELETE("book_delete", "Buch löschen"),
   BOOK_EDIT("book_edit", "Buch editieren"),
+  BOOK_KEY("book_key", "Buchschlüssel"),
 
   BULLET_ARROW_DOWN("bullet_arrow_down", "Hoch"),
   BULLET_ARROW_LEFT("bullet_arrow_left", "Zurück"),
@@ -59,6 +61,8 @@ public enum BaseIcon {
   PAGE_COPY("page_copy", "Kopieren"),
   PAGE_FIND("page_find", "Suchen"),
   PAGE_RED("page_red", "Kopieren bibliographische Angaben"),
+  PAGE_MAGNIFY("page_magnify", "Zettel suchen"),
+  PAGE_KEY("page_key", "Schlüsselwörter der Seite"),
 
   PAGE_LINK("page_link", "Folgezettel"),
   PAGE_BULB_ON("page_bulb_on", "Idee"),
@@ -159,6 +163,36 @@ public enum BaseIcon {
     button.getStyleClass().add("icon-button");
     button.setGraphic(imageView());
     if (tooltip != null) button.setTooltip(new Tooltip(tooltip));
+    return button;
+  }
+
+  /**
+   * ToggleButton mit vorgefertigtem Tooltip.
+   *
+   * @return ToggleButton mit ImageView und Standard-Tooltip
+   */
+  public ToggleButton toggleButton() {
+    ToggleButton button = new ToggleButton();
+    button.getStyleClass().add("icon-button");
+    button.setGraphic(imageView());
+    button.setTooltip(new Tooltip(tooltip()));
+    return button;
+  }
+
+  /**
+   * ToggleButton mit manuell eingefügtem Tooltip. Wenn {@code tooltip == null},
+   * wird kein Tooltip gesetzt.
+   *
+   * @param tooltip Text für den Tooltip
+   * @return ToggleButton mit ImageView und individuellem Tooltip
+   */
+  public ToggleButton toggleButton(String tooltip) {
+    ToggleButton button = new ToggleButton();
+    button.getStyleClass().add("icon-button");
+    button.setGraphic(imageView());
+    if (tooltip != null) {
+      button.setTooltip(new Tooltip(tooltip));
+    }
     return button;
   }
 

@@ -24,6 +24,8 @@ public class NoteRepository {
 
   public record KeywordUsageRow(int id, String keyword, int count) {}
 
+  public record NoteHeaderRow(int noteId, String title) {}
+
   public int countNotes() {
     try (Connection c = ds.getConnection();
          PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM notes");
@@ -537,6 +539,64 @@ public class NoteRepository {
           "mergeKeywords fehlgeschlagen (keep=" + keepKeywordId + ", remove=" + removeKeywordId + ")",
           e
       );
+    }
+  }
+
+  /**
+   * Lädt alle Zettelnummern und Überschriften zu einer Menge sichtbarer Schlagwörter.
+   * Mehrfachtreffer werden dedupliziert, die Sortierung erfolgt nach Zettelnummer aufsteigend.
+   *
+   * @param visibleKeywords aktuell sichtbare Schlagwörter aus der KEY-Tabelle
+   * @return deduplizierte Zettelköpfe
+   */
+  public List<NoteHeaderRow> loadNoteHeadersForVisibleKeywords(Collection<String> visibleKeywords) {
+    if (visibleKeywords == null || visibleKeywords.isEmpty()) {
+      return List.of();
+    }
+
+    List<String> normalized = new ArrayList<>();
+    for (String keyword : visibleKeywords) {
+      String value = keyword == null ? "" : keyword.trim();
+      if (!value.isBlank()) {
+        normalized.add(value);
+      }
+    }
+
+    if (normalized.isEmpty()) {
+      return List.of();
+    }
+
+    String placeholders = String.join(", ", Collections.nCopies(normalized.size(), "?"));
+    String sql = """
+        SELECT DISTINCT n.id, n.title
+        FROM notes n
+        JOIN note_keywords nk ON nk.note_id = n.id
+        JOIN keywords k ON k.id = nk.keyword_id
+        WHERE k.keyword IN (""" + placeholders + """
+        )
+        ORDER BY n.id ASC
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql)) {
+
+      for (int i = 0; i < normalized.size(); i++) {
+        ps.setString(i + 1, normalized.get(i));
+      }
+
+      try (ResultSet rs = ps.executeQuery()) {
+        List<NoteHeaderRow> out = new ArrayList<>();
+        while (rs.next()) {
+          out.add(new NoteHeaderRow(
+              rs.getInt("id"),
+              rs.getString("title")
+          ));
+        }
+        return out;
+      }
+
+    } catch (SQLException e) {
+      throw new IllegalStateException("loadNoteHeadersForVisibleKeywords fehlgeschlagen", e);
     }
   }
 

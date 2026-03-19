@@ -92,9 +92,16 @@ public class ZettelWindowView {
   @Getter private final TableView<KeyTableRow> keyTable;
   @Getter private final TableColumn<KeyTableRow, String> keyKeywordColumn;
   @Getter private final TableColumn<KeyTableRow, Number> keyCountColumn;
+  @Getter private final ToggleButton keyShowHeadersToggleButton;
+  @Getter private final SplitPane keySplitPane;
+  @Getter private final BorderPane keyHeaderPane;
+  @Getter private final TableView<KeyHeaderRow> keyHeaderTable;
+  @Getter private final TableColumn<KeyHeaderRow, Number> keyHeaderIdColumn;
+  @Getter private final TableColumn<KeyHeaderRow, String> keyHeaderTitleColumn;
 
   private Integer pendingKeyEditRowId;
   private String pendingKeyEditText;
+  private double keyHeaderDividerPosition = 0.72;
 
   public enum KeyStatusType {
     INFO,
@@ -145,6 +152,23 @@ public class ZettelWindowView {
       this.keywordId = keywordId;
       this.keyword = keyword;
       this.count = count;
+    }
+  }
+
+  @Getter
+  public static final class KeyHeaderRow {
+    private final int noteId;
+    private final String title;
+
+    /**
+     * Erzeugt eine Tabellenzeile für die untere Zettelkopf-Tabelle.
+     *
+     * @param noteId Zettelnummer
+     * @param title Zettelüberschrift
+     */
+    public KeyHeaderRow(int noteId, String title) {
+      this.noteId = noteId;
+      this.title = title == null ? "" : title;
     }
   }
 
@@ -383,6 +407,10 @@ public class ZettelWindowView {
     keyToolBar = new ToolBar();
     keyToolBar.getStyleClass().add("zettel-key-toolbar");
 
+    keyShowHeadersToggleButton = BaseIcon.PAGE_MAGNIFY.toggleButton("Zettelüberschriften anzeigen");
+    keyShowHeadersToggleButton.getStyleClass().add("zettel-key-show-headers-toggle");
+    keyShowHeadersToggleButton.setFocusTraversable(false);
+
     keyFilterField = new TextField();
     keyFilterField.getStyleClass().add("zettel-key-filter-field");
     keyFilterField.setPromptText("Schlagwörter suchen");
@@ -416,6 +444,7 @@ public class ZettelWindowView {
     HBox.setHgrow(keySpacer, Priority.ALWAYS);
 
     keyToolBar.getItems().addAll(
+        keyShowHeadersToggleButton,
         keyFilterField,
         new Separator(Orientation.VERTICAL),
         keyKeepField,
@@ -478,9 +507,64 @@ public class ZettelWindowView {
       return row;
     });
 
-    VBox keyCenter = new VBox(8, keyStatusLabel, keyTable);
+    keyHeaderTable = new TableView<>();
+    keyHeaderTable.getStyleClass().add("zettel-key-header-table");
+    keyHeaderTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+    keyHeaderTable.getSelectionModel().setSelectionMode(SelectionMode.SINGLE);
+    keyHeaderTable.setPlaceholder(new Label("Keine Zettel"));
+
+    keyHeaderIdColumn = new TableColumn<>();
+    keyHeaderIdColumn.setReorderable(false);
+    keyHeaderIdColumn.setSortable(false);
+    keyHeaderIdColumn.setResizable(true);
+    keyHeaderIdColumn.setStyle("-fx-alignment: CENTER-RIGHT;");
+    keyHeaderIdColumn.setCellValueFactory(cellData ->
+                                              new ReadOnlyIntegerWrapper(cellData.getValue().getNoteId())
+    );
+    keyHeaderIdColumn.setCellFactory(col -> new TableCell<>() {
+      @Override
+      protected void updateItem(Number item, boolean empty) {
+        super.updateItem(item, empty);
+        setText(empty || item == null ? null : Integer.toString(item.intValue()));
+      }
+    });
+
+    keyHeaderTitleColumn = new TableColumn<>();
+    keyHeaderTitleColumn.setReorderable(false);
+    keyHeaderTitleColumn.setSortable(false);
+    keyHeaderTitleColumn.setResizable(true);
+    keyHeaderTitleColumn.setCellValueFactory(cellData ->
+                                                 new ReadOnlyStringWrapper(cellData.getValue().getTitle())
+    );
+    keyHeaderTitleColumn.setCellFactory(col -> new TableCell<>() {
+      @Override
+      protected void updateItem(String item, boolean empty) {
+        super.updateItem(item, empty);
+        if (empty) {
+          setText(null);
+          setGraphic(null);
+          return;
+        }
+        setText(item == null ? "" : item);
+      }
+    });
+
+    keyHeaderTable.getColumns().addAll(keyHeaderIdColumn, keyHeaderTitleColumn);
+    keyHeaderTable.setFixedCellSize(24);
+
+    keyHeaderPane = new BorderPane(keyHeaderTable);
+    keyHeaderPane.getStyleClass().add("zettel-key-header-pane");
+    keyHeaderPane.setVisible(false);
+    keyHeaderPane.setManaged(false);
+
+    keySplitPane = new SplitPane();
+    keySplitPane.setOrientation(Orientation.VERTICAL);
+    keySplitPane.getStyleClass().add("zettel-key-split-pane");
+    keySplitPane.getItems().add(keyTable);
+
+    VBox keyCenter = new VBox(8, keyStatusLabel, keySplitPane);
     keyCenter.getStyleClass().add("zettel-key-content");
-    VBox.setVgrow(keyTable, Priority.ALWAYS);
+    VBox.setVgrow(keySplitPane, Priority.ALWAYS);
 
     keyPane.setTop(keyToolBar);
     keyPane.setCenter(keyCenter);
@@ -494,6 +578,7 @@ public class ZettelWindowView {
     setServiceAreaContent(magnifyLinkPane);
     setActiveServiceAreaMode(ServiceAreaMode.MAGNIFY_LINK);
     updateServiceAreaToggleButton();
+    hideKeyHeaderTableHeader();
   }
 
   /**
@@ -1001,5 +1086,83 @@ public class ZettelWindowView {
       }
     }
     return null;
+  }
+
+  /**
+   * Setzt die Zeilen der unteren Zettelkopf-Tabelle.
+   *
+   * @param rows neue Zettelkopf-Zeilen
+   */
+  public void setKeyHeaderRows(List<KeyHeaderRow> rows) {
+    keyHeaderTable.setItems(FXCollections.observableArrayList(rows));
+    updateKeyHeaderIdColumnWidth(rows);
+  }
+
+  /**
+   * Zeigt oder verbirgt den unteren Zettelkopf-Bereich des KEY-Fensters.
+   * Beim Ausblenden wird der Bereich vollständig aus dem SplitPane entfernt,
+   * damit kein leerer Restbereich sichtbar bleibt.
+   *
+   * @param visible {@code true}, wenn der Bereich sichtbar sein soll
+   */
+  public void setKeyHeaderPaneVisible(boolean visible) {
+    if (visible) {
+      if (!keySplitPane.getItems().contains(keyHeaderPane)) {
+        keySplitPane.getItems().add(keyHeaderPane);
+      }
+
+      keyHeaderPane.setVisible(true);
+      keyHeaderPane.setManaged(true);
+
+      Platform.runLater(() -> {
+        if (keySplitPane.getItems().size() > 1) {
+          keySplitPane.setDividerPositions(keyHeaderDividerPosition);
+        }
+      });
+      return;
+    }
+
+    if (keySplitPane.getItems().contains(keyHeaderPane)) {
+      if (!keySplitPane.getDividers().isEmpty()) {
+        keyHeaderDividerPosition = keySplitPane.getDividers().get(0).getPosition();
+      }
+      keySplitPane.getItems().remove(keyHeaderPane);
+    }
+
+    keyHeaderPane.setVisible(false);
+    keyHeaderPane.setManaged(false);
+  }
+
+  /**
+   * Aktualisiert die Breite der ID-Spalte anhand der größten sichtbaren Zettelnummer.
+   *
+   * @param rows sichtbare Header-Zeilen
+   */
+  private void updateKeyHeaderIdColumnWidth(List<KeyHeaderRow> rows) {
+    int maxDigits = 1;
+    if (rows != null) {
+      for (KeyHeaderRow row : rows) {
+        maxDigits = Math.max(maxDigits, Integer.toString(row.getNoteId()).length());
+      }
+    }
+
+    double width = 18 + (maxDigits * 8.5);
+    keyHeaderIdColumn.setMinWidth(width);
+    keyHeaderIdColumn.setPrefWidth(width);
+    keyHeaderIdColumn.setMaxWidth(width);
+  }
+
+  /**
+   * Blendet den Tabellenkopf der unteren KEY-Zettelkopf-Tabelle aus.
+   */
+  public void hideKeyHeaderTableHeader() {
+    Platform.runLater(() -> {
+      Node header = keyHeaderTable.lookup("TableHeaderRow");
+      if (header != null) {
+        header.setManaged(false);
+        header.setVisible(false);
+        header.setStyle("-fx-max-height: 0; -fx-pref-height: 0; -fx-min-height: 0;");
+      }
+    });
   }
 }

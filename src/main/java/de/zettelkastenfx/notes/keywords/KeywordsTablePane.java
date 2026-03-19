@@ -4,12 +4,15 @@ import javafx.beans.property.SimpleStringProperty;
 import javafx.beans.property.StringProperty;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
+import javafx.geometry.Side;
 import javafx.scene.control.*;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.Region;
 
 import java.util.*;
+import java.util.function.Function;
 
 public class KeywordsTablePane extends BorderPane {
 
@@ -22,6 +25,7 @@ public class KeywordsTablePane extends BorderPane {
 
   private final TableColumn<Row, String> colKeyword = new TableColumn<>();
   private final TableColumn<Row, String> colCount = new TableColumn<>();
+  private Function<String, List<String>> keywordSuggestionProvider = text -> List.of();
 
   private Runnable onKeywordsCommitted = () -> {}; // für sofortiges Update der Keywords nach Anlegen
 
@@ -179,6 +183,7 @@ public class KeywordsTablePane extends BorderPane {
 
   private class SingleClickEditCell extends TableCell<Row, String> {
     private TextField textField;
+    private ContextMenu suggestionMenu;
 
     public SingleClickEditCell() {
       setOnMouseClicked(e -> {
@@ -192,22 +197,41 @@ public class KeywordsTablePane extends BorderPane {
     @Override
     public void startEdit() {
       super.startEdit();
+
       if (textField == null) {
         textField = new TextField();
+        textField.getStyleClass().add("keywords-inline-editor");
+
+        suggestionMenu = new ContextMenu();
+        suggestionMenu.setAutoHide(true);
+
+        textField.textProperty().addListener((obs, oldValue, newValue) ->
+                                                 refreshSuggestions(newValue)
+        );
 
         // Enter commit
-        textField.setOnAction(e -> commitEdit(textField.getText()));
+        textField.setOnAction(e -> {
+          suggestionMenu.hide();
+          commitEdit(textField.getText());
+        });
 
         // Klick woanders hin / Fokus weg => commit (statt cancel)
         textField.focusedProperty().addListener((obs, old, now) -> {
-          if (!now && isEditing()) {
-            commitEdit(textField.getText());
+          if (!now) {
+            suggestionMenu.hide();
+            if (isEditing()) {
+              commitEdit(textField.getText());
+            }
           }
         });
 
         textField.setOnKeyPressed(e -> {
-          if (e.getCode() == KeyCode.ESCAPE) cancelEdit();
+          if (e.getCode() == KeyCode.ESCAPE) {
+            suggestionMenu.hide();
+            cancelEdit();
+          }
           if (e.getCode() == KeyCode.TAB) {
+            suggestionMenu.hide();
             boolean backwards = e.isShiftDown();
             commitEdit(textField.getText());
             e.consume();
@@ -215,22 +239,33 @@ public class KeywordsTablePane extends BorderPane {
           }
         });
       }
+
       textField.setText(getItem());
       setGraphic(textField);
       setText(null);
-      textField.requestFocus();
-      textField.selectAll();
+
+      javafx.application.Platform.runLater(() -> {
+        textField.requestFocus();
+        textField.selectAll();
+        refreshSuggestions(textField.getText());
+      });
     }
 
     @Override
     public void cancelEdit() {
       super.cancelEdit();
+      if (suggestionMenu != null) {
+        suggestionMenu.hide();
+      }
       setText(getItem());
       setGraphic(null);
     }
 
     @Override
     public void commitEdit(String newValue) {
+      if (suggestionMenu != null) {
+        suggestionMenu.hide();
+      }
       super.commitEdit(newValue);
       setGraphic(null);
       setText(getItem());
@@ -239,19 +274,88 @@ public class KeywordsTablePane extends BorderPane {
     @Override
     protected void updateItem(String item, boolean empty) {
       super.updateItem(item, empty);
+
       if (empty) {
+        if (suggestionMenu != null) {
+          suggestionMenu.hide();
+        }
         setText(null);
         setGraphic(null);
         return;
       }
+
       if (isEditing()) {
-        if (textField != null) textField.setText(item);
+        if (textField != null) {
+          textField.setText(item);
+        }
         setText(null);
         setGraphic(textField);
       } else {
+        if (suggestionMenu != null) {
+          suggestionMenu.hide();
+        }
         setText(item);
         setGraphic(null);
       }
+    }
+
+    /**
+     * Aktualisiert das Vorschlagsmenü gemäß aktueller Eingabe.
+     *
+     * @param typedText aktuell eingegebener Text
+     */
+    private void refreshSuggestions(String typedText) {
+      if (suggestionMenu == null || textField == null || !isEditing()) {
+        return;
+      }
+
+      String normalized = normalizeKeyword(typedText);
+      if (normalized.isBlank()) {
+        suggestionMenu.hide();
+        return;
+      }
+
+      List<String> suggestions = keywordSuggestionProvider.apply(normalized);
+      if (suggestions == null || suggestions.isEmpty()) {
+        suggestionMenu.hide();
+        return;
+      }
+
+      List<MenuItem> items = new ArrayList<>();
+      for (String keyword : suggestions) {
+        if (keyword == null || keyword.isBlank()) {
+          continue;
+        }
+
+        Label label = new Label(keyword);
+        label.setMinWidth(Region.USE_PREF_SIZE);
+
+        CustomMenuItem item = new CustomMenuItem(label, true);
+        item.setOnAction(e -> {
+          textField.setText(keyword);
+          textField.positionCaret(keyword.length());
+          suggestionMenu.hide();
+        });
+        items.add(item);
+      }
+
+      if (items.isEmpty()) {
+        suggestionMenu.hide();
+        return;
+      }
+
+      suggestionMenu.getItems().setAll(items);
+
+      if (textField.getScene() == null
+              || textField.getScene().getWindow() == null
+              || !textField.getScene().getWindow().isShowing()) {
+        return;
+      }
+
+      if (suggestionMenu.isShowing()) {
+        suggestionMenu.hide();
+      }
+      suggestionMenu.show(textField, Side.BOTTOM, 0, 0);
     }
 
     private void editRelative(int delta) {
@@ -263,6 +367,16 @@ public class KeywordsTablePane extends BorderPane {
       table.scrollTo(row);
       table.edit(row, colKeyword);
     }
+  }
+
+  /**
+   * Setzt den Callback zum Laden von Schlagwort-Vorschlägen für das Inline-Edit.
+   *
+   * @param provider Callback, der zur aktuell eingegebenen Zeichenkette passende
+   *                 Schlagwörter liefert
+   */
+  public void setKeywordSuggestionProvider(Function<String, List<String>> provider) {
+    this.keywordSuggestionProvider = (provider == null) ? text -> List.of() : provider;
   }
 
   public void setOnKeywordsCommitted(Runnable r) {

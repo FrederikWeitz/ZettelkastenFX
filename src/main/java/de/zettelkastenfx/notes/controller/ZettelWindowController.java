@@ -22,6 +22,7 @@ import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
+import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.*;
 import javafx.stage.Popup;
@@ -162,6 +163,7 @@ public class ZettelWindowController {
       refreshKeywordViews();
       view.clearKeyActionStatus();
     });
+    view.getKeywordsTablePane().setKeywordSuggestionProvider(this::loadKeywordSuggestionsForInlineEdit);
 
     wireBottomToolbar();
     wireHeaderBarNavigation();
@@ -3918,6 +3920,26 @@ public class ZettelWindowController {
       view.clearKeyActionStatus();
     });
 
+    view.getKeyShowHeadersToggleButton().setOnAction(e -> {
+      boolean visible = view.getKeyShowHeadersToggleButton().isSelected();
+      view.setKeyHeaderPaneVisible(visible);
+      refreshKeyHeaderTable();
+    });
+
+    view.getKeyTable().getSelectionModel().selectedItemProperty().addListener(
+        (obs, oldValue, newValue) -> refreshKeyHeaderTable()
+    );
+
+    view.getKeyHeaderTable().setRowFactory(table -> {
+      TableRow<ZettelWindowView.KeyHeaderRow> row = new TableRow<>();
+      row.setOnMouseClicked(event -> {
+        if (event.getButton() == MouseButton.PRIMARY && event.getClickCount() == 1 && !row.isEmpty()) {
+          openNoteViaToolbar(row.getItem().getNoteId());
+        }
+      });
+      return row;
+    });
+
     // Kein setOnAction am ComboBox-Feld: Der Ersetzen-Dialog darf ausschließlich über den Button ausgelöst werden.
   }
 
@@ -3941,6 +3963,7 @@ public class ZettelWindowController {
     view.setKeyRows(visibleRows);
     view.restoreKeyTableSortState(sortState);
     view.setKeyInventoryStatus(buildKeyInventoryStatusText(visibleRows.size(), filterText, rows.size()));
+    refreshKeyHeaderTable();
   }
 
   /**
@@ -4167,6 +4190,56 @@ public class ZettelWindowController {
     view.getKeyReplaceField().getEditor().setText("");
     view.hideKeyReplaceSuggestions();
     view.setKeyActionStatus("Schlagwort erfolgreich ersetzt", ZettelWindowView.KeyStatusType.SUCCESS);
+  }
+
+  /**
+   * Aktualisiert die untere Zettelkopf-Tabelle des KEY-Fensters.
+   * Es werden immer alle aktuell sichtbaren Schlagwörter der KEY-Tabelle verwendet.
+   * Die Treffer werden dedupliziert und nach Zettelnummer aufsteigend angezeigt.
+   */
+  private void refreshKeyHeaderTable() {
+    if (!view.getKeyShowHeadersToggleButton().isSelected()) {
+      view.setKeyHeaderRows(List.of());
+      return;
+    }
+
+    List<String> visibleKeywords = view.getKeyTable().getItems().stream()
+                                       .map(KeyTableRow::getKeyword)
+                                       .filter(Objects::nonNull)
+                                       .map(this::normalizeKeyword)
+                                       .filter(keyword -> !keyword.isBlank())
+                                       .toList();
+
+    if (visibleKeywords.isEmpty()) {
+      view.setKeyHeaderRows(List.of());
+      return;
+    }
+
+    List<ZettelWindowView.KeyHeaderRow> rows = new ArrayList<>();
+    for (NoteRepository.NoteHeaderRow row : noteRepository.loadNoteHeadersForVisibleKeywords(visibleKeywords)) {
+      rows.add(new ZettelWindowView.KeyHeaderRow(row.noteId(), row.title()));
+    }
+
+    view.setKeyHeaderRows(rows);
+  }
+
+  /**
+   * Lädt Schlagwort-Vorschläge für das Inline-Edit im keywordsTablePane.
+   * Die aktuell eingegebene Zeichenkette wird case-insensitiv innerhalb
+   * der vorhandenen Schlagwörter gesucht.
+   *
+   * @param typedText aktuell eingegebener Text
+   * @return maximal 15 passende Schlagwörter
+   */
+  private List<String> loadKeywordSuggestionsForInlineEdit(String typedText) {
+    String normalized = normalizeKeyword(typedText);
+    if (normalized.isBlank()) {
+      return List.of();
+    }
+
+    return noteRepository.searchKeywordsContainingIgnoreCase(normalized, 15).stream()
+               .filter(keyword -> !keyword.equalsIgnoreCase(normalized))
+               .toList();
   }
 
   /**
