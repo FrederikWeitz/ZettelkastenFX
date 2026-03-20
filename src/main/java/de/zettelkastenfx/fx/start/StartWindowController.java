@@ -1,17 +1,23 @@
 package de.zettelkastenfx.fx.start;
 
-import javafx.animation.Interpolator;
-import javafx.animation.KeyFrame;
-import javafx.animation.KeyValue;
-import javafx.animation.Timeline;
+import de.zettelkastenfx.notes.controller.ZettelWindow;
+import javafx.animation.*;
 import javafx.application.Platform;
 import javafx.beans.property.DoubleProperty;
 import javafx.beans.property.SimpleDoubleProperty;
+import javafx.geometry.Bounds;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
 import javafx.scene.Node;
-import javafx.scene.layout.Region;
+import javafx.scene.control.*;
+import javafx.scene.layout.*;
 import javafx.scene.shape.Rectangle;
+import javafx.stage.Popup;
 import javafx.stage.Stage;
 import javafx.util.Duration;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class StartWindowController {
 
@@ -35,15 +41,81 @@ public class StartWindowController {
   private double dragOffsetX;
   private double dragOffsetY;
 
+  /**
+   * Kennzeichnet, ob das Hauptfenster vollständig aufgeklappt ist.
+   * Erst dann dürfen Fenster-Menüs und Untermenüs reagieren.
+   */
+  private boolean expanded;
+
+  /**
+   * Sperrt die Collapse-Logik, solange ein Menü oder Untermenü aktiv offen ist.
+   */
+  private boolean overlayInteractionLocked;
+
+  /**
+   * Kennzeichnet, ob gerade eine Expand- oder Collapse-Animation läuft.
+   * Verhindert Rückkopplungen und Flimmern durch mehrfaches Neu-Starten.
+   */
+  private boolean animationRunning;
+
+  private Popup windowMenuPopup;
+  private Popup zettelkastenPopup;
+  private Popup createZettelkastenPopup;
+
+  private VBox windowMenuPopupContent;
+  private VBox createZettelkastenPopupContent;
+
+  /**
+   * Kleine Verzögerung für das Schließen der Menüs.
+   * Dadurch kann die Maus stabil vom Hauptpopup ins Unterpopup wechseln.
+   */
+  private final PauseTransition popupCloseDelay = new PauseTransition(Duration.millis(160));
+
+  private StartMenuItem popupZettelkastenItem;
+  private StartMenuItem popupSchreibtischItem;
+  private StartMenuItem popupProjektItem;
+
+  private VBox zettelkastenPopupContent;
+
+  private TextField createNameField;
+  private ToggleGroup colorToggleGroup;
+  private Button createOkButton;
+
+  /**
+   * Laufzeitdaten eines aktuell geöffneten Zettelkastens.
+   */
+  private static final class ZettelkastenEntry {
+    private final String name;
+    private final String color;
+    private Stage stage;
+
+    /**
+     * Erzeugt einen Laufzeiteintrag für einen Zettelkasten.
+     *
+     * @param name Anzeigename des Fensters
+     * @param color optionale Akzentfarbe
+     */
+    private ZettelkastenEntry(String name, String color) {
+      this.name = (name == null || name.isBlank()) ? "Zettel" : name;
+      this.color = (color == null || color.isBlank()) ? null : color;
+    }
+  }
+
+  private final List<ZettelkastenEntry> zettelkaesten = new ArrayList<>();
+
+  /**
+   * Erzeugt den Controller des Startfensters.
+   *
+   * @param stage Start-Stage
+   * @param view zugehörige View
+   */
   public StartWindowController(Stage stage, StartWindowView view) {
     this.stage = stage;
     this.view = view;
 
-    // “Normales” kleines Fenster: leicht abgerundet, hell
     this.collapsedWidth = 72;
     this.collapsedHeight = 72;
 
-    // Aufklappen: deutlich mehr Höhe, etwas mehr Breite
     this.expandedWidth = 120;
     this.expandedHeight = 150;
 
@@ -54,8 +126,19 @@ public class StartWindowController {
     this.windowShape.setArcWidth(16);
     this.windowShape.setArcHeight(16);
 
+    applyMainMenuItemStyle(view.getWindowItem());
+    applyMainMenuItemStyle(view.getItemTwo());
+    applyMainMenuItemStyle(view.getItemThree());
+
     wireSizing();
+    buildWindowMenuPopup();
+    buildZettelkastenPopup();
+    buildCreateZettelkastenPopup();
     wireEvents();
+
+    expanded = false;
+    overlayInteractionLocked = false;
+    animationRunning = false;
   }
 
   public double getCollapsedDiameter() {
@@ -67,27 +150,88 @@ public class StartWindowController {
     return collapsedHeight;
   }
 
+  /**
+   * Setzt das Startfenster in den initialen eingeklappten Zustand.
+   * Alle Popups werden geschlossen und Sperrzustände zurückgesetzt.
+   */
   public void applyInitialState() {
     setMenuVisible(false);
     setExitVisible(false);
     setAvatarVisible(true);
+    hideAllPopups();
+
+    expanded = false;
+    overlayInteractionLocked = false;
+    animationRunning = false;
 
     animatedWidth.set(collapsedWidth);
     animatedHeight.set(collapsedHeight);
     applySize(collapsedWidth, collapsedHeight);
   }
 
+  /**
+   * Verdrahtet Maus- und Aktionsereignisse des Startfensters.
+   * Solange Popups offen sind, bleibt die Collapse-Logik gesperrt.
+   */
   private void wireEvents() {
-    Node root = view.getRoot();
-    root.setOnMouseEntered(event -> expand());
-    root.setOnMouseExited(event -> collapse());
+    StackPane root = view.getRoot();
+
+    root.setOnMouseEntered(event -> {
+      cancelPopupCloseCheck();
+      if (!overlayInteractionLocked) {
+        expand();
+      }
+    });
+
+    root.setOnMouseExited(event -> {
+      if (isTransientPopupShowing()) {
+        schedulePopupCloseCheck();
+      } else if (!overlayInteractionLocked && expanded) {
+        collapse();
+      }
+    });
 
     view.getExitButton().setOnAction(event -> Platform.exit());
-
-    // Dummies: nur als Klick-Test
-    view.getItemOne().setOnMouseClicked(event -> openNewZettelWindow());
     view.getItemTwo().setOnMouseClicked(event -> System.out.println("DB-Dialog kommt später"));
     view.getItemThree().setOnMouseClicked(event -> Platform.exit());
+
+    view.getWindowItem().setOnMouseEntered(event -> {
+      cancelPopupCloseCheck();
+      if (!expanded) {
+        return;
+      }
+      lockOverlayInteraction();
+      showWindowMenuPopup();
+    });
+
+    view.getWindowItem().setOnMouseClicked(event -> {
+      cancelPopupCloseCheck();
+      if (!expanded) {
+        return;
+      }
+      lockOverlayInteraction();
+      showWindowMenuPopup();
+    });
+
+    view.getWindowItem().setOnMouseExited(event -> {
+      if (isTransientPopupShowing()) {
+        schedulePopupCloseCheck();
+      }
+    });
+
+    createOkButton.setOnAction(event -> {
+      String name = createNameField.getText();
+      String color = getSelectedColor();
+
+      ZettelkastenEntry entry = new ZettelkastenEntry(name, color);
+
+      createNameField.clear();
+      clearColorSelection();
+
+      hideCreateZettelkastenPopup();
+      unlockOverlayInteractionIfNoPopupShowing();
+      openZettelkasten(entry);
+    });
 
     enableWindowDragging();
   }
@@ -104,6 +248,607 @@ public class StartWindowController {
     );
   }
 
+  /**
+   * Aktiviert die Interaktionssperre für Expand/Collapse.
+   */
+  private void lockOverlayInteraction() {
+    overlayInteractionLocked = true;
+  }
+
+  /**
+   * Bricht eine geplante Popup-Schließprüfung ab.
+   */
+  private void cancelPopupCloseCheck() {
+    popupCloseDelay.stop();
+  }
+
+  /**
+   * Plant eine verzögerte Prüfung, ob Hauptpopup und Unterpopup geschlossen werden sollen.
+   * Das verhindert, dass die Menüs beim Übergang zwischen den Popupflächen sofort verschwinden.
+   */
+  private void schedulePopupCloseCheck() {
+    popupCloseDelay.stop();
+    popupCloseDelay.setOnFinished(event -> {
+      if (shouldHideTransientPopups()) {
+        hideTransientPopups();
+
+        if (expanded && !view.getRoot().isHover() && !isPopupShowing(createZettelkastenPopup)) {
+          collapse();
+        }
+      }
+    });
+    popupCloseDelay.playFromStart();
+  }
+
+  /**
+   * Prüft, ob die flüchtigen Menüs des Arbeitsfensters sichtbar sind.
+   *
+   * @return {@code true}, wenn Hauptpopup oder Unterpopup sichtbar sind
+   */
+  private boolean isTransientPopupShowing() {
+    return isPopupShowing(windowMenuPopup) || isPopupShowing(zettelkastenPopup);
+  }
+
+  /**
+   * Prüft, ob die flüchtigen Menüs geschlossen werden sollen.
+   *
+   * @return {@code true}, wenn weder Anker noch Popupflächen aktuell gehovert sind
+   */
+  private boolean shouldHideTransientPopups() {
+    return !view.getWindowItem().isHover()
+               && !isNodeHovering(windowMenuPopupContent)
+               && !isNodeHovering(zettelkastenPopupContent);
+  }
+
+  /**
+   * Prüft, ob ein Popup-Inhaltsknoten gerade gehovert wird.
+   *
+   * @param node zu prüfender Knoten
+   * @return {@code true}, wenn sichtbar und gehovert
+   */
+  private boolean isNodeHovering(Node node) {
+    return node != null && node.isVisible() && node.isHover();
+  }
+
+  /**
+   * Blendet Hauptpopup und Unterpopup des Arbeitsfensters aus und hebt danach
+   * gegebenenfalls die Interaktionssperre wieder auf.
+   */
+  private void hideTransientPopups() {
+    hideZettelkastenPopup();
+    hideWindowMenuPopup();
+    unlockOverlayInteractionIfNoPopupShowing();
+  }
+
+  /**
+   * Löscht die aktuelle Farbauswahl im Anlege-Popup.
+   */
+  private void clearColorSelection() {
+    if (colorToggleGroup != null) {
+      colorToggleGroup.selectToggle(null);
+    }
+  }
+
+  /**
+   * Gibt die aktuell gewählte Farbe zurück oder {@code null}, wenn keine gewählt ist.
+   */
+  private String getSelectedColor() {
+    if (colorToggleGroup == null || colorToggleGroup.getSelectedToggle() == null) {
+      return null;
+    }
+    return (String) colorToggleGroup.getSelectedToggle().getUserData();
+  }
+
+  /**
+   * Hebt die Interaktionssperre auf, wenn kein Popup mehr sichtbar ist.
+   */
+  private void unlockOverlayInteractionIfNoPopupShowing() {
+    if (!isAnyPopupShowing()) {
+      overlayInteractionLocked = false;
+    }
+  }
+
+  /**
+   * Prüft, ob derzeit mindestens ein Popup sichtbar ist.
+   *
+   * @return {@code true}, wenn ein Popup geöffnet ist
+   */
+  private boolean isAnyPopupShowing() {
+    return isPopupShowing(windowMenuPopup)
+               || isPopupShowing(zettelkastenPopup)
+               || isPopupShowing(createZettelkastenPopup);
+  }
+
+  /**
+   * Prüft, ob ein Popup sichtbar ist.
+   *
+   * @param popup zu prüfendes Popup
+   * @return {@code true}, wenn sichtbar
+   */
+  private boolean isPopupShowing(Popup popup) {
+    return popup != null && popup.isShowing();
+  }
+
+  /**
+   * Prüft, ob ein Stage-Eintrag noch auf ein sichtbares Fenster zeigt.
+   *
+   * @param entry zu prüfender Eintrag
+   * @return {@code true}, wenn das Fenster noch sichtbar ist
+   */
+  private boolean isEntryOpen(ZettelkastenEntry entry) {
+    return entry != null && entry.stage != null && entry.stage.isShowing();
+  }
+
+  /**
+   * Aktiviert ein bereits geöffnetes Zettelfenster.
+   * Ist das Fenster minimiert, wird es wiederhergestellt, auf dem Bildschirm zentriert
+   * und in den Vordergrund geholt. Andernfalls wird es nur in den Vordergrund geholt.
+   *
+   * @param entry Eintrag des geöffneten Zettelkastens
+   */
+  private void activateOpenZettelkasten(ZettelkastenEntry entry) {
+    if (!isEntryOpen(entry)) {
+      return;
+    }
+
+    Stage targetStage = entry.stage;
+
+    if (targetStage.isIconified()) {
+      targetStage.setIconified(false);
+      targetStage.centerOnScreen();
+    }
+
+    targetStage.toFront();
+    targetStage.requestFocus();
+  }
+
+  /**
+   * Gibt einem Popup-Root eine feste, undurchsichtige Darstellung.
+   *
+   * @param root zu stylender Popup-Container
+   */
+  private void applyPopupContainerStyle(Region root) {
+    root.setStyle(
+        "-fx-background-color: #f8f8ff;" +
+            "-fx-background-insets: 0;" +
+            "-fx-background-radius: 10;" +
+            "-fx-border-color: f0f0f8;" +
+            "-fx-border-width: 1;" +
+            "-fx-border-radius: 8;"
+    );
+  }
+
+  /**
+   * Gibt einem Menü-Popup eine kantige, menüartige Darstellung ohne Rundungen.
+   *
+   * @param root zu stylender Popup-Container
+   */
+  private void applyMenuPopupContainerStyle(Region root) {
+    root.setStyle(
+        "-fx-background-color: #f8f8ff;" +
+            "-fx-background-insets: 0;" +
+            "-fx-background-radius: 0;" +
+            "-fx-border-color: transparent;" +
+            "-fx-border-width: 0;" +
+            "-fx-border-radius: 0;" +
+            "-fx-padding: 0;"
+    );
+  }
+
+  /**
+   * Gestaltet einen Eintrag innerhalb eines Menü-Popups so, dass er dem normalen Menü
+   * optisch ähnelt: keine Rundung, keine Zwischenlinie, etwas höher und mit kräftigem
+   * Hover-Blau.
+   *
+   * @param item zu gestaltender Menüeintrag
+   */
+  private void applyPopupMenuItemStyle(StartMenuItem item) {
+    item.setMaxWidth(Double.MAX_VALUE);
+    item.setMinHeight(26);
+    item.setPrefHeight(26);
+    item.setStyle(
+        "-fx-background-color: transparent;" +
+            "-fx-background-radius: 0;" +
+            "-fx-border-color: transparent;" +
+            "-fx-border-width: 0;" +
+            "-fx-padding: 0 10 0 10;" +
+            "-fx-text-fill: black;" +
+            "-fx-alignment: center-left;"
+    );
+
+    item.hoverProperty().addListener((obs, oldValue, hovering) -> {
+      if (hovering) {
+        item.setStyle(
+            "-fx-background-color: #009ACD;" +
+                "-fx-background-radius: 0;" +
+                "-fx-border-color: transparent;" +
+                "-fx-border-width: 0;" +
+                "-fx-padding: 0 10 0 10;" +
+                "-fx-text-fill: white;" +
+                "-fx-alignment: center-left;"
+        );
+      } else {
+        item.setStyle(
+            "-fx-background-color: transparent;" +
+                "-fx-background-radius: 0;" +
+                "-fx-border-color: transparent;" +
+                "-fx-border-width: 0;" +
+                "-fx-padding: 0 10 0 10;" +
+                "-fx-text-fill: black;" +
+                "-fx-alignment: center-left;"
+        );
+      }
+    });
+  }
+
+  /**
+   * Gestaltet einen Eintrag des normalen Startfenster-Menüs in derselben
+   * harten Menüoptik wie die Popup-Menüs.
+   *
+   * @param item zu gestaltender Menüeintrag
+   */
+  private void applyMainMenuItemStyle(StartMenuItem item) {
+    item.setMaxWidth(Double.MAX_VALUE);
+    item.setMinHeight(26);
+    item.setPrefHeight(26);
+    item.setStyle(
+        "-fx-background-color: transparent;" +
+            "-fx-background-radius: 0;" +
+            "-fx-border-color: transparent;" +
+            "-fx-border-width: 0;" +
+            "-fx-padding: 0 10 0 10;" +
+            "-fx-text-fill: black;" +
+            "-fx-alignment: center-left;"
+    );
+
+    item.hoverProperty().addListener((obs, oldValue, hovering) -> {
+      if (hovering) {
+        item.setStyle(
+            "-fx-background-color: #009ACD;" +
+                "-fx-background-radius: 0;" +
+                "-fx-border-color: transparent;" +
+                "-fx-border-width: 0;" +
+                "-fx-padding: 0 10 0 10;" +
+                "-fx-text-fill: white;" +
+                "-fx-alignment: center-left;"
+        );
+      } else {
+        item.setStyle(
+            "-fx-background-color: transparent;" +
+                "-fx-background-radius: 0;" +
+                "-fx-border-color: transparent;" +
+                "-fx-border-width: 0;" +
+                "-fx-padding: 0 10 0 10;" +
+                "-fx-text-fill: black;" +
+                "-fx-alignment: center-left;"
+        );
+      }
+    });
+  }
+
+  /**
+   * Baut das Popup für das Arbeitsfenster-Menü auf.
+   */
+  private void buildWindowMenuPopup() {
+    windowMenuPopup = new Popup();
+    windowMenuPopup.setAutoHide(false);
+    windowMenuPopup.setAutoFix(true);
+    windowMenuPopup.setHideOnEscape(true);
+
+    windowMenuPopupContent = new VBox(0);
+    windowMenuPopupContent.getStyleClass().add("start-hover-menu");
+    windowMenuPopupContent.setPadding(Insets.EMPTY);
+    applyMenuPopupContainerStyle(windowMenuPopupContent);
+
+    windowMenuPopupContent.setOnMouseEntered(event -> cancelPopupCloseCheck());
+    windowMenuPopupContent.setOnMouseExited(event -> schedulePopupCloseCheck());
+
+    popupZettelkastenItem = new StartMenuItem("Zettelkasten");
+    popupSchreibtischItem = new StartMenuItem("Schreibtisch");
+    popupProjektItem = new StartMenuItem("Projekt");
+
+    applyPopupMenuItemStyle(popupZettelkastenItem);
+    applyPopupMenuItemStyle(popupSchreibtischItem);
+    applyPopupMenuItemStyle(popupProjektItem);
+
+    popupZettelkastenItem.setOnMouseEntered(event -> {
+      cancelPopupCloseCheck();
+      lockOverlayInteraction();
+      rebuildZettelkastenPopupContent();
+      showZettelkastenPopup();
+    });
+
+    popupZettelkastenItem.setOnMouseClicked(event -> {
+      cancelPopupCloseCheck();
+      lockOverlayInteraction();
+      rebuildZettelkastenPopupContent();
+      showZettelkastenPopup();
+    });
+
+    popupSchreibtischItem.setOnMouseEntered(event -> {
+      hideZettelkastenPopup();
+      schedulePopupCloseCheck();
+    });
+
+    popupProjektItem.setOnMouseEntered(event -> {
+      hideZettelkastenPopup();
+      schedulePopupCloseCheck();
+    });
+
+    windowMenuPopupContent.getChildren().addAll(
+        popupZettelkastenItem,
+        popupSchreibtischItem,
+        popupProjektItem
+    );
+
+    windowMenuPopup.getContent().setAll(windowMenuPopupContent);
+  }
+
+  /**
+   * Baut das Popup für vorhandene Zettelkästen und den Anlegeeintrag auf.
+   */
+  private void buildZettelkastenPopup() {
+    zettelkastenPopup = new Popup();
+    zettelkastenPopup.setAutoHide(false);
+    zettelkastenPopup.setAutoFix(true);
+    zettelkastenPopup.setHideOnEscape(true);
+
+    zettelkastenPopupContent = new VBox(0);
+    zettelkastenPopupContent.getStyleClass().add("start-hover-submenu");
+    zettelkastenPopupContent.setPadding(Insets.EMPTY);
+    applyMenuPopupContainerStyle(zettelkastenPopupContent);
+
+    zettelkastenPopupContent.setOnMouseEntered(event -> cancelPopupCloseCheck());
+    zettelkastenPopupContent.setOnMouseExited(event -> schedulePopupCloseCheck());
+
+    zettelkastenPopup.getContent().setAll(zettelkastenPopupContent);
+    rebuildZettelkastenPopupContent();
+  }
+
+  /**
+   * Baut das Popup zum Anlegen eines neuen Zettelkastens auf.
+   */
+  private void buildCreateZettelkastenPopup() {
+    createZettelkastenPopup = new Popup();
+    createZettelkastenPopup.setAutoHide(false);
+    createZettelkastenPopup.setAutoFix(true);
+    createZettelkastenPopup.setHideOnEscape(true);
+
+    createZettelkastenPopupContent = new VBox(12);
+    createZettelkastenPopupContent.getStyleClass().add("start-create-popup");
+    createZettelkastenPopupContent.setPadding(new Insets(12));
+    applyPopupContainerStyle(createZettelkastenPopupContent);
+
+    Label title = new Label("Zettelkasten");
+
+    HBox nameRow = new HBox(6);
+    nameRow.setAlignment(Pos.CENTER_LEFT);
+
+    Label nameLabel = new Label("Name:");
+    createNameField = new TextField();
+    HBox.setHgrow(createNameField, Priority.ALWAYS);
+    nameRow.getChildren().addAll(nameLabel, createNameField);
+
+    // 🎨 Farbfelder
+    colorToggleGroup = new ToggleGroup();
+    HBox colorRow = new HBox(8);
+
+    String[] colors = {
+        "#ffd6d6",
+        "#d6f5f0",
+        "#e0d6ff",
+        "#fff3cd",
+        "#d6ffe6",
+        "#d6e4ff",
+        "#f8d6ff",
+        "#ffe4d6"
+    };
+
+    for (String color : colors) {
+      ToggleButton btn = new ToggleButton();
+      btn.setToggleGroup(colorToggleGroup);
+      btn.setUserData(color);
+
+      btn.setMinSize(22, 22);
+      btn.setMaxSize(22, 22);
+
+      btn.setStyle(
+          "-fx-background-color: " + color + ";" +
+              "-fx-background-radius: 6;" +
+              "-fx-border-color: #888;" +
+              "-fx-border-radius: 6;"
+      );
+
+      // visuelles Feedback
+      btn.selectedProperty().addListener((obs, oldV, selected) -> {
+        if (selected) {
+          btn.setStyle(
+              "-fx-background-color: " + color + ";" +
+                  "-fx-background-radius: 6;" +
+                  "-fx-border-color: #ffffff;" +
+                  "-fx-border-width: 2;" +
+                  "-fx-border-radius: 6;"
+          );
+        } else {
+          btn.setStyle(
+              "-fx-background-color: " + color + ";" +
+                  "-fx-background-radius: 6;" +
+                  "-fx-border-color: #888;" +
+                  "-fx-border-width: 1;" +
+                  "-fx-border-radius: 6;"
+          );
+        }
+      });
+
+      colorRow.getChildren().add(btn);
+    }
+
+    createOkButton = new Button("Anlegen");
+    createOkButton.setMinWidth(88);
+    createOkButton.setPrefWidth(88);
+
+    Region okSpacer = new Region();
+    HBox.setHgrow(okSpacer, Priority.ALWAYS);
+
+    HBox okRow = new HBox(8, okSpacer, createOkButton);
+    okRow.setAlignment(Pos.CENTER_RIGHT);
+
+    createZettelkastenPopupContent.getChildren().addAll(
+        title,
+        nameRow,
+        colorRow,
+        okRow
+    );
+
+    createZettelkastenPopup.getContent().setAll(createZettelkastenPopupContent);
+  }
+
+  /**
+   * Blendet alle Popups aus.
+   */
+  private void hideAllPopups() {
+    hideCreateZettelkastenPopup();
+    hideZettelkastenPopup();
+    hideWindowMenuPopup();
+  }
+
+  /**
+   * Zeigt das Arbeitsfenster-Menü als Popup direkt rechts neben dem Eintrag an,
+   * sodass Button und Popup Kante an Kante erscheinen.
+   */
+  private void showWindowMenuPopup() {
+    cancelPopupCloseCheck();
+
+    Bounds bounds = view.getWindowItem().localToScreen(view.getWindowItem().getBoundsInLocal());
+    if (bounds == null) {
+      return;
+    }
+
+    double x = bounds.getMaxX();
+    double y = bounds.getMinY();
+
+    if (windowMenuPopup.isShowing()) {
+      windowMenuPopup.setX(x);
+      windowMenuPopup.setY(y);
+      return;
+    }
+
+    windowMenuPopup.show(stage, x, y);
+  }
+
+  /**
+   * Blendet das Arbeitsfenster-Menü aus.
+   * Das Untermenü wird dabei ebenfalls geschlossen.
+   */
+  private void hideWindowMenuPopup() {
+    if (zettelkastenPopup.isShowing()) {
+      zettelkastenPopup.hide();
+    }
+    if (windowMenuPopup.isShowing()) {
+      windowMenuPopup.hide();
+    }
+  }
+
+  /**
+   * Zeigt das Zettelkasten-Untermenü direkt rechts neben dem Haupteintrag an,
+   * sodass beide Popupflächen Kante an Kante anschließen.
+   */
+  private void showZettelkastenPopup() {
+    cancelPopupCloseCheck();
+
+    if (!windowMenuPopup.isShowing()) {
+      return;
+    }
+
+    Bounds bounds = popupZettelkastenItem.localToScreen(popupZettelkastenItem.getBoundsInLocal());
+    if (bounds == null) {
+      return;
+    }
+
+    double x = bounds.getMaxX();
+    double y = bounds.getMinY();
+
+    if (zettelkastenPopup.isShowing()) {
+      zettelkastenPopup.setX(x);
+      zettelkastenPopup.setY(y);
+      return;
+    }
+
+    zettelkastenPopup.show(stage, x, y);
+  }
+
+  /**
+   * Blendet das Zettelkasten-Untermenü aus.
+   */
+  private void hideZettelkastenPopup() {
+    if (zettelkastenPopup.isShowing()) {
+      zettelkastenPopup.hide();
+    }
+  }
+
+  /**
+   * Zeigt das Anlege-Popup mittig relativ zum Startfenster an.
+   * Das Namensfeld wird dabei jedes Mal fokussiert.
+   */
+  private void showCreateZettelkastenPopup() {
+    cancelPopupCloseCheck();
+
+    createNameField.clear();
+    clearColorSelection();
+
+    createZettelkastenPopupContent.applyCss();
+    createZettelkastenPopupContent.autosize();
+
+    double popupWidth = createZettelkastenPopupContent.prefWidth(-1);
+    double popupHeight = createZettelkastenPopupContent.prefHeight(-1);
+
+    double x = stage.getX() + (stage.getWidth() - popupWidth) / 2.0;
+    double y = stage.getY() + (stage.getHeight() - popupHeight) / 2.0;
+
+    if (createZettelkastenPopup.isShowing()) {
+      createZettelkastenPopup.hide();
+    }
+
+    createZettelkastenPopup.show(
+        stage,
+        Math.max(stage.getX() + 8, x),
+        Math.max(stage.getY() + 8, y)
+    );
+
+    lockOverlayInteraction();
+
+    focusCreateNameField();
+  }
+
+  /**
+   * Erzwingt den Fokus auf das Namensfeld des Anlege-Popups.
+   * Der Fokus wird doppelt verzögert gesetzt, damit er auch dann stabil ankommt,
+   * wenn zuvor ein anderes Arbeitsfenster den Fokus gehalten hat.
+   */
+  private void focusCreateNameField() {
+    Platform.runLater(() -> {
+      stage.toFront();
+      stage.requestFocus();
+
+      Platform.runLater(() -> {
+        createNameField.setDisable(false);
+        createNameField.setEditable(true);
+        createNameField.requestFocus();
+        createNameField.positionCaret(createNameField.getText().length());
+      });
+    });
+  }
+
+  /**
+   * Blendet das Anlege-Popup aus.
+   */
+  private void hideCreateZettelkastenPopup() {
+    if (createZettelkastenPopup.isShowing()) {
+      createZettelkastenPopup.hide();
+    }
+    unlockOverlayInteractionIfNoPopupShowing();
+  }
+
   private void applySize(double width, double height) {
     view.getRoot().setPrefSize(width, height);
     view.getRoot().setMinSize(width, height);
@@ -116,7 +861,16 @@ public class StartWindowController {
     stage.setHeight(height);
   }
 
+  /**
+   * Klappt das Startfenster animiert auf.
+   * Während einer laufenden Animation wird kein zweiter Expand-Vorgang gestartet.
+   */
   private void expand() {
+    if (expanded || animationRunning) {
+      return;
+    }
+
+    animationRunning = true;
     stopCurrentAnimation();
 
     setMenuVisible(true);
@@ -145,11 +899,25 @@ public class StartWindowController {
         )
     );
 
-    currentAnimation.setOnFinished(event -> setAvatarVisible(false));
+    currentAnimation.setOnFinished(event -> {
+      setAvatarVisible(false);
+      expanded = true;
+      animationRunning = false;
+    });
+
     currentAnimation.play();
   }
 
+  /**
+   * Klappt das Startfenster animiert ein.
+   * Solange ein Menü oder Untermenü gesperrt offen ist, wird nicht kollabiert.
+   */
   private void collapse() {
+    if (!expanded || animationRunning || overlayInteractionLocked) {
+      return;
+    }
+
+    animationRunning = true;
     stopCurrentAnimation();
 
     Node avatarNode = view.getAvatarNode();
@@ -177,6 +945,9 @@ public class StartWindowController {
     currentAnimation.setOnFinished(event -> {
       setMenuVisible(false);
       setExitVisible(false);
+      hideAllPopups();
+      expanded = false;
+      animationRunning = false;
     });
 
     currentAnimation.play();
@@ -248,8 +1019,51 @@ public class StartWindowController {
     return false;
   }
 
-  private void openNewZettelWindow() {
-    javafx.stage.Stage newStage = new javafx.stage.Stage();
-    new de.zettelkastenfx.notes.controller.ZettelWindow().show(newStage);
+  /**
+   * Öffnet ein neues ZettelWindow für einen Laufzeit-Zettelkasten und
+   * registriert es als aktuell offenes Arbeitsfenster.
+   *
+   * @param entry Laufzeitdaten des Zettelkastens
+   */
+  private void openZettelkasten(ZettelkastenEntry entry) {
+    Stage newStage = new Stage();
+    ZettelWindow window = new ZettelWindow();
+
+    entry.stage = newStage;
+    zettelkaesten.add(entry);
+    rebuildZettelkastenPopupContent();
+
+    newStage.setOnHidden(event -> {
+      zettelkaesten.remove(entry);
+      rebuildZettelkastenPopupContent();
+      unlockOverlayInteractionIfNoPopupShowing();
+    });
+
+    window.show(newStage, entry.name, entry.color);
+  }
+
+  /**
+   * Baut den Inhalt des Zettelkasten-Popups neu auf.
+   * Bereits geöffnete Zettelkästen stehen oberhalb des Eintrags zum Neuanlegen.
+   */
+  private void rebuildZettelkastenPopupContent() {
+    zettelkastenPopupContent.getChildren().clear();
+
+    for (ZettelkastenEntry entry : zettelkaesten) {
+      StartMenuItem item = new StartMenuItem(entry.name);
+      applyPopupMenuItemStyle(item);
+      item.setOnMouseClicked(event -> activateOpenZettelkasten(entry));
+      zettelkastenPopupContent.getChildren().add(item);
+    }
+
+    StartMenuItem createItem = new StartMenuItem("Zettelkasten anlegen");
+    applyPopupMenuItemStyle(createItem);
+    createItem.setOnMouseClicked(event -> {
+      showCreateZettelkastenPopup();
+      hideZettelkastenPopup();
+      hideWindowMenuPopup();
+    });
+
+    zettelkastenPopupContent.getChildren().add(createItem);
   }
 }

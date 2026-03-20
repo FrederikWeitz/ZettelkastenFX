@@ -1,12 +1,15 @@
 package de.zettelkastenfx.fx;
 
 import de.zettelkastenfx.base.util.BrowserConnection;
+import de.zettelkastenfx.base.util.PersistenceUtil;
 import de.zettelkastenfx.fx.config.AppDirectories;
 import de.zettelkastenfx.fx.start.StartWindow;
 import de.zettelkastenfx.persistence.DbBootstrap;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.stage.Stage;
+
+import javax.sql.DataSource;
 
 /**
  * JavaFX-Launcher der Anwendung.
@@ -21,7 +24,9 @@ public class ZettelkastenFxLauncher extends Application {
 
   @Override
   public void start(Stage primaryStage) {
-    DbBootstrap.initAndMigrate();
+    DataSource ds = DbBootstrap.initAndMigrate();
+    PersistenceUtil.setDatasource(ds);
+
     BrowserConnection.setAppInstance(this);
 
     StartWindow startWindow = new StartWindow();

@@ -1,28 +1,41 @@
 package de.zettelkastenfx.notes.controller;
 
-import de.zettelkastenfx.base.util.PersistenceUtil;
-import de.zettelkastenfx.persistence.DbBootstrap;
 import javafx.scene.Scene;
 import javafx.stage.Stage;
 
-import javax.sql.DataSource;
-
 public class ZettelWindow {
 
+  /**
+   * Öffnet das Zettelfenster mit Standardtitel und Standarddarstellung.
+   *
+   * @param stage Ziel-Stage
+   */
   public void show(Stage stage) {
-    ZettelWindowView view = new ZettelWindowView();
-    DataSource ds = DbBootstrap.initAndMigrate();
-    PersistenceUtil.setDatasource(ds);
+    show(stage, null, null);
+  }
 
+  /**
+   * Öffnet das Zettelfenster mit optionalem Titel und optionaler Randfarbe.
+   *
+   * @param stage Ziel-Stage
+   * @param windowTitle gewünschter Titel; leer oder {@code null} ergibt den Standardtitel
+   * @param borderColor gewünschte Randfarbe als CSS-Wert; leer oder {@code null} belässt die Standarddarstellung
+   */
+  public void show(Stage stage, String windowTitle, String borderColor) {
+    ZettelWindowView view = new ZettelWindowView();
     ZettelWindowController controller = new ZettelWindowController(stage, view);
 
     Scene scene = new Scene(view.getRoot(), 1100, 720);
     scene.getStylesheets().add(getClass().getResource("/styles/zettel-window.css").toExternalForm());
     view.getRoot().setFocusTraversable(true);
 
-    stage.setTitle("Zettel");
+    String title = (windowTitle == null || windowTitle.isBlank()) ? "Zettel" : windowTitle;
+
+    stage.setTitle(title);
     stage.setResizable(true);
     stage.setScene(scene);
+
+    view.applyAccentColor(borderColor);
 
     controller.applyInitialState();
 

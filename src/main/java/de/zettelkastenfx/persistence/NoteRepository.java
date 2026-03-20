@@ -26,6 +26,14 @@ public class NoteRepository {
 
   public record NoteHeaderRow(int noteId, String title) {}
 
+  public record ListBrowseRow(
+      int noteId,
+      String title,
+      byte[] bodyBlob,
+      String bodyCodec,
+      String keyword
+  ) {}
+
   public int countNotes() {
     try (Connection c = ds.getConnection();
          PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM notes");
@@ -597,6 +605,47 @@ public class NoteRepository {
 
     } catch (SQLException e) {
       throw new IllegalStateException("loadNoteHeadersForVisibleKeywords fehlgeschlagen", e);
+    }
+  }
+
+  /**
+   * Lädt alle Zettel für das LIST-Fenster zusammen mit ihren Schlagwörtern.
+   * Durch den LEFT JOIN entsteht pro Schlagwort eine Zeile; Zettel ohne Schlagwort
+   * erscheinen genau einmal mit {@code keyword == null}.
+   *
+   * @return flache Ergebnisliste für LIST-Aufbereitung im Controller
+   */
+  public List<ListBrowseRow> loadListBrowseRows() {
+    String sql = """
+        SELECT n.id,
+               n.title,
+               n.content_blob,
+               n.content_codec,
+               k.keyword
+        FROM notes n
+        LEFT JOIN note_keywords nk ON nk.note_id = n.id
+        LEFT JOIN keywords k ON k.id = nk.keyword_id
+        ORDER BY n.id ASC, k.keyword COLLATE NOCASE
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql);
+         ResultSet rs = ps.executeQuery()) {
+
+      List<ListBrowseRow> out = new ArrayList<>();
+      while (rs.next()) {
+        out.add(new ListBrowseRow(
+            rs.getInt("id"),
+            rs.getString("title"),
+            rs.getBytes("content_blob"),
+            rs.getString("content_codec"),
+            rs.getString("keyword")
+        ));
+      }
+      return out;
+
+    } catch (SQLException e) {
+      throw new IllegalStateException("loadListBrowseRows fehlgeschlagen", e);
     }
   }
 

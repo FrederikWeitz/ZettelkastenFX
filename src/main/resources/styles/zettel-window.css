@@ -178,7 +178,7 @@
 .note-formatting-root .menu-button.mixed {
     -fx-border-style: dashed;
     -fx-border-width: 1;
-    -fx-border-color: -fx-text-base-color;
+    -fx-border-color: rgba(0, 0, 0, 0.55);
     -fx-background-insets: 0;
 }
 
@@ -282,6 +282,20 @@
 .note-info-key { -fx-text-fill: #bbbbbb; }
 .note-info-value, .note-info-link { -fx-text-fill: white; }
 .note-info-muted { -fx-text-fill: #9a9a9a; }
+
+/* Start-Menu */
+.start-hover-menu, .start-hover-submenu {
+    -fx-background-color: #2b2b2b;
+    -fx-padding: 6;
+    -fx-spacing: 4;
+}
+
+.start-create-popup {
+    -fx-background-color: #2b2b2b;
+    -fx-padding: 12;
+    -fx-border-color: #666;
+    -fx-border-width: 1;
+}
 
 /* KEY */
 .zettel-key-content {
@@ -427,6 +441,64 @@
 
 .zettel-link-type-toggle {
     -fx-background-radius: 6;
+}
+
+/* LIST_ÜBERSCHRIFT_FILTERN */
+.zettel-list-pane {
+    -fx-background-color: transparent;
+}
+
+.zettel-list-toolbar {
+    -fx-padding: 6 8 6 8;
+    -fx-spacing: 6;
+}
+
+.zettel-list-content-host {
+    -fx-background-color: transparent;
+}
+
+.zettel-list-page-key-box {
+    -fx-padding: 4 6 8 6;
+    -fx-spacing: 0;
+}
+
+.zettel-list-page-key-scroll {
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+    -fx-padding: 0;
+}
+
+.zettel-list-root-title-box {
+    -fx-padding: 0 0 8 0;
+}
+
+.zettel-list-root-title {
+    -fx-font-weight: bold;
+    -fx-font-size: 13px;
+}
+
+.zettel-list-keyword-label {
+    -fx-font-weight: bold;
+}
+
+.zettel-list-note-button {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent;
+    -fx-alignment: center-left;
+    -fx-max-width: infinity;
+}
+
+.zettel-list-note-button:hover {
+    -fx-underline: true;
+}
+
+.zettel-list-filter-body-match-row {
+    -fx-background-color: rgba(120, 170, 120, 0.22);
+}
+
+.zettel-list-status-label {
+    -fx-padding: 10 6 0 6;
+    -fx-opacity: 0.85;
 }
 
 /* MAGNIFY_LINK */

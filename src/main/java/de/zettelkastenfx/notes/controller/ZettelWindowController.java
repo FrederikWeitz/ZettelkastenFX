@@ -14,6 +14,7 @@ import de.zettelkastenfx.notes.editor.NoteEditorPane;
 import de.zettelkastenfx.notes.editor.format.InlineCssStyleUtil;
 import de.zettelkastenfx.notes.model.*;
 import de.zettelkastenfx.persistence.NoteRepository;
+import de.zettelkastenfx.persistence.InlineCssRtfxBlobCodec;
 import de.zettelkastenfx.notes.controller.ZettelWindowView.KeyTableRow;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
@@ -27,6 +28,7 @@ import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.*;
 import javafx.stage.Popup;
 import javafx.stage.Stage;
+import org.fxmisc.richtext.InlineCssTextArea;
 
 import java.util.*;
 
@@ -93,6 +95,29 @@ public class ZettelWindowController {
   private Integer lastMagnifyRenderedSourceNoteId;
   private record MagnifyBranchReference(NoteReferenceInfo reference, boolean incoming) {}
 
+  private static final class ListNoteData {
+    private final int noteId;
+    private final String title;
+    private final byte[] bodyBlob;
+    private final String bodyCodec;
+    private final LinkedHashSet<String> keywords = new LinkedHashSet<>();
+
+    /**
+     * Erzeugt einen LIST-Datensatz für einen Zettel.
+     *
+     * @param noteId Zettelnummer
+     * @param title Überschrift
+     * @param bodyBlob codierter Inhalt
+     * @param bodyCodec Name des verwendeten Codecs
+     */
+    private ListNoteData(int noteId, String title, byte[] bodyBlob, String bodyCodec) {
+      this.noteId = noteId;
+      this.title = title == null ? "" : title;
+      this.bodyBlob = bodyBlob == null ? new byte[0] : bodyBlob;
+      this.bodyCodec = bodyCodec == null ? "" : bodyCodec;
+    }
+  }
+
   public ZettelWindowController(Stage stage, ZettelWindowView view) {
     this.stage = stage;
     this.view = view;
@@ -138,6 +163,7 @@ public class ZettelWindowController {
     // Verdrahtet Service-Fenster-Inhalte
     wireMagnifyLinkEvents();
     wireKeyEvents();
+    wireListEvents();
 
     // Dropdown für Folgezettel
     view.getMiFollowing().setOnAction(e -> createTypedFollowUpNote(LinkType.SERIE));
@@ -161,6 +187,7 @@ public class ZettelWindowController {
       }
 
       refreshKeywordViews();
+      refreshListWindow();
       view.clearKeyActionStatus();
     });
     view.getKeywordsTablePane().setKeywordSuggestionProvider(this::loadKeywordSuggestionsForInlineEdit);
@@ -198,6 +225,55 @@ public class ZettelWindowController {
     view.getMagnifyLinkTaskButton().setOnAction(e -> refreshMagnifyLinkWindow());
 
     view.getMagnifyLinkFilterField().textProperty().addListener((obs, oldValue, newValue) -> refreshMagnifyLinkWindow());
+  }
+
+  /**
+   * Verdrahtet die Bedienelemente des LIST-Fensters.
+   */
+  private void wireListEvents() {
+    view.getListPageKeyButton().setOnAction(e -> {
+      view.setListMode(ZettelWindowView.ListMode.PAGE_KEY);
+      refreshListWindow();
+    });
+
+    view.getListDepthSlider().valueProperty().addListener((obs, oldValue, newValue) -> {
+      view.setListMode(ZettelWindowView.ListMode.PAGE_KEY);
+      refreshListWindow();
+    });
+
+    view.getListFilterField().focusedProperty().addListener((obs, oldValue, newValue) -> {
+      if (newValue) {
+        view.setListMode(ZettelWindowView.ListMode.FILTER);
+        refreshListWindow();
+      }
+    });
+
+    view.getListFilterField().textProperty().addListener((obs, oldValue, newValue) -> {
+      if (view.getActiveServiceAreaMode() == ZettelWindowView.ServiceAreaMode.LIST) {
+        refreshListWindow();
+      }
+    });
+
+    view.getListFullTextToggleButton().setOnAction(e -> {
+      view.setListMode(ZettelWindowView.ListMode.FILTER);
+      refreshListWindow();
+    });
+
+    view.getListFilterTable().setRowFactory(table -> {
+      TableRow<ZettelWindowView.ListFilterRow> row = new TableRow<>();
+      row.itemProperty().addListener((obs, oldItem, newItem) -> {
+        row.getStyleClass().remove("zettel-list-filter-body-match-row");
+        if (newItem != null && newItem.isBodyMatchOnly()) {
+          row.getStyleClass().add("zettel-list-filter-body-match-row");
+        }
+      });
+      row.setOnMouseClicked(event -> {
+        if (event.getButton() == MouseButton.PRIMARY && !row.isEmpty()) {
+          openNoteViaToolbar(row.getItem().getNoteId());
+        }
+      });
+      return row;
+    });
   }
 
   private void wireTitleEditing(NoteEditorPane editor) {
@@ -1362,6 +1438,7 @@ public class ZettelWindowController {
       view.getNoteEditorPane().setBibliographyVisible(view.getBottomToolbar().bookToggle().isSelected());
       resetMagnifyBranchCollapseState();
       refreshMagnifyLinkWindow();
+      refreshListWindow();
       if (linkEditPopup.isShowing()) {
         refreshCurrentSuccessorsFromRepository();
         refreshLinkEditSelectionState();
@@ -1705,6 +1782,7 @@ public class ZettelWindowController {
     refreshCurrentSuccessorsFromRepository();
     syncInfoPopup(currentNote);
     refreshMagnifyLinkWindow();
+    refreshListWindow();
     renderBibliographyHost();
     syncBottomToolbar(currentNote);
 
@@ -3316,6 +3394,10 @@ public class ZettelWindowController {
       view.selectAllMagnifyLinkTypeButtons();
     }
 
+    if (mode == ZettelWindowView.ServiceAreaMode.LIST) {
+      view.setListMode(ZettelWindowView.ListMode.FILTER);
+    }
+
     refreshServiceAreaForCurrentState();
   }
 
@@ -3339,6 +3421,12 @@ public class ZettelWindowController {
     if (mode == ZettelWindowView.ServiceAreaMode.KEY) {
       view.setServiceAreaContent(view.getKeyPane());
       refreshKeyWindow();
+      return;
+    }
+
+    if (mode == ZettelWindowView.ServiceAreaMode.LIST) {
+      view.setServiceAreaContent(view.getListPane());
+      refreshListWindow();
       return;
     }
 
@@ -4240,6 +4328,362 @@ public class ZettelWindowController {
     return noteRepository.searchKeywordsContainingIgnoreCase(normalized, 15).stream()
                .filter(keyword -> !keyword.equalsIgnoreCase(normalized))
                .toList();
+  }
+
+  /**
+   * Aktualisiert den sichtbaren Inhalt des LIST-Fensters.
+   */
+  private void refreshListWindow() {
+    if (view.getActiveServiceAreaMode() != ZettelWindowView.ServiceAreaMode.LIST) {
+      return;
+    }
+
+    if (currentNote == null || currentNote.getId() <= 0) {
+      view.setListPageKeyRows(List.of(createListStatusLabel("Kein aktiver Zettel")));
+      view.setListFilterRows(List.of());
+      return;
+    }
+
+    Map<Integer, ListNoteData> notesById = loadListNoteData();
+    Map<String, SortedSet<Integer>> keywordIndex = buildKeywordIndex(notesById);
+
+    if (view.getActiveListMode() == ZettelWindowView.ListMode.PAGE_KEY) {
+      refreshListPageKeyWindow(notesById, keywordIndex);
+    } else {
+      refreshListFilterWindow(notesById, keywordIndex);
+    }
+  }
+
+  /**
+   * Lädt alle LIST-relevanten Zetteldaten aus der Datenbank und gruppiert sie pro Zettel.
+   *
+   * @return Zettelindex nach ID
+   */
+  private Map<Integer, ListNoteData> loadListNoteData() {
+    Map<Integer, ListNoteData> out = new LinkedHashMap<>();
+
+    for (NoteRepository.ListBrowseRow row : noteRepository.loadListBrowseRows()) {
+      ListNoteData data = out.computeIfAbsent(
+          row.noteId(),
+          id -> new ListNoteData(id, row.title(), row.bodyBlob(), row.bodyCodec())
+      );
+
+      String keyword = row.keyword() == null ? "" : row.keyword().trim();
+      if (!keyword.isBlank()) {
+        data.keywords.add(keyword);
+      }
+    }
+
+    return out;
+  }
+
+  /**
+   * Baut einen Schlagwortindex auf, der pro Schlagwort alle zugehörigen Zettelnummern enthält.
+   *
+   * @param notesById gruppierte Zetteldaten
+   * @return Schlagwortindex
+   */
+  private Map<String, SortedSet<Integer>> buildKeywordIndex(Map<Integer, ListNoteData> notesById) {
+    Map<String, SortedSet<Integer>> out = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+
+    for (ListNoteData note : notesById.values()) {
+      for (String keyword : note.keywords) {
+        out.computeIfAbsent(keyword, ignored -> new TreeSet<>()).add(note.noteId);
+      }
+    }
+
+    return out;
+  }
+
+  /**
+   * Rendert die PAGE_KEY-Ansicht.
+   *
+   * @param notesById gruppierte Zetteldaten
+   * @param keywordIndex Schlagwortindex
+   */
+  private void refreshListPageKeyWindow(Map<Integer, ListNoteData> notesById,
+                                        Map<String, SortedSet<Integer>> keywordIndex) {
+    ListNoteData root = notesById.get(currentNote.getId());
+    if (root == null) {
+      view.setListPageKeyRows(List.of(createListStatusLabel("Aktueller Zettel nicht gefunden")));
+      return;
+    }
+
+    List<Node> rows = new ArrayList<>();
+    rows.add(createListRootTitle(root.title));
+
+    int maxDepth = (int) Math.round(view.getListDepthSlider().getValue());
+    appendPageKeyRows(
+        rows,
+        root,
+        notesById,
+        keywordIndex,
+        1,
+        maxDepth,
+        new LinkedHashSet<>(),
+        new LinkedHashSet<>(Set.of(root.noteId))
+    );
+
+    view.setListPageKeyRows(rows);
+  }
+
+  /**
+   * Baut die PAGE_KEY-Struktur rekursiv auf.
+   *
+   * @param rows Zielknoten
+   * @param note aktueller Zettel
+   * @param notesById Zettelindex
+   * @param keywordIndex Schlagwortindex
+   * @param depth aktuelle Tiefe
+   * @param maxDepth maximale Tiefe
+   * @param excludedKeywords Schlagwörter, die in dieser und tieferen Ebenen nicht erneut auftauchen sollen
+   * @param visitedNoteIds bereits im aktuellen Pfad besuchte Zettelnummern
+   */
+  private void appendPageKeyRows(List<Node> rows,
+                                 ListNoteData note,
+                                 Map<Integer, ListNoteData> notesById,
+                                 Map<String, SortedSet<Integer>> keywordIndex,
+                                 int depth,
+                                 int maxDepth,
+                                 Set<String> excludedKeywords,
+                                 LinkedHashSet<Integer> visitedNoteIds) {
+    if (depth > maxDepth) {
+      return;
+    }
+
+    List<String> visibleKeywords = note.keywords.stream()
+                                       .filter(keyword -> !containsIgnoreCase(excludedKeywords, keyword))
+                                       .sorted(String.CASE_INSENSITIVE_ORDER)
+                                       .toList();
+
+    for (String keyword : visibleKeywords) {
+      rows.add(createPageKeyKeywordLabel(keyword, depth));
+
+      SortedSet<Integer> relatedIds = keywordIndex.getOrDefault(keyword, new TreeSet<>());
+      for (Integer relatedId : relatedIds) {
+        if (relatedId == null || relatedId <= 0 || relatedId == note.noteId || visitedNoteIds.contains(relatedId)) {
+          continue;
+        }
+
+        ListNoteData related = notesById.get(relatedId);
+        if (related == null) {
+          continue;
+        }
+
+        rows.add(createPageKeyNoteButton(related.noteId, related.title, depth));
+
+        LinkedHashSet<Integer> nextVisited = new LinkedHashSet<>(visitedNoteIds);
+        nextVisited.add(related.noteId);
+
+        LinkedHashSet<String> nextExcluded = new LinkedHashSet<>(excludedKeywords);
+        nextExcluded.addAll(note.keywords);
+
+        appendPageKeyRows(
+            rows,
+            related,
+            notesById,
+            keywordIndex,
+            depth + 1,
+            maxDepth,
+            nextExcluded,
+            nextVisited
+        );
+      }
+    }
+  }
+
+  /**
+   * Rendert die LIST-Filteransicht.
+   *
+   * @param notesById gruppierte Zetteldaten
+   * @param keywordIndex Schlagwortindex
+   */
+  private void refreshListFilterWindow(Map<Integer, ListNoteData> notesById,
+                                       Map<String, SortedSet<Integer>> keywordIndex) {
+    String filterText = normalizeFilterText(view.getListFilterField().getText());
+    boolean fullText = view.getListFullTextToggleButton().isSelected();
+    boolean emptyFilter = filterText.isBlank();
+
+    List<ZettelWindowView.ListFilterRow> rows = new ArrayList<>();
+
+    for (ListNoteData note : notesById.values()) {
+      boolean titleMatch = emptyFilter || containsIgnoreCase(note.title, filterText);
+      boolean keywordMatch = emptyFilter || note.keywords.stream().anyMatch(keyword -> containsIgnoreCase(keyword, filterText));
+
+      boolean bodyMatch = false;
+      if (!emptyFilter && fullText) {
+        String plainText = decodePlainText(note);
+        bodyMatch = containsIgnoreCase(plainText, filterText);
+      }
+
+      boolean include = emptyFilter || titleMatch || keywordMatch || bodyMatch;
+      if (!include) {
+        continue;
+      }
+
+      boolean bodyMatchOnly = !emptyFilter && bodyMatch && !titleMatch && !keywordMatch;
+      Integer linkCount = computeLinkCount(note, keywordIndex);
+
+      rows.add(new ZettelWindowView.ListFilterRow(
+          note.noteId,
+          note.title,
+          linkCount,
+          bodyMatchOnly
+      ));
+    }
+
+    view.setListFilterRows(rows);
+  }
+
+  /**
+   * Berechnet die Anzahl verschiedener anderer Zettel, die über mindestens ein gemeinsames Schlagwort
+   * mit dem gegebenen Zettel verbunden sind.
+   *
+   * @param note Zettel
+   * @param keywordIndex Schlagwortindex
+   * @return Anzahl verknüpfter Zettel oder {@code null}, wenn der Zettel kein Schlagwort besitzt
+   */
+  private Integer computeLinkCount(ListNoteData note, Map<String, SortedSet<Integer>> keywordIndex) {
+    if (note.keywords.isEmpty()) {
+      return null;
+    }
+
+    Set<Integer> linked = new LinkedHashSet<>();
+    for (String keyword : note.keywords) {
+      for (Integer targetId : keywordIndex.getOrDefault(keyword, new TreeSet<>())) {
+        if (targetId != null && targetId != note.noteId) {
+          linked.add(targetId);
+        }
+      }
+    }
+    return linked.size();
+  }
+
+  /**
+   * Dekodiert den gespeicherten RichText-Inhalt eines Zettels in Plaintext.
+   *
+   * @param note Zetteldaten
+   * @return durchsuchbarer Text
+   */
+  private String decodePlainText(ListNoteData note) {
+    if (note.bodyBlob == null || note.bodyBlob.length == 0) {
+      return "";
+    }
+
+    if (!InlineCssRtfxBlobCodec.CODEC_NAME.equals(note.bodyCodec)) {
+      return "";
+    }
+
+    try {
+      InlineCssTextArea area = new InlineCssTextArea();
+      InlineCssRtfxBlobCodec.decodeFromGzipInto(area, note.bodyBlob);
+      return area.getText();
+    } catch (Exception ex) {
+      return "";
+    }
+  }
+
+  /**
+   * Normalisiert einen Filtertext für case-insensitive Enthält-Suchen.
+   *
+   * @param text Eingabetext
+   * @return normalisierter Text
+   */
+  private String normalizeFilterText(String text) {
+    return text == null ? "" : text.trim().toLowerCase(Locale.ROOT);
+  }
+
+  /**
+   * Prüft case-insensitiv, ob ein Text einen Suchtext enthält.
+   *
+   * @param text Quelltext
+   * @param needle Suchtext
+   * @return {@code true}, wenn Treffer vorliegt
+   */
+  private boolean containsIgnoreCase(String text, String needle) {
+    String source = text == null ? "" : text.toLowerCase(Locale.ROOT);
+    String search = needle == null ? "" : needle.toLowerCase(Locale.ROOT);
+    return source.contains(search);
+  }
+
+  /**
+   * Prüft case-insensitiv, ob eine Sammlung einen bestimmten Text enthält.
+   *
+   * @param values Quellwerte
+   * @param needle Suchtext
+   * @return {@code true}, wenn mindestens ein exakt gleicher Wert vorliegt
+   */
+  private boolean containsIgnoreCase(Collection<String> values, String needle) {
+    if (values == null || values.isEmpty()) {
+      return false;
+    }
+    for (String value : values) {
+      if (value != null && value.equalsIgnoreCase(needle)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Erzeugt die Wurzelüberschrift der PAGE_KEY-Ansicht.
+   *
+   * @param title Überschrift des aktuellen Zettels
+   * @return UI-Knoten
+   */
+  private Node createListRootTitle(String title) {
+    Label label = new Label(title == null || title.isBlank() ? "—" : title);
+    label.getStyleClass().add("zettel-list-root-title");
+    label.setWrapText(false);
+
+    VBox box = new VBox(label);
+    box.getStyleClass().add("zettel-list-root-title-box");
+    return box;
+  }
+
+  /**
+   * Erzeugt ein Schlagwortlabel für die PAGE_KEY-Ansicht.
+   *
+   * @param keyword Schlagwort
+   * @param depth aktuelle Ebene
+   * @return UI-Knoten
+   */
+  private Node createPageKeyKeywordLabel(String keyword, int depth) {
+    Label label = new Label(keyword == null ? "" : keyword);
+    label.getStyleClass().add("zettel-list-keyword-label");
+    label.setPadding(new Insets(depth == 1 ? 10 : 6, 0, 0, depth * 16.0));
+    return label;
+  }
+
+  /**
+   * Erzeugt einen anklickbaren Zettelkopf für die PAGE_KEY-Ansicht.
+   *
+   * @param noteId Zettelnummer
+   * @param title Überschrift
+   * @param depth aktuelle Ebene
+   * @return UI-Knoten
+   */
+  private Node createPageKeyNoteButton(int noteId, String title, int depth) {
+    Button button = new Button(noteId + " " + (title == null ? "" : title));
+    button.getStyleClass().add("zettel-list-note-button");
+    button.setMaxWidth(Double.MAX_VALUE);
+    button.setAlignment(Pos.CENTER_LEFT);
+    button.setWrapText(false);
+    button.setPadding(new Insets(2, 0, 2, depth * 16.0));
+    button.setOnAction(e -> openNoteViaToolbar(noteId));
+    return button;
+  }
+
+  /**
+   * Erzeugt ein einfaches Statuslabel für LIST.
+   *
+   * @param text Meldungstext
+   * @return UI-Knoten
+   */
+  private Node createListStatusLabel(String text) {
+    Label label = new Label(text == null ? "" : text);
+    label.getStyleClass().add("zettel-list-status-label");
+    return label;
   }
 
   /**

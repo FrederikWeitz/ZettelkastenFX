@@ -6,6 +6,7 @@ import de.zettelkastenfx.notes.editor.NoteEditorPane;
 import de.zettelkastenfx.notes.keywords.KeywordsTablePane;
 import javafx.application.Platform;
 import javafx.beans.property.ReadOnlyIntegerWrapper;
+import javafx.beans.property.ReadOnlyObjectWrapper;
 import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
@@ -113,6 +114,51 @@ public class ZettelWindowView {
   private String keyInventoryStatusText = "";
   private String keyActionStatusText = "";
   private KeyStatusType keyActionStatusType = KeyStatusType.INFO;
+
+  // LIST-Komponente
+  @Getter private final BorderPane listPane;
+  @Getter private final ToolBar listToolBar;
+  @Getter private final Button listPageKeyButton;
+  @Getter private final Slider listDepthSlider;
+  @Getter private final TextField listFilterField;
+  @Getter private final ToggleButton listFullTextToggleButton;
+  @Getter private final StackPane listContentHost;
+  @Getter private final ScrollPane listPageKeyScrollPane;
+  @Getter private final VBox listPageKeyBox;
+  @Getter private final TableView<ListFilterRow> listFilterTable;
+  @Getter private final TableColumn<ListFilterRow, Number> listFilterIdColumn;
+  @Getter private final TableColumn<ListFilterRow, String> listFilterTitleColumn;
+  @Getter private final TableColumn<ListFilterRow, Integer> listFilterLinkCountColumn;
+
+  public enum ListMode {
+    PAGE_KEY,
+    FILTER
+  }
+
+  @Getter private ListMode activeListMode = ListMode.PAGE_KEY;
+
+  @Getter
+  public static final class ListFilterRow {
+    private final int noteId;
+    private final String title;
+    private final Integer linkCount;
+    private final boolean bodyMatchOnly;
+
+    /**
+     * Erzeugt eine Tabellenzeile für die LIST-Filteransicht.
+     *
+     * @param noteId Zettelnummer
+     * @param title Überschrift
+     * @param linkCount Anzahl verknüpfter anderer Zettel; {@code null} bedeutet kein Schlagwort
+     * @param bodyMatchOnly {@code true}, wenn der Treffer ausschließlich über den Volltext zustande kam
+     */
+    public ListFilterRow(int noteId, String title, Integer linkCount, boolean bodyMatchOnly) {
+      this.noteId = noteId;
+      this.title = title == null ? "" : title;
+      this.linkCount = linkCount;
+      this.bodyMatchOnly = bodyMatchOnly;
+    }
+  }
 
   // Zustand für die Service-Area
   public enum ServiceAreaMode {
@@ -569,6 +615,130 @@ public class ZettelWindowView {
     keyPane.setTop(keyToolBar);
     keyPane.setCenter(keyCenter);
 
+    // List-Bereich (Überschriften)
+    listPane = new BorderPane();
+    listPane.getStyleClass().add("zettel-list-pane");
+
+    listToolBar = new ToolBar();
+    listToolBar.getStyleClass().add("zettel-list-toolbar");
+
+    listPageKeyButton = BaseIcon.PAGE_KEY.button();
+    listPageKeyButton.getStyleClass().add("zettel-list-page-key-button");
+    listPageKeyButton.setFocusTraversable(false);
+
+    listDepthSlider = new Slider(1, 3, 1);
+    listDepthSlider.getStyleClass().add("zettel-list-depth-slider");
+    listDepthSlider.setMinWidth(90);
+    listDepthSlider.setPrefWidth(90);
+    listDepthSlider.setMaxWidth(90);
+    listDepthSlider.setMajorTickUnit(1);
+    listDepthSlider.setMinorTickCount(0);
+    listDepthSlider.setSnapToTicks(true);
+    listDepthSlider.setShowTickMarks(true);
+    listDepthSlider.setShowTickLabels(true);
+    listDepthSlider.setFocusTraversable(false);
+
+    listFilterField = new TextField();
+    listFilterField.getStyleClass().add("zettel-list-filter-field");
+    listFilterField.setPromptText("Überschriften filtern");
+    listFilterField.setPrefWidth(170);
+
+    listFullTextToggleButton = new ToggleButton("Volltext");
+    listFullTextToggleButton.getStyleClass().add("zettel-list-fulltext-toggle");
+    listFullTextToggleButton.setFocusTraversable(false);
+
+    Label listDepthLabel = new Label("Tiefe:");
+    listDepthLabel.getStyleClass().add("zettel-list-depth-label");
+
+    Region listSpacer = new Region();
+    HBox.setHgrow(listSpacer, Priority.ALWAYS);
+
+    listToolBar.getItems().addAll(
+        listPageKeyButton,
+        listDepthLabel,
+        listDepthSlider,
+        new Separator(Orientation.VERTICAL),
+        listSpacer,
+        listFilterField,
+        listFullTextToggleButton
+    );
+
+    listPageKeyBox = new VBox(4);
+    listPageKeyBox.getStyleClass().add("zettel-list-page-key-box");
+    listPageKeyBox.setFillWidth(true);
+
+    listPageKeyScrollPane = new ScrollPane(listPageKeyBox);
+    listPageKeyScrollPane.setFitToWidth(true);
+    listPageKeyScrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+    listPageKeyScrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+    listPageKeyScrollPane.getStyleClass().add("zettel-list-page-key-scroll");
+
+    listFilterTable = new TableView<>();
+    listFilterTable.getStyleClass().add("zettel-list-filter-table");
+    listFilterTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+    listFilterTable.getSelectionModel().setSelectionMode(SelectionMode.SINGLE);
+
+    listFilterIdColumn = new TableColumn<>("Nr.");
+    listFilterIdColumn.setId("noteId");
+    listFilterIdColumn.setSortable(true);
+    listFilterIdColumn.setStyle("-fx-alignment: CENTER-RIGHT;");
+    listFilterIdColumn.setCellValueFactory(cellData ->
+                                               new ReadOnlyIntegerWrapper(cellData.getValue().getNoteId())
+    );
+
+    listFilterTitleColumn = new TableColumn<>("Überschrift");
+    listFilterTitleColumn.setId("title");
+    listFilterTitleColumn.setSortable(true);
+    listFilterTitleColumn.setCellValueFactory(cellData ->
+                                                  new ReadOnlyStringWrapper(cellData.getValue().getTitle())
+    );
+
+    listFilterLinkCountColumn = new TableColumn<>("Verkn.");
+    listFilterLinkCountColumn.setId("linkCount");
+    listFilterLinkCountColumn.setSortable(true);
+    listFilterLinkCountColumn.setStyle("-fx-alignment: CENTER-RIGHT;");
+    listFilterLinkCountColumn.setCellValueFactory(cellData ->
+                                                      new ReadOnlyObjectWrapper<>(cellData.getValue().getLinkCount())
+    );
+    listFilterLinkCountColumn.setComparator((left, right) -> {
+      int l = left == null ? Integer.MIN_VALUE : left;
+      int r = right == null ? Integer.MIN_VALUE : right;
+      return Integer.compare(l, r);
+    });
+    listFilterLinkCountColumn.setCellFactory(col -> new TableCell<>() {
+      @Override
+      protected void updateItem(Integer item, boolean empty) {
+        super.updateItem(item, empty);
+        setText(empty ? null : (item == null ? "—" : Integer.toString(item)));
+      }
+    });
+
+    listFilterTable.getColumns().addAll(
+        listFilterIdColumn,
+        listFilterTitleColumn,
+        listFilterLinkCountColumn
+    );
+    listFilterTable.setItems(FXCollections.observableArrayList());
+
+    listFilterTable.setRowFactory(table -> {
+      TableRow<ListFilterRow> row = new TableRow<>();
+      row.itemProperty().addListener((obs, oldItem, newItem) -> {
+        row.getStyleClass().remove("zettel-list-filter-body-match-row");
+        if (newItem != null && newItem.isBodyMatchOnly()) {
+          row.getStyleClass().add("zettel-list-filter-body-match-row");
+        }
+      });
+      return row;
+    });
+
+    listContentHost = new StackPane();
+    listContentHost.getStyleClass().add("zettel-list-content-host");
+
+    listPane.setTop(listToolBar);
+    listPane.setCenter(listContentHost);
+
+    setListMode(ListMode.PAGE_KEY);
+
     serviceArea.setTop(serviceAreaToolBar);
     serviceArea.setCenter(serviceAreaContentHost);
 
@@ -789,6 +959,51 @@ public class ZettelWindowView {
   public void setMagnifyLinkRows(String statusText, List<? extends Node> rows) {
     magnifyLinkStatusLabel.setText(statusText == null ? "" : statusText);
     magnifyLinkListBox.getChildren().setAll(rows);
+  }
+
+  /**
+   * Schaltet zwischen PAGE_KEY- und Filteransicht des LIST-Fensters um.
+   *
+   * @param mode neuer LIST-Modus
+   */
+  public void setListMode(ListMode mode) {
+    activeListMode = mode == null ? ListMode.PAGE_KEY : mode;
+
+    if (activeListMode == ListMode.PAGE_KEY) {
+      listContentHost.getChildren().setAll(listPageKeyScrollPane);
+    } else {
+      listContentHost.getChildren().setAll(listFilterTable);
+    }
+  }
+
+  /**
+   * Setzt die PAGE_KEY-Knoten neu.
+   *
+   * @param rows darzustellende Knoten
+   */
+  public void setListPageKeyRows(List<? extends Node> rows) {
+    listPageKeyBox.getChildren().setAll(rows);
+  }
+
+  /**
+   * Setzt die Zeilen der LIST-Filtertabelle neu.
+   * Die aktuelle Sortierung der Tabelle bleibt dabei erhalten,
+   * solange das LIST-Fenster geöffnet bleibt.
+   *
+   * @param rows darzustellende Tabellenzeilen
+   */
+  public void setListFilterRows(List<ListFilterRow> rows) {
+    ObservableList<ListFilterRow> items = listFilterTable.getItems();
+    if (items == null) {
+      items = FXCollections.observableArrayList();
+      listFilterTable.setItems(items);
+    }
+
+    items.setAll(rows);
+
+    if (!listFilterTable.getSortOrder().isEmpty()) {
+      listFilterTable.sort();
+    }
   }
 
   /**
@@ -1164,5 +1379,29 @@ public class ZettelWindowView {
         header.setStyle("-fx-max-height: 0; -fx-pref-height: 0; -fx-min-height: 0;");
       }
     });
+  }
+
+  /**
+   * Wendet eine dezente Akzentfarbe auf Menüleiste und Toolbar an.
+   *
+   * @param color Hex-Farbe oder {@code null}
+   */
+  public void applyAccentColor(String color) {
+    if (color == null || color.isBlank()) {
+      menuBar.setStyle("");
+      topToolBar.setStyle("");
+      return;
+    }
+
+    String menuStyle =
+        "-fx-background-color: " + color + ";" +
+            "-fx-background-insets: 0;";
+
+    String toolbarStyle =
+        "-fx-background-color: derive(" + color + ", 20%);" +
+            "-fx-background-insets: 0;";
+
+    menuBar.setStyle(menuStyle);
+    topToolBar.setStyle(toolbarStyle);
   }
 }

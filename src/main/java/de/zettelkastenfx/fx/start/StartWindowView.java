@@ -24,7 +24,7 @@ public class StartWindowView {
   private final Button exitButton;
 
   private final VBox menuBox;
-  private final StartMenuItem itemOne;
+  private final StartMenuItem windowItem;
   private final StartMenuItem itemTwo;
   private final StartMenuItem itemThree;
 
@@ -54,11 +54,11 @@ public class StartWindowView {
     menuBox.setSpacing(0);
     menuBox.setPadding(new Insets(2, 0, 0, 0));
 
-    itemOne = new StartMenuItem("Neuer Zettel");
+    windowItem = new StartMenuItem("Arbeitsfenster");
     itemTwo = new StartMenuItem("Datenbank");
     itemThree = new StartMenuItem("Schließen");
 
-    menuBox.getChildren().addAll(itemOne, itemTwo, itemThree);
+    menuBox.getChildren().addAll(windowItem, itemTwo, itemThree);
 
     layout.getChildren().addAll(headerPane, menuBox);
     root.getChildren().add(layout);
@@ -88,8 +88,8 @@ public class StartWindowView {
     return menuBox;
   }
 
-  public StartMenuItem getItemOne() {
-    return itemOne;
+  public StartMenuItem getWindowItem() {
+    return windowItem;
   }
 
   public StartMenuItem getItemTwo() {
