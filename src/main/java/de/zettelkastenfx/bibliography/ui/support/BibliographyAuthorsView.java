@@ -1,7 +1,6 @@
 package de.zettelkastenfx.bibliography.ui.support;
 
 import de.zettelkastenfx.bibliography.model.Author;
-import de.zettelkastenfx.bibliography.ui.TypeChoice;
 import de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion;
 import javafx.beans.binding.Bindings;
 import javafx.beans.property.BooleanProperty;
@@ -24,12 +23,12 @@ import java.util.function.Supplier;
  */
 public class BibliographyAuthorsView extends StackPane {
 
-  private final TypeChoice ownerType;
+  private final String ownerMediaTypeBibName;
   private final Function<AuthorRow, List<AuthorSuggestion>> suggestionProvider;
-  private final Consumer<TypeChoice> authorsEditedHandler;
+  private final Consumer<String> authorsEditedHandler;
   private final Runnable refreshSelectionHandler;
   private final Supplier<Boolean> suppressLookupCallbackSupplier;
-  private final BiConsumer<TypeChoice, Integer> selectedEntryUpdater;
+  private final BiConsumer<String, Integer> selectedEntryUpdater;
 
   private final VBox editorRoot = new VBox(4);
   private final VBox rowsBox = new VBox(4);
@@ -41,24 +40,24 @@ public class BibliographyAuthorsView extends StackPane {
   /**
    * Erzeugt eine neue Autorenansicht.
    *
-   * @param ownerType zugehöriger Bibliographie-Typ.
-   * @param editOn Property für den Bearbeitungsmodus.
-   * @param suggestionProvider Callback zum Laden von Autorvorschlägen.
-   * @param authorsEditedHandler Callback bei Abschluss einer Autorenbearbeitung.
-   * @param refreshSelectionHandler Callback für reine Anzeigeaktualisierungen.
-   * @param suppressLookupCallbackSupplier liefert, ob Lookup-Callbacks derzeit unterdrückt sind.
-   * @param selectedEntryUpdater Callback zum Zurücksetzen oder Setzen einer selektierten Eintrags-ID.
+   * @param ownerMediaTypeBibName technischer Medientypname des Formulars
+   * @param editOn Property für den Bearbeitungsmodus
+   * @param suggestionProvider Callback zum Laden von Autorvorschlägen
+   * @param authorsEditedHandler Callback bei Abschluss einer Autorenbearbeitung
+   * @param refreshSelectionHandler Callback für reine Anzeigeaktualisierungen
+   * @param suppressLookupCallbackSupplier liefert, ob Lookup-Callbacks derzeit unterdrückt sind
+   * @param selectedEntryUpdater Callback zum Zurücksetzen oder Setzen einer selektierten Eintrags-ID
    */
   public BibliographyAuthorsView(
-      TypeChoice ownerType,
+      String ownerMediaTypeBibName,
       BooleanProperty editOn,
       Function<AuthorRow, List<AuthorSuggestion>> suggestionProvider,
-      Consumer<TypeChoice> authorsEditedHandler,
+      Consumer<String> authorsEditedHandler,
       Runnable refreshSelectionHandler,
       Supplier<Boolean> suppressLookupCallbackSupplier,
-      BiConsumer<TypeChoice, Integer> selectedEntryUpdater
+      BiConsumer<String, Integer> selectedEntryUpdater
   ) {
-    this.ownerType = ownerType;
+    this.ownerMediaTypeBibName = normalizeMediaTypeBibName(ownerMediaTypeBibName);
     this.suggestionProvider = suggestionProvider;
     this.authorsEditedHandler = authorsEditedHandler;
     this.refreshSelectionHandler = refreshSelectionHandler;
@@ -203,18 +202,11 @@ public class BibliographyAuthorsView extends StackPane {
         return;
       }
 
-      selectedEntryUpdater.accept(ownerType, null);
       showAuthorSuggestions(row);
     });
 
     row.firstNameField.textProperty().addListener((obs, old, value) -> {
       refreshReadOnlyText();
-
-      if (isLookupSuppressed()) {
-        return;
-      }
-
-      selectedEntryUpdater.accept(ownerType, null);
     });
 
     row.lastNameField.focusedProperty().addListener((obs, old, focused) -> {
@@ -290,7 +282,7 @@ public class BibliographyAuthorsView extends StackPane {
 
     refreshPositions();
     refreshReadOnlyText();
-    authorsEditedHandler.accept(ownerType);
+    authorsEditedHandler.accept(ownerMediaTypeBibName);
   }
 
   private void ensureTrailingEmptyRow() {
@@ -331,6 +323,16 @@ public class BibliographyAuthorsView extends StackPane {
 
   private boolean isLookupSuppressed() {
     return suppressInternalEvents || Boolean.TRUE.equals(suppressLookupCallbackSupplier.get());
+  }
+
+  /**
+   * Normalisiert einen technischen Medientypnamen.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return normalisierter Medientypname oder leerer String
+   */
+  private String normalizeMediaTypeBibName(String mediaTypeBibName) {
+    return mediaTypeBibName == null ? "" : mediaTypeBibName.trim().toLowerCase();
   }
 
   /**

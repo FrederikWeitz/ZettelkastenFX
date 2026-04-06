@@ -39,6 +39,7 @@ public class ZettelWindowView {
   @Getter private final Button toolButtonPageCopy;
   @Getter private final Button toolButtonPageWithBibliography;
   @Getter private final Button toolButtonLinkEdit;
+  @Getter private final Button toolButtonBibliography;
 
   // Button zum Aufklappen der Service-Area
   @Getter private final Button toolButtonToggleServiceArea;
@@ -292,6 +293,7 @@ public class ZettelWindowView {
     toolButtonPageCopy = BaseIcon.PAGE_COPY.button();
     toolButtonPageWithBibliography = BaseIcon.PAGE_RED.button();
     toolButtonLinkEdit = BaseIcon.LINK_EDIT.button();
+    toolButtonBibliography = BaseIcon.BIBLIOGRAPHY.button("Medienverwaltung öffnen");
 
     toolButtonToggleServiceArea = BaseIcon.LAYOUTS_JOIN.button("Service-Fenster ausblenden");
 
@@ -319,6 +321,7 @@ public class ZettelWindowView {
         toolButtonPageWithBibliography,
         toolMenuFollowingPages,
         toolButtonLinkEdit,
+        toolButtonBibliography,
         toolbarSpacer,
         toolButtonToggleServiceArea
     );

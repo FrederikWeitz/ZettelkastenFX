@@ -22,11 +22,18 @@ public enum BaseIcon {
 
   ARROW_REFRESH("arrow_refresh", "Aktualisieren"),
 
+  ADD_PACKAGE("add_package", "Paket hinzufügen"),
+  DELETE_PACKAGE("delete_package", "Paket löschen"),
+  EDIT_PACKAGE("edit_package", "Paket editieren"),
+
+  BIBLIOGRAPHY("bibliography", "Bibliographie"),
+
   BOOK("book", "Bibliografie"),
   BOOK_ADD("book_add", "Buch hinzufügen"),
   BOOK_DELETE("book_delete", "Buch löschen"),
   BOOK_EDIT("book_edit", "Buch editieren"),
   BOOK_KEY("book_key", "Buchschlüssel"),
+  BOOK_MAGNIFY("book_magnify", "Buch suchen"),
 
   BULLET_ARROW_DOWN("bullet_arrow_down", "Hoch"),
   BULLET_ARROW_LEFT("bullet_arrow_left", "Zurück"),
@@ -71,6 +78,9 @@ public enum BaseIcon {
   PAGE_EDIT("page_edit", "Aufgabe"),
 
   PERFORMANCE_ANALYSIS("performance_analysis", "Cluster"),
+
+  TAG_BLUE_ADD("tag_blue_add", "Eigenschaft hinzufügen"),
+  TAG_BLUE_DELETE("tag_blue_delete", "Eigenschaft entfernen"),
 
   TEXT_ALIGN_CENTER("text_align_center", "Zentrieren"),
   TEXT_ALIGN_JUSTIFY("text_align_justify", "Blocksatz"),

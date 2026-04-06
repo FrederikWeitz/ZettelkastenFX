@@ -2,20 +2,21 @@ package de.zettelkastenfx.notes.controller;
 
 import de.zettelkastenfx.base.BaseIcon;
 import de.zettelkastenfx.base.util.PersistenceUtil;
+import de.zettelkastenfx.bibliography.api.BibliographyService;
+import de.zettelkastenfx.bibliography.api.BibliographyServiceImpl;
 import de.zettelkastenfx.bibliography.model.*;
-import de.zettelkastenfx.bibliography.persistence.BibliographyRepository;
 import de.zettelkastenfx.bibliography.ui.BibliographyEditorShell;
-import de.zettelkastenfx.bibliography.ui.TypeChoice;
-import de.zettelkastenfx.bibliography.ui.lookup.AiChoiceProvider;
-import de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion;
-import de.zettelkastenfx.bibliography.ui.lookup.BibliographyLookupProvider;
-import de.zettelkastenfx.bibliography.ui.lookup.TitleSuggestion;
+import de.zettelkastenfx.bibliography.ui.BibliographyEditorShellFactory;
+import de.zettelkastenfx.bibliography.ui.MediaManagementDialog;
+import de.zettelkastenfx.notes.controller.ZettelWindowView.KeyTableRow;
 import de.zettelkastenfx.notes.editor.NoteEditorPane;
 import de.zettelkastenfx.notes.editor.format.InlineCssStyleUtil;
-import de.zettelkastenfx.notes.model.*;
-import de.zettelkastenfx.persistence.NoteRepository;
+import de.zettelkastenfx.notes.model.LinkType;
+import de.zettelkastenfx.notes.model.Note;
+import de.zettelkastenfx.notes.model.NoteLink;
+import de.zettelkastenfx.notes.model.NoteReferenceInfo;
 import de.zettelkastenfx.persistence.InlineCssRtfxBlobCodec;
-import de.zettelkastenfx.notes.controller.ZettelWindowView.KeyTableRow;
+import de.zettelkastenfx.persistence.NoteRepository;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -41,7 +42,8 @@ public class ZettelWindowController {
   private String titleTextBeforeEdit = "";
 
   private final NoteRepository noteRepository;
-  private final BibliographyRepository bibliographyRepository;
+  private final BibliographyService bibliographyService;
+  private final BibliographyEditorShellFactory bibliographyShellFactory;
 
   private Note currentNote;     // null = noch nicht gespeichert
   private boolean loading;
@@ -90,6 +92,18 @@ public class ZettelWindowController {
     ERROR
   }
 
+  private enum DuplicateBibliographyDecision {
+    UPDATE_EXISTING,
+    SAVE_AS_NEW,
+    CANCEL
+  }
+
+  private enum LinkedBibliographyDecision {
+    UPDATE_LINKED_ENTRY,
+    SAVE_AS_NEW,
+    CANCEL
+  }
+
   private final Set<String> collapsedMagnifyIncomingBranches = new HashSet<>();
   private final Set<String> collapsedMagnifyOutgoingBranches = new HashSet<>();
   private Integer lastMagnifyRenderedSourceNoteId;
@@ -122,7 +136,11 @@ public class ZettelWindowController {
     this.stage = stage;
     this.view = view;
     this.noteRepository = PersistenceUtil.getNoteRepository();
-    this.bibliographyRepository = PersistenceUtil.getBibliographyRepository();
+    this.bibliographyService = new BibliographyServiceImpl(PersistenceUtil.getDataSource());
+    this.bibliographyShellFactory = new BibliographyEditorShellFactory(
+        bibliographyService,
+        PersistenceUtil.getDataSource()
+    );
 
     openInitialNote();
     wireEvents();
@@ -152,6 +170,7 @@ public class ZettelWindowController {
     view.getToolButtonPageWithBibliography().setOnAction(event -> createCopyBibliography());
     view.getToolButtonLinkEdit().setOnAction(event -> toggleLinkEditPopup());
     view.getToolButtonToggleServiceArea().setOnAction(event -> toggleServiceArea());
+    view.getToolButtonBibliography().setOnAction(event -> openMediaManagementDialog());
 
     // Toolbar: Service-Fenster
     view.getServiceAreaMagnifyLinkButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.MAGNIFY_LINK));
@@ -1729,19 +1748,13 @@ public class ZettelWindowController {
     }
 
     if (source == null
-            || source.getBibliographyType() == null
-            || source.getBibliographyType() == BibliographyType.USER
             || source.getBibliographyRefId() == null
             || source.getBibliographyRefId() <= 0) {
-      target.setBibliographyType(BibliographyType.USER);
       target.setBibliographyRefId(null);
-      target.setBibliographyEntry(null);
       return;
     }
 
-    target.setBibliographyType(source.getBibliographyType());
     target.setBibliographyRefId(source.getBibliographyRefId());
-    target.setBibliographyEntry(source.getBibliographyEntry());
   }
 
   /**
@@ -1878,137 +1891,40 @@ public class ZettelWindowController {
     openNoteViaToolbar(target);
   }
 
+  /**
+   * Erzeugt eine Bibliographie-Shell für den Zettelkontext.
+   *
+   * @return konfigurierte Bibliographie-Shell
+   */
   private BibliographyEditorShell createBibliographyShell() {
-    var shell = new BibliographyEditorShell();
+    BibliographyEditorShellFactory.ShellBundle bundle = bibliographyShellFactory.create(
+        new BibliographyEditorShellFactory.ShellCallbacks() {
+          @Override
+          public void onSave(BibliographyEditorShell shell) {
+            saveAndLinkBibliography(shell);
+          }
 
-    shell.setLookupProvider(new BibliographyLookupProvider() {
-      @Override
-      public List<AuthorSuggestion> findAuthors(
-          TypeChoice type,
-          String lastNamePrefix,
-          Integer selectedEntryId
-      ) {
-        BibliographyType bType = toBibliographyType(type);
-        return bibliographyRepository.findAuthorSuggestions(bType, lastNamePrefix, selectedEntryId);
-      }
+          @Override
+          public void onDelete(BibliographyEditorShell shell) {
+            unlinkCurrentBibliography();
+          }
 
-      @Override
-      public List<TitleSuggestion> findTitles(
-          TypeChoice type,
-          String query,
-          List<Author> requiredAuthors
-      ) {
-        BibliographyType bType = toBibliographyType(type);
+          @Override
+          public void onNoneSelected(BibliographyEditorShell shell) {
+            unlinkCurrentBibliography();
+          }
 
-        var hits = (bType == BibliographyType.COLLECTION && (requiredAuthors == null || requiredAuthors.isEmpty()))
-                       ? bibliographyRepository.findCollectionSuggestions(query)
-                       : bibliographyRepository.findTitleSuggestions(bType, query, requiredAuthors);
-
-        return hits.stream()
-                   .map(t -> new TitleSuggestion(
-                       t.entryId(),
-                       t.title(),
-                       t.authors()
-                   ))
-                   .toList();
-      }
-
-      @Override
-      public TitleSuggestion resolveExactTitle(
-          TypeChoice type,
-          String title,
-          List<Author> requiredAuthors
-      ) {
-        BibliographyType bType = toBibliographyType(type);
-
-        var hit = (bType == BibliographyType.COLLECTION)
-                      ? bibliographyRepository.resolveExactCollectionTitle(title)
-                      : bibliographyRepository.resolveExactTitle(bType, title, requiredAuthors);
-
-        return hit == null ? null : new TitleSuggestion(
-            hit.entryId(),
-            hit.title(),
-            hit.authors()
-        );
-      }
-
-      @Override
-      public TitleSuggestion resolveUniqueTitleForAuthors(
-          TypeChoice type,
-          List<Author> requiredAuthors
-      ) {
-        BibliographyType bType = toBibliographyType(type);
-        var hit = bibliographyRepository.resolveUniqueTitleForAuthors(bType, requiredAuthors);
-        return hit == null ? null : new TitleSuggestion(
-            hit.entryId(),
-            hit.title(),
-            hit.authors()
-        );
-      }
-
-      @Override
-      public List<String> findSeries(TypeChoice type, String query) {
-        BibliographyType bType = toBibliographyType(type);
-        return bibliographyRepository.findSeriesSuggestions(bType, query)
-                   .stream()
-                   .map(BibliographyRepository.LookupSeries::value)
-                   .toList();
-      }
-
-      @Override
-      public Object loadEntry(TypeChoice type, Integer entryId) {
-        if (entryId == null || entryId <= 0) {
-          return null;
+          @Override
+          public void onRequestCreateRelated(BibliographyEditorShell shell,
+                                             String relatedBibtexName,
+                                             String targetMediaTypeBibName,
+                                             String displayText) {
+            openRelatedEditor(shell, relatedBibtexName, targetMediaTypeBibName, displayText);
+          }
         }
-
-        BibliographyType bType = toBibliographyType(type);
-        return bibliographyRepository.load(entryId, bType);
-      }
-    });
-
-    shell.setAiChoiceProvider(new AiChoiceProvider() {
-      @Override
-      public List<String> findProviders(String prefix, String modelFilter, int limit) {
-        return bibliographyRepository.findAiProviders(prefix, modelFilter, limit);
-      }
-
-      @Override
-      public List<String> findModels(String prefix, String providerFilter, int limit) {
-        return bibliographyRepository.findAiModels(prefix, providerFilter, limit);
-      }
-
-      @Override
-      public List<String> loadRecentProviders(int limit) {
-        return bibliographyRepository.loadRecentAiProviders(limit);
-      }
-
-      @Override
-      public List<String> loadRecentModels(int limit) {
-        return bibliographyRepository.loadRecentAiModels(limit);
-      }
-    });
-
-    shell.setTypeChoices(
-        TypeChoice.NONE,
-        TypeChoice.BOOK,
-        TypeChoice.COLLECTION,
-        TypeChoice.ARTICLE_IN_COLLECTION,
-        TypeChoice.JOURNAL,
-        TypeChoice.JOURNAL_ARTICLE,
-        TypeChoice.THESIS,
-        TypeChoice.INTERNET,
-        TypeChoice.EDITION,
-        TypeChoice.AI
     );
 
-    shell.setOnDelete(this::unlinkCurrentBibliography);
-    shell.setOnAdd(() -> saveAndLinkBibliography(shell));
-
-    shell.setOnRequestCreateCollection(() -> openCollectionEditor(shell));
-    shell.setOnRequestCreateJournal(() -> openJournalEditor(shell));
-
-    shell.setOnNoneSelected(this::unlinkCurrentBibliography);
-    return shell;
+    return bundle.shell();
   }
 
   private void showBibliographyShell(BibliographyEditorShell shell) {
@@ -2045,6 +1961,89 @@ public class ZettelWindowController {
     return false;
   }
 
+  /**
+   * Fragt bei einem potenziellen Dublettenfund, wie gespeichert werden soll.
+   *
+   * @param duplicates gefundene bestehende Einträge
+   * @return Nutzerentscheidung
+   */
+  private DuplicateBibliographyDecision askDuplicateBibliographyDecision(
+      List<DynamicBibliographyEntry> duplicates
+  ) {
+    ButtonType updateExisting = new ButtonType("Bestehenden Eintrag aktualisieren", ButtonBar.ButtonData.YES);
+    ButtonType saveAsNew = new ButtonType("Als neuen Eintrag speichern", ButtonBar.ButtonData.OTHER);
+    ButtonType cancel = new ButtonType("Nicht speichern", ButtonBar.ButtonData.CANCEL_CLOSE);
+
+    String duplicateText = duplicates.stream()
+                               .map(entry -> bibliographyService.loadReference(entry.getId())
+                                                 .map(BibliographyReference::displayText)
+                                                 .orElse("Eintrag #" + entry.getId()))
+                               .filter(text -> text != null && !text.isBlank())
+                               .distinct()
+                               .limit(5)
+                               .reduce((a, b) -> a + "\n• " + b)
+                               .map(text -> "• " + text)
+                               .orElse("• Bestehender Eintrag");
+
+    Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+    alert.initOwner(stage);
+    alert.setTitle("Bibliographische Angabe");
+    alert.setHeaderText("Es existiert bereits ein passender Eintrag");
+    alert.setContentText(
+        "Es wurden bestehende Einträge mit denselben Identifikationsmerkmalen gefunden:\n\n"
+            + duplicateText
+            + "\n\nWie soll verfahren werden?"
+    );
+    alert.getButtonTypes().setAll(updateExisting, saveAsNew, cancel);
+
+    Optional<ButtonType> result = alert.showAndWait();
+    if (result.isEmpty() || result.get() == cancel) {
+      return DuplicateBibliographyDecision.CANCEL;
+    }
+    if (result.get() == updateExisting) {
+      return DuplicateBibliographyDecision.UPDATE_EXISTING;
+    }
+    return DuplicateBibliographyDecision.SAVE_AS_NEW;
+  }
+
+  /**
+   * Fragt nach, wie mit einem bereits mit dem aktuellen Zettel verknüpften
+   * Bibliographie-Eintrag verfahren werden soll.
+   *
+   * @param linkedEntryId ID des aktuell verknüpften Eintrags
+   * @return Nutzerentscheidung
+   */
+  private LinkedBibliographyDecision askLinkedBibliographyDecision(Integer linkedEntryId) {
+    ButtonType updateExisting = new ButtonType("Verknüpften Eintrag überschreiben", ButtonBar.ButtonData.YES);
+    ButtonType saveAsNew = new ButtonType("Als neuen Eintrag speichern", ButtonBar.ButtonData.OTHER);
+    ButtonType cancel = new ButtonType("Nicht speichern", ButtonBar.ButtonData.CANCEL_CLOSE);
+
+    String linkedText = bibliographyService.loadReference(linkedEntryId == null ? 0 : linkedEntryId)
+                            .map(BibliographyReference::displayText)
+                            .filter(text -> text != null && !text.isBlank())
+                            .orElse(linkedEntryId == null ? "Bestehender Eintrag" : "Eintrag #" + linkedEntryId);
+
+    Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+    alert.initOwner(stage);
+    alert.setTitle("Bibliographische Angabe");
+    alert.setHeaderText("Der Zettel ist bereits mit einem bibliographischen Eintrag verknüpft");
+    alert.setContentText(
+        "Der aktuell verknüpfte Eintrag lautet:\n\n• " + linkedText
+            + "\n\nSoll dieser bestehende Eintrag überschrieben werden,"
+            + "\noder soll aus den Änderungen ein neuer Eintrag entstehen?"
+    );
+    alert.getButtonTypes().setAll(updateExisting, saveAsNew, cancel);
+
+    Optional<ButtonType> result = alert.showAndWait();
+    if (result.isEmpty() || result.get() == cancel) {
+      return LinkedBibliographyDecision.CANCEL;
+    }
+    if (result.get() == updateExisting) {
+      return LinkedBibliographyDecision.UPDATE_LINKED_ENTRY;
+    }
+    return LinkedBibliographyDecision.SAVE_AS_NEW;
+  }
+
   private enum ArticleWithoutCollectionDecision {
     SAVE_WITHOUT_COLLECTION,
     CREATE_COLLECTION,
@@ -2075,244 +2074,6 @@ public class ZettelWindowController {
       return ArticleWithoutCollectionDecision.CREATE_COLLECTION;
     }
     return ArticleWithoutCollectionDecision.CANCEL;
-  }
-
-  private boolean validateBookForSave(BookEntry entry) {
-    List<String> missing = new ArrayList<>();
-
-    if (!hasTitle(entry.getTitle())) {
-      missing.add("• Buchtitel");
-    }
-    if (!hasAuthors(entry.getAuthors())) {
-      missing.add("• mindestens ein Autor");
-    }
-
-    if (!missing.isEmpty()) {
-      showBibliographyWarning(
-          "Buch kann noch nicht gespeichert werden",
-          "Es fehlen Pflichtangaben:\n\n" + String.join("\n", missing)
-      );
-      return false;
-    }
-    return true;
-  }
-
-  private boolean validateCollectionForSave(CollectionEntry entry) {
-    List<String> missing = new ArrayList<>();
-
-    if (!hasTitle(entry.getTitle())) {
-      missing.add("• Titel des Sammelbands");
-    }
-    if (!hasAuthors(entry.getAuthors())) {
-      missing.add("• mindestens ein Autor/Herausgeber");
-    }
-
-    if (!missing.isEmpty()) {
-      showBibliographyWarning(
-          "Sammelband kann noch nicht gespeichert werden",
-          "Es fehlen Pflichtangaben:\n\n" + String.join("\n", missing)
-      );
-      return false;
-    }
-    return true;
-  }
-
-  private boolean validateArticleForSave(ArticleInCollectionEntry entry) {
-    List<String> missing = new ArrayList<>();
-
-    if (!hasTitle(entry.getTitle())) {
-      missing.add("• Artikeltitel");
-    }
-    if (!hasAuthors(entry.getAuthors())) {
-      missing.add("• mindestens ein Autor");
-    }
-    if (!hasCollectionTitle(entry.getCollectionTitle())) {
-      missing.add("• Sammelband");
-    }
-
-    if (!missing.isEmpty()) {
-      showBibliographyWarning(
-          "Artikel in Sammelband kann noch nicht gespeichert werden",
-          "Es fehlen Pflichtangaben:\n\n" + String.join("\n", missing)
-      );
-      return false;
-    }
-
-    return true;
-  }
-
-  /**
-   * Prüft, ob eine Zeitschrift die nötigen Pflichtangaben zum Speichern enthält.
-   *
-   * @param entry zu prüfender Zeitschrifteneintrag.
-   * @return {@code true}, wenn die Pflichtangaben vollständig sind.
-   */
-  private boolean validateJournalForSave(JournalEntry entry) {
-    List<String> missing = new ArrayList<>();
-
-    if (!hasTitle(entry.getTitle())) {
-      missing.add("• Titel der Zeitschrift");
-    }
-
-    if (!missing.isEmpty()) {
-      showBibliographyWarning(
-          "Zeitschrift kann noch nicht gespeichert werden",
-          "Es fehlen Pflichtangaben:\n\n" + String.join("\n", missing)
-      );
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * Prüft, ob ein Zeitschriftenartikel die nötigen Pflichtangaben zum Speichern enthält.
-   *
-   * @param entry zu prüfender Zeitschriftenartikel.
-   * @return {@code true}, wenn die Pflichtangaben vollständig sind.
-   */
-  private boolean validateJournalArticleForSave(JournalArticleEntry entry) {
-    List<String> missing = new ArrayList<>();
-
-    if (!hasTitle(entry.getTitle())) {
-      missing.add("• Artikeltitel");
-    }
-    if (!hasAuthors(entry.getAuthors())) {
-      missing.add("• mindestens ein Autor");
-    }
-    if (!hasTitle(entry.getJournalTitle())) {
-      missing.add("• Zeitschrift");
-    }
-
-    if (!missing.isEmpty()) {
-      showBibliographyWarning(
-          "Zeitschriftenartikel kann noch nicht gespeichert werden",
-          "Es fehlen Pflichtangaben:\n\n" + String.join("\n", missing)
-      );
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * Prüft, ob eine Thesis die nötigen Pflichtangaben zum Speichern enthält.
-   *
-   * @param entry zu prüfender Thesis-Eintrag
-   * @return {@code true}, wenn die Pflichtangaben vollständig sind
-   */
-  private boolean validateThesisForSave(ThesisEntry entry) {
-    List<String> missing = new ArrayList<>();
-
-    if (!hasTitle(entry.getTitle())) {
-      missing.add("• Titel der Arbeit");
-    }
-    if (!hasAuthors(entry.getAuthors())) {
-      missing.add("• mindestens ein Autor");
-    }
-
-    if (!missing.isEmpty()) {
-      showBibliographyWarning(
-          "Thesis kann noch nicht gespeichert werden",
-          "Es fehlen Pflichtangaben:\n\n" + String.join("\n", missing)
-      );
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * Prüft, ob eine Internetquelle die nötigen Pflichtangaben zum Speichern enthält.
-   *
-   * @param entry zu prüfender Internet-Eintrag
-   * @return {@code true}, wenn die Pflichtangaben vollständig sind
-   */
-  private boolean validateInternetForSave(InternetEntry entry) {
-    List<String> missing = new ArrayList<>();
-
-    if (!hasTitle(entry.getTitle())) {
-      missing.add("• Titel");
-    }
-    if (!hasAuthors(entry.getAuthors())) {
-      missing.add("• mindestens ein Autor");
-    }
-    if (norm(entry.getUrl()).isBlank()) {
-      missing.add("• URL");
-    }
-
-    if (!missing.isEmpty()) {
-      showBibliographyWarning(
-          "Internetquelle kann noch nicht gespeichert werden",
-          "Es fehlen Pflichtangaben:\n\n" + String.join("\n", missing)
-      );
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * Prüft, ob eine Edition die nötigen Pflichtangaben zum Speichern enthält.
-   *
-   * @param entry zu prüfender Editions-Eintrag
-   * @return {@code true}, wenn die Pflichtangaben vollständig sind
-   */
-  private boolean validateEditionForSave(EditionEntry entry) {
-    List<String> missing = new ArrayList<>();
-
-    if (!hasTitle(entry.getTitle())) {
-      missing.add("• Titel der Edition");
-    }
-    if (!hasAuthors(entry.getAuthors())) {
-      missing.add("• mindestens ein Herausgeber / Bearbeiter");
-    }
-
-    if (!missing.isEmpty()) {
-      showBibliographyWarning(
-          "Edition kann noch nicht gespeichert werden",
-          "Es fehlen Pflichtangaben:\n\n" + String.join("\n", missing)
-      );
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * Prüft, ob eine KI-Quelle die nötigen Pflichtangaben zum Speichern enthält.
-   *
-   * @param entry zu prüfender KI-Eintrag
-   * @return {@code true}, wenn die Pflichtangaben vollständig sind
-   */
-  private boolean validateAiForSave(AiEntry entry) {
-    List<String> missing = new ArrayList<>();
-
-    if (!hasTitle(entry.getTitle())) {
-      missing.add("• Titel");
-    }
-    if (norm(entry.getProvider()).isBlank()) {
-      missing.add("• Anbieter");
-    }
-    if (norm(entry.getModel()).isBlank()) {
-      missing.add("• Modell");
-    }
-
-    if (!missing.isEmpty()) {
-      showBibliographyWarning(
-          "KI-Quelle kann noch nicht gespeichert werden",
-          "Es fehlen Pflichtangaben:\n\n" + String.join("\n", missing)
-      );
-      return false;
-    }
-    return true;
-  }
-
-  private void showRepositorySaveFailed(BibliographyType type) {
-    String details = bibliographyRepository.getLastErrorMessage();
-    if (details == null || details.isBlank()) {
-      details = "Der Eintrag konnte nicht gespeichert werden.";
-    }
-
-    showBibliographyError(
-        "Speichern fehlgeschlagen (" + type.name() + ")",
-        details
-    );
   }
 
   private boolean currentNoteExistsInDatabase() {
@@ -2362,28 +2123,17 @@ public class ZettelWindowController {
     host.getChildren().add(row);
   }
 
-  private BibliographyEntry resolveCurrentBibliographyEntry() {
-    if (currentNote == null) {
+  private DynamicBibliographyEntry resolveCurrentDynamicBibliographyEntry() {
+    if (currentNote == null || currentNote.getBibliographyRefId() == null || currentNote.getBibliographyRefId() <= 0) {
       return null;
     }
 
-    if (currentNote.getBibliographyType() == BibliographyType.USER
-            || currentNote.getBibliographyRefId() == null) {
-      return null;
-    }
-
-    BibliographyEntry entry = currentNote.getBibliographyEntry();
-    if (entry == null) {
-      entry = bibliographyRepository.load(
-          currentNote.getBibliographyRefId(),
-          currentNote.getBibliographyType()
-      );
-      currentNote.setBibliographyEntry(entry);
-    }
-
-    return entry;
+    return bibliographyService.loadEntry(currentNote.getBibliographyRefId()).orElse(null);
   }
 
+  /**
+   * Rendert den Bibliographiebereich des aktuellen Zettels neu.
+   */
   private void renderBibliographyHost() {
     boolean visible = view.getBottomToolbar().bookToggle().isSelected();
     view.getNoteEditorPane().setBibliographyVisible(visible);
@@ -2395,175 +2145,107 @@ public class ZettelWindowController {
       return;
     }
 
-    if (currentNote.getBibliographyType() == BibliographyType.USER
-            || currentNote.getBibliographyRefId() == null) {
+    if (currentNote.getBibliographyRefId() == null || currentNote.getBibliographyRefId() <= 0) {
       showCreateBibliographyButton();
       return;
     }
 
-    BibliographyEntry entry = resolveCurrentBibliographyEntry();
-
+    DynamicBibliographyEntry entry = resolveCurrentDynamicBibliographyEntry();
     if (entry == null) {
       showUnresolvedBibliographyButton();
       return;
     }
 
     var shell = createBibliographyShell();
-
-    switch (currentNote.getBibliographyType()) {
-      case BOOK -> {
-        if (entry instanceof BookEntry be) {
-          shell.showBook(be, false);
-          showBibliographyShell(shell);
-          return;
-        }
-      }
-      case COLLECTION -> {
-        if (entry instanceof CollectionEntry ce) {
-          shell.showCollection(ce, false);
-          showBibliographyShell(shell);
-          return;
-        }
-      }
-      case ARTICLE_IN_COLLECTION -> {
-        if (entry instanceof ArticleInCollectionEntry ae) {
-          shell.showArticleInCollection(ae, false);
-          showBibliographyShell(shell);
-          return;
-        }
-      }
-      case JOURNAL -> {
-        if (entry instanceof JournalEntry je) {
-          shell.showJournal(je, false);
-          showBibliographyShell(shell);
-          return;
-        }
-      }
-      case JOURNAL_ARTICLE -> {
-        if (entry instanceof JournalArticleEntry jae) {
-          shell.showJournalArticle(jae, false);
-          showBibliographyShell(shell);
-          return;
-        }
-      }
-      case THESIS -> {
-        if (entry instanceof ThesisEntry te) {
-          shell.showThesis(te, false);
-          showBibliographyShell(shell);
-          return;
-        }
-      }
-      case INTERNET -> {
-        if (entry instanceof InternetEntry ie) {
-          shell.showInternet(ie, false);
-          showBibliographyShell(shell);
-          return;
-        }
-      }
-      case EDITION -> {
-        if (entry instanceof EditionEntry ee) {
-          shell.showEdition(ee, false);
-          showBibliographyShell(shell);
-          return;
-        }
-      }
-      case AI -> {
-        if (entry instanceof AiEntry ae) {
-          shell.showAi(ae, false);
-          showBibliographyShell(shell);
-          return;
-        }
-      }
-    }
-
-    showUnresolvedBibliographyButton();
-  }
-
-  private void showBibliographyEditor() {
-    var shell = createBibliographyShell();
-
-    if (currentNote != null) {
-      BibliographyEntry entry = resolveCurrentBibliographyEntry();
-
-      switch (currentNote.getBibliographyType()) {
-        case BOOK -> {
-          if (entry instanceof BookEntry be) {
-            shell.showBook(be, true);
-            showBibliographyShell(shell);
-            return;
-          }
-        }
-        case COLLECTION -> {
-          if (entry instanceof CollectionEntry ce) {
-            shell.showCollection(ce, true);
-            showBibliographyShell(shell);
-            return;
-          }
-        }
-        case ARTICLE_IN_COLLECTION -> {
-          if (entry instanceof ArticleInCollectionEntry ae) {
-            shell.showArticleInCollection(ae, true);
-            showBibliographyShell(shell);
-            return;
-          }
-        }
-        case JOURNAL -> {
-          if (entry instanceof JournalEntry je) {
-            shell.showJournal(je, true);
-            showBibliographyShell(shell);
-            return;
-          }
-        }
-        case JOURNAL_ARTICLE -> {
-          if (entry instanceof JournalArticleEntry jae) {
-            shell.showJournalArticle(jae, true);
-            showBibliographyShell(shell);
-            return;
-          }
-        }
-        case THESIS -> {
-          if (entry instanceof ThesisEntry te) {
-            shell.showThesis(te, false);
-            showBibliographyShell(shell);
-            return;
-          }
-        }
-        case INTERNET -> {
-          if (entry instanceof InternetEntry ie) {
-            shell.showInternet(ie, false);
-            showBibliographyShell(shell);
-            return;
-          }
-        }
-        case EDITION -> {
-          if (entry instanceof EditionEntry ee) {
-            shell.showEdition(ee, false);
-            showBibliographyShell(shell);
-            return;
-          }
-        }
-        case AI -> {
-          if (entry instanceof AiEntry ae) {
-            shell.showAi(ae, false);
-            showBibliographyShell(shell);
-            return;
-          }
-        }
-      }
-    }
-
-    shell.showNewBookEditor();
+    shell.showDynamicEntry(entry, false);
     showBibliographyShell(shell);
   }
 
-  private void applyLinkedBibliography(BibliographyType type, BibliographyEntry entry, int entryId) {
-    noteRepository.linkBibliography(currentNote.getId(), type, entryId);
+  /**
+   * Öffnet den Bibliographie-Editor für den aktuellen Zettel.
+   */
+  private void showBibliographyEditor() {
+    var shell = createBibliographyShell();
 
-    currentNote.setBibliographyType(type);
-    currentNote.setBibliographyRefId(entryId);
-    currentNote.setBibliographyEntry(entry);
+    if (currentNote != null
+            && currentNote.getBibliographyRefId() != null
+            && currentNote.getBibliographyRefId() > 0) {
+      DynamicBibliographyEntry entry = resolveCurrentDynamicBibliographyEntry();
+      if (entry != null) {
+        shell.showDynamicEntry(entry, true);
+        showBibliographyShell(shell);
+        return;
+      }
+    }
 
-    renderBibliographyHost();
+    shell.showNewEditor("book");
+    showBibliographyShell(shell);
+  }
+
+  /**
+   * Öffnet das Popup zur Medienverwaltung.
+   */
+  private void openMediaManagementDialog() {
+    MediaManagementDialog dialog = new MediaManagementDialog(
+        stage,
+        bibliographyService,
+        bibliographyShellFactory
+    );
+    dialog.show();
+  }
+
+  private boolean validateDynamicEntryForSave(DynamicBibliographyEntry entry) {
+    if (entry == null || entry.getMediaTypeId() == null || entry.getMediaTypeId() <= 0) {
+      showBibliographyWarning(
+          "Bibliographische Angabe",
+          "Der Medientyp des Eintrags ist nicht gesetzt."
+      );
+      return false;
+    }
+
+    List<String> missing = new ArrayList<>();
+    for (MediaAttributeDefinition attribute : bibliographyService.listAttributesForMediaType(entry.getMediaTypeId())) {
+      if (!attribute.isIdentify() && !attribute.isNecessary()) {
+        continue;
+      }
+
+      String bibtexName = attribute.fieldDefinition().bibtexName();
+      if (!hasDynamicValue(entry, bibtexName)) {
+        missing.add("• " + attribute.fieldDefinition().displayName());
+      }
+    }
+
+    if (!missing.isEmpty()) {
+      showBibliographyWarning(
+          (entry.getMediaTypeName().isBlank() ? "Eintrag" : entry.getMediaTypeName())
+              + " kann noch nicht gespeichert werden",
+          "Es fehlen Pflichtangaben:\n\n" + String.join("\n", missing)
+      );
+      return false;
+    }
+
+    return true;
+  }
+
+  private boolean hasDynamicValue(DynamicBibliographyEntry entry, String bibtexName) {
+    return entry.findValue(bibtexName)
+               .map(value -> switch (value.valueType()) {
+                 case STRING -> value instanceof StringBibValue stringValue
+                                    && stringValue.value() != null
+                                    && !stringValue.value().trim().isBlank();
+
+                 case INTEGER -> value instanceof IntegerBibValue integerValue
+                                     && integerValue.value() != null;
+
+                 case PERSON -> value instanceof PersonBibValue personValue
+                                    && personValue.value() != null
+                                    && !personValue.value().isEmpty();
+
+                 case RELATED -> value instanceof RelatedBibValue relatedValue
+                                     && relatedValue.relatedEntryId() != null
+                                     && relatedValue.relatedEntryId() > 0;
+               })
+               .orElse(false);
   }
 
   private boolean hasTitle(String text) {
@@ -2578,136 +2260,138 @@ public class ZettelWindowController {
     return text != null && !text.trim().isBlank();
   }
 
-  private void openCollectionEditor(BibliographyEditorShell articleShell) {
-    var collectionShell = createBibliographyShell();
-    collectionShell.setTypeChoices(TypeChoice.COLLECTION);
-    collectionShell.setOnDelete(() -> showBibliographyShell(articleShell));
-    collectionShell.setOnNoneSelected(() -> showBibliographyShell(articleShell));
-    collectionShell.setOnAdd(() -> saveCollectionForArticle(collectionShell, articleShell));
+  /**
+   * Öffnet einen generischen Untereditor für ein Related-Zielmedium und
+   * übernimmt nach dem Speichern die Verknüpfung zurück in die Ursprungsshell.
+   *
+   * @param ownerShell Ursprungsshell mit dem Related-Feld
+   * @param relatedBibtexName technischer BibTeX-Name des Related-Feldes
+   * @param targetMediaTypeBibName technischer Ziel-Medientypname
+   * @param displayText aktueller Feldtext der Ursprungsshell
+   */
+  private void openRelatedEditor(BibliographyEditorShell ownerShell,
+                                 String relatedBibtexName,
+                                 String targetMediaTypeBibName,
+                                 String displayText) {
+    if (ownerShell == null
+            || relatedBibtexName == null
+            || relatedBibtexName.isBlank()
+            || targetMediaTypeBibName == null
+            || targetMediaTypeBibName.isBlank()) {
+      return;
+    }
 
-    Integer collectionId = articleShell.getCollectionEntryId();
+    var relatedShell = createBibliographyShell();
 
-    if (collectionId != null && collectionId > 0) {
-      BibliographyEntry loaded = bibliographyRepository.load(collectionId, BibliographyType.COLLECTION);
-      if (loaded instanceof CollectionEntry ce) {
-        collectionShell.showCollection(ce, true);
-        showBibliographyShell(collectionShell);
+    relatedShell.setOnDelete(() -> showBibliographyShell(ownerShell));
+    relatedShell.setOnNoneSelected(() -> showBibliographyShell(ownerShell));
+    relatedShell.setOnAdd(() -> saveRelatedEntryForOwner(
+        relatedShell,
+        ownerShell,
+        relatedBibtexName
+    ));
+
+    Integer relatedEntryId = ownerShell.getCurrentRelatedEntryId(relatedBibtexName);
+    if (relatedEntryId != null && relatedEntryId > 0) {
+      DynamicBibliographyEntry loaded = bibliographyService.loadEntry(relatedEntryId).orElse(null);
+      if (loaded != null) {
+        relatedShell.showDynamicEntry(loaded, true);
+        showBibliographyShell(relatedShell);
         return;
       }
     }
 
-    CollectionEntry fresh = new CollectionEntry();
-    fresh.setTitle(articleShell.getCollectionTitle());
-    collectionShell.showCollection(fresh, true);
-    showBibliographyShell(collectionShell);
-  }
-
-  private void saveCollectionForArticle(BibliographyEditorShell collectionShell,
-                                        BibliographyEditorShell articleShell) {
-    CollectionEntry entry;
-
-    Integer existingId = articleShell.getCollectionEntryId();
-    if (existingId != null && existingId > 0) {
-      BibliographyEntry loaded = bibliographyRepository.load(existingId, BibliographyType.COLLECTION);
-      if (loaded instanceof CollectionEntry ce) {
-        entry = ce;
-        entry.setId(existingId);
-      } else {
-        entry = new CollectionEntry();
-      }
-    } else {
-      entry = new CollectionEntry();
-    }
-
-    collectionShell.writeIntoCollectionEntry(entry);
-
-    if (!validateCollectionForSave(entry)) {
-      return;
-    }
-
-    int entryId = bibliographyRepository.save(entry, BibliographyType.COLLECTION);
-    if (entryId <= 0) {
-      showRepositorySaveFailed(BibliographyType.COLLECTION);
-      return;
-    }
-
-    entry.setId(entryId);
-    articleShell.setCollectionEntryId(entryId);
-    articleShell.setCollectionTitle(entry.getTitle());
-
-    showBibliographyShell(articleShell);
+    relatedShell.showNewEditor(targetMediaTypeBibName);
+    relatedShell.setCurrentFieldValue(
+        resolveRelatedDisplayBibtexName(ownerShell, relatedBibtexName),
+        displayText
+    );
+    showBibliographyShell(relatedShell);
   }
 
   /**
-   * Öffnet den Zeitschrifteneditor aus dem JournalArticle-Formular heraus.
+   * Speichert ein im Untereditor bearbeitetes Related-Zielmedium und übernimmt
+   * die Verknüpfung zurück in die Ursprungsshell.
    *
-   * @param articleShell Ursprungsshell des Zeitschriftenartikels.
+   * @param relatedShell Untereditor des Zielmediums
+   * @param ownerShell Ursprungsshell mit dem Related-Feld
+   * @param relatedBibtexName technischer BibTeX-Name des Related-Feldes
    */
-  private void openJournalEditor(BibliographyEditorShell articleShell) {
-    var journalShell = createBibliographyShell();
-    journalShell.setTypeChoices(TypeChoice.JOURNAL);
-    journalShell.setOnDelete(() -> showBibliographyShell(articleShell));
-    journalShell.setOnNoneSelected(() -> showBibliographyShell(articleShell));
-    journalShell.setOnAdd(() -> saveJournalForArticle(journalShell, articleShell));
-
-    Integer journalId = articleShell.getJournalEntryId();
-
-    if (journalId != null && journalId > 0) {
-      BibliographyEntry loaded = bibliographyRepository.load(journalId, BibliographyType.JOURNAL);
-      if (loaded instanceof JournalEntry je) {
-        journalShell.showJournal(je, true);
-        showBibliographyShell(journalShell);
-        return;
-      }
+  private void saveRelatedEntryForOwner(BibliographyEditorShell relatedShell,
+                                        BibliographyEditorShell ownerShell,
+                                        String relatedBibtexName) {
+    if (relatedShell == null || ownerShell == null || relatedBibtexName == null) {
+      return;
     }
 
-    JournalEntry fresh = new JournalEntry();
-    fresh.setTitle(articleShell.getJournalTitle());
-    journalShell.showJournal(fresh, true);
-    showBibliographyShell(journalShell);
+    DynamicBibliographyEntry dynamicEntry = relatedShell.readDynamicEntry();
+    if (dynamicEntry == null) {
+      showBibliographyError(
+          "Related-Eintrag",
+          "Der verknüpfte Eintrag konnte nicht aus dem Editor gelesen werden."
+      );
+      return;
+    }
+
+    if (!validateDynamicEntryForSave(dynamicEntry)) {
+      return;
+    }
+
+    Integer existingId = ownerShell.getCurrentRelatedEntryId(relatedBibtexName);
+    if (existingId != null && existingId > 0) {
+      dynamicEntry.setId(existingId);
+    }
+
+    int entryId = bibliographyService.saveEntry(dynamicEntry);
+    if (entryId <= 0) {
+      showBibliographyError(
+          "Speichern fehlgeschlagen",
+          "Der verknüpfte Eintrag konnte nicht gespeichert werden."
+      );
+      return;
+    }
+
+    String displayBibtexName = resolveRelatedDisplayBibtexName(ownerShell, relatedBibtexName);
+    String displayValue = relatedShell.getCurrentFieldValue(displayBibtexName);
+
+    if (displayValue == null || displayValue.isBlank()) {
+      displayValue = bibliographyService.loadReference(entryId)
+                         .map(BibliographyReference::displayText)
+                         .orElse("");
+    }
+
+    ownerShell.setCurrentRelatedEntry(relatedBibtexName, entryId, displayValue);
+    showBibliographyShell(ownerShell);
   }
 
   /**
-   * Speichert eine Zeitschrift aus dem JournalArticle-Kontext heraus
-   * und übernimmt die Verknüpfung zurück in den Artikel.
+   * Ermittelt das bevorzugte Anzeigefeld eines Related-Zielmediums für die
+   * Rückübernahme in die Ursprungsshell.
+   * Bevorzugt wird die Konfiguration aus {@code related_media_type}.
+   * Fehlt diese, wird defensiv auf {@code title} zurückgefallen.
    *
-   * @param journalShell Editor-Shell der Zeitschrift.
-   * @param articleShell Ursprungsshell des Zeitschriftenartikels.
+   * @param ownerShell Ursprungsshell mit dem Related-Feld
+   * @param relatedBibtexName technischer BibTeX-Name des Related-Feldes
+   * @return technischer BibTeX-Name des bevorzugten Anzeigefeldes
    */
-  private void saveJournalForArticle(BibliographyEditorShell journalShell,
-                                     BibliographyEditorShell articleShell) {
-    JournalEntry entry;
-
-    Integer existingId = articleShell.getJournalEntryId();
-    if (existingId != null && existingId > 0) {
-      BibliographyEntry loaded = bibliographyRepository.load(existingId, BibliographyType.JOURNAL);
-      if (loaded instanceof JournalEntry je) {
-        entry = je;
-        entry.setId(existingId);
-      } else {
-        entry = new JournalEntry();
-      }
-    } else {
-      entry = new JournalEntry();
+  private String resolveRelatedDisplayBibtexName(BibliographyEditorShell ownerShell,
+                                                 String relatedBibtexName) {
+    if (ownerShell == null || relatedBibtexName == null || relatedBibtexName.isBlank()) {
+      return "title";
     }
 
-    journalShell.writeIntoJournalEntry(entry);
-
-    if (!validateJournalForSave(entry)) {
-      return;
+    String ownerMediaTypeBibName = ownerShell.getSelectedMediaTypeBibName();
+    if (ownerMediaTypeBibName == null || ownerMediaTypeBibName.isBlank()) {
+      return "title";
     }
 
-    int entryId = bibliographyRepository.save(entry, BibliographyType.JOURNAL);
-    if (entryId <= 0) {
-      showRepositorySaveFailed(BibliographyType.JOURNAL);
-      return;
-    }
-
-    entry.setId(entryId);
-    articleShell.setJournalEntryId(entryId);
-    articleShell.setJournalTitle(entry.getTitle());
-
-    showBibliographyShell(articleShell);
+    return bibliographyService.loadLookupDefinition(ownerMediaTypeBibName, relatedBibtexName)
+               .flatMap(lookupDefinition -> bibliographyService.loadRelatedDefinition(lookupDefinition.bibtexTypeId()))
+               .map(RelatedMediaDefinition::displayFieldDefinition)
+               .map(BibtexFieldDefinition::bibtexName)
+               .map(name -> name == null ? "" : name.trim())
+               .filter(name -> !name.isBlank())
+               .orElse("title");
   }
 
   private void unlinkCurrentBibliography() {
@@ -2716,22 +2400,27 @@ public class ZettelWindowController {
     }
 
     if (currentNoteExistsInDatabase()) {
-      noteRepository.unlinkBibliography(currentNote.getId());
+      noteRepository.unlinkBibliographyEntry(currentNote.getId());
     }
 
-    currentNote.setBibliographyType(BibliographyType.USER);
     currentNote.setBibliographyRefId(null);
-    currentNote.setBibliographyEntry(null);
 
     renderBibliographyHost();
   }
 
+  /**
+   * Liest den aktuellen bibliographischen Eintrag direkt aus der Shell,
+   * speichert ihn und verknüpft ihn mit dem aktuell geöffneten Zettel.
+   *
+   * @param shell aktive Bibliographie-Shell
+   */
   private void saveAndLinkBibliography(BibliographyEditorShell shell) {
     if (currentNote == null) {
       return;
     }
 
-    if (shell.getTypeChoice() == TypeChoice.NONE) {
+    String selectedMediaTypeBibName = shell.getSelectedMediaTypeBibName();
+    if (selectedMediaTypeBibName == null || selectedMediaTypeBibName.isBlank()) {
       unlinkCurrentBibliography();
       return;
     }
@@ -2740,619 +2429,149 @@ public class ZettelWindowController {
       return;
     }
 
-    switch (shell.getTypeChoice()) {
-      case BOOK -> saveAndLinkBook(shell);
-      case COLLECTION -> saveAndLinkCollection(shell);
-      case ARTICLE_IN_COLLECTION -> saveAndLinkArticleInCollection(shell);
-      case JOURNAL -> saveAndLinkJournal(shell);
-      case JOURNAL_ARTICLE -> saveAndLinkJournalArticle(shell);
-      case THESIS -> saveAndLinkThesis(shell);
-      case INTERNET -> saveAndLinkInternet(shell);
-      case EDITION -> saveAndLinkEdition(shell);
-      case AI -> saveAndLinkAi(shell);
-      default -> {}
-    }
-  }
-
-  private void saveAndLinkBook(BibliographyEditorShell shell) {
-    BookEntry entry;
-
-    if (currentNote.getBibliographyType() == BibliographyType.BOOK
-            && currentNote.getBibliographyEntry() instanceof BookEntry be
-            && currentNote.getBibliographyRefId() != null) {
-      entry = be;
-      entry.setId(currentNote.getBibliographyRefId());
-    } else {
-      entry = new BookEntry();
-    }
-
-    shell.writeIntoBookEntry(entry);
-    if (!handleExistingEntryDecision(shell, BibliographyType.BOOK, entry)) {
+    DynamicBibliographyEntry editedEntry = shell.readDynamicEntry();
+    if (editedEntry == null) {
+      showBibliographyError(
+          "Bibliographische Angabe",
+          "Der Eintrag konnte nicht aus dem Editor gelesen werden."
+      );
       return;
     }
 
-    if (!validateBookForSave(entry)) {
-      return;
+    Integer sourceEntryId = shell.getCurrentSourceEntryId();
+    if (sourceEntryId == null || sourceEntryId <= 0) {
+      sourceEntryId = shell.getCurrentSelectedEntryId();
     }
 
-    int entryId = bibliographyRepository.save(entry, BibliographyType.BOOK);
-    if (entryId <= 0) {
-      showRepositorySaveFailed(BibliographyType.BOOK);
-      return;
+    Integer linkedEntryId = currentNote.getBibliographyRefId();
+    boolean hasLinkedBibliography = linkedEntryId != null && linkedEntryId > 0;
+    boolean forceSaveAsNew = false;
+
+    Integer baseEntryId = null;
+    if (sourceEntryId != null && sourceEntryId > 0) {
+      baseEntryId = sourceEntryId;
+    } else if (hasLinkedBibliography) {
+      baseEntryId = linkedEntryId;
     }
 
-    entry.setId(entryId);
-    applyLinkedBibliography(BibliographyType.BOOK, entry, entryId);
-  }
-
-  private void saveAndLinkCollection(BibliographyEditorShell shell) {
-    CollectionEntry entry;
-
-    if (currentNote.getBibliographyType() == BibliographyType.COLLECTION
-            && currentNote.getBibliographyEntry() instanceof CollectionEntry ce
-            && currentNote.getBibliographyRefId() != null) {
-      entry = ce;
-      entry.setId(currentNote.getBibliographyRefId());
-    } else {
-      entry = new CollectionEntry();
-    }
-
-    shell.writeIntoCollectionEntry(entry);
-    if (!handleExistingEntryDecision(shell, BibliographyType.COLLECTION, entry)) {
-      return;
-    }
-
-    if (!validateCollectionForSave(entry)) {
-      return;
-    }
-
-    int entryId = bibliographyRepository.save(entry, BibliographyType.COLLECTION);
-    if (entryId <= 0) {
-      showRepositorySaveFailed(BibliographyType.COLLECTION);
-      return;
-    }
-
-    entry.setId(entryId);
-    applyLinkedBibliography(BibliographyType.COLLECTION, entry, entryId);
-  }
-
-  private void saveAndLinkArticleInCollection(BibliographyEditorShell shell) {
-    ArticleInCollectionEntry entry;
-
-    if (currentNote.getBibliographyType() == BibliographyType.ARTICLE_IN_COLLECTION
-            && currentNote.getBibliographyEntry() instanceof ArticleInCollectionEntry ae
-            && currentNote.getBibliographyRefId() != null) {
-      entry = ae;
-      entry.setId(currentNote.getBibliographyRefId());
-    } else {
-      entry = new ArticleInCollectionEntry();
-    }
-
-    shell.writeIntoArticleInCollectionEntry(entry);
-    if (!handleExistingEntryDecision(shell, BibliographyType.ARTICLE_IN_COLLECTION, entry)) {
-      return;
-    }
-
-    if (!validateArticleForSave(entry)) {
-      return;
-    }
-
-    int entryId = bibliographyRepository.save(entry, BibliographyType.ARTICLE_IN_COLLECTION);
-    if (entryId <= 0) {
-      showRepositorySaveFailed(BibliographyType.ARTICLE_IN_COLLECTION);
-      return;
-    }
-
-    entry.setId(entryId);
-    applyLinkedBibliography(BibliographyType.ARTICLE_IN_COLLECTION, entry, entryId);
-  }
-
-  /**
-   * Speichert eine Zeitschrift und verknüpft sie mit der aktuellen Notiz.
-   *
-   * @param shell Editor-Shell der Zeitschrift.
-   */
-  private void saveAndLinkJournal(BibliographyEditorShell shell) {
-    JournalEntry entry;
-
-    if (currentNote.getBibliographyType() == BibliographyType.JOURNAL
-            && currentNote.getBibliographyEntry() instanceof JournalEntry je
-            && currentNote.getBibliographyRefId() != null) {
-      entry = je;
-      entry.setId(currentNote.getBibliographyRefId());
-    } else {
-      entry = new JournalEntry();
-    }
-
-    shell.writeIntoJournalEntry(entry);
-    if (!handleExistingEntryDecision(shell, BibliographyType.JOURNAL, entry)) {
-      return;
-    }
-
-    if (!validateJournalForSave(entry)) {
-      return;
-    }
-
-    int entryId = bibliographyRepository.save(entry, BibliographyType.JOURNAL);
-    if (entryId <= 0) {
-      showRepositorySaveFailed(BibliographyType.JOURNAL);
-      return;
-    }
-
-    entry.setId(entryId);
-    applyLinkedBibliography(BibliographyType.JOURNAL, entry, entryId);
-  }
-
-  /**
-   * Speichert einen Zeitschriftenartikel und verknüpft ihn mit der aktuellen Notiz.
-   *
-   * @param shell Editor-Shell des Zeitschriftenartikels.
-   */
-  private void saveAndLinkJournalArticle(BibliographyEditorShell shell) {
-    JournalArticleEntry entry;
-
-    if (currentNote.getBibliographyType() == BibliographyType.JOURNAL_ARTICLE
-            && currentNote.getBibliographyEntry() instanceof JournalArticleEntry jae
-            && currentNote.getBibliographyRefId() != null) {
-      entry = jae;
-      entry.setId(currentNote.getBibliographyRefId());
-    } else {
-      entry = new JournalArticleEntry();
-    }
-
-    shell.writeIntoJournalArticleEntry(entry);
-    if (!handleExistingEntryDecision(shell, BibliographyType.JOURNAL_ARTICLE, entry)) {
-      return;
-    }
-
-    if (!validateJournalArticleForSave(entry)) {
-      return;
-    }
-
-    int entryId = bibliographyRepository.save(entry, BibliographyType.JOURNAL_ARTICLE);
-    if (entryId <= 0) {
-      showRepositorySaveFailed(BibliographyType.JOURNAL_ARTICLE);
-      return;
-    }
-
-    entry.setId(entryId);
-    applyLinkedBibliography(BibliographyType.JOURNAL_ARTICLE, entry, entryId);
-  }
-
-  /**
-   * Speichert eine Thesis und verknüpft sie mit der aktuellen Notiz.
-   *
-   * @param shell Editor-Shell der Thesis
-   */
-  private void saveAndLinkThesis(BibliographyEditorShell shell) {
-    ThesisEntry entry;
-
-    if (currentNote.getBibliographyType() == BibliographyType.THESIS
-            && currentNote.getBibliographyEntry() instanceof ThesisEntry te
-            && currentNote.getBibliographyRefId() != null) {
-      entry = te;
-      entry.setId(currentNote.getBibliographyRefId());
-    } else {
-      entry = new ThesisEntry();
-    }
-
-    shell.writeIntoThesisEntry(entry);
-
-    if (!validateThesisForSave(entry)) {
-      return;
-    }
-    if (!handleExistingEntryDecision(shell, BibliographyType.THESIS, entry)) {
-      return;
-    }
-
-    int entryId = bibliographyRepository.save(entry, BibliographyType.THESIS);
-    if (entryId <= 0) {
-      showRepositorySaveFailed(BibliographyType.THESIS);
-      return;
-    }
-
-    entry.setId(entryId);
-    applyLinkedBibliography(BibliographyType.THESIS, entry, entryId);
-  }
-
-  /**
-   * Speichert eine Internetquelle und verknüpft sie mit der aktuellen Notiz.
-   *
-   * @param shell Editor-Shell der Internetquelle
-   */
-  private void saveAndLinkInternet(BibliographyEditorShell shell) {
-    InternetEntry entry;
-
-    if (currentNote.getBibliographyType() == BibliographyType.INTERNET
-            && currentNote.getBibliographyEntry() instanceof InternetEntry ie
-            && currentNote.getBibliographyRefId() != null) {
-      entry = ie;
-      entry.setId(currentNote.getBibliographyRefId());
-    } else {
-      entry = new InternetEntry();
-    }
-
-    shell.writeIntoInternetEntry(entry);
-
-    if (!validateInternetForSave(entry)) {
-      return;
-    }
-    if (!handleExistingEntryDecision(shell, BibliographyType.INTERNET, entry)) {
-      return;
-    }
-
-    int entryId = bibliographyRepository.save(entry, BibliographyType.INTERNET);
-    if (entryId <= 0) {
-      showRepositorySaveFailed(BibliographyType.INTERNET);
-      return;
-    }
-
-    entry.setId(entryId);
-    applyLinkedBibliography(BibliographyType.INTERNET, entry, entryId);
-  }
-
-  /**
-   * Speichert eine Edition und verknüpft sie mit der aktuellen Notiz.
-   *
-   * @param shell Editor-Shell der Edition
-   */
-  private void saveAndLinkEdition(BibliographyEditorShell shell) {
-    EditionEntry entry;
-
-    if (currentNote.getBibliographyType() == BibliographyType.EDITION
-            && currentNote.getBibliographyEntry() instanceof EditionEntry ee
-            && currentNote.getBibliographyRefId() != null) {
-      entry = ee;
-      entry.setId(currentNote.getBibliographyRefId());
-    } else {
-      entry = new EditionEntry();
-    }
-
-    shell.writeIntoEditionEntry(entry);
-
-    if (!validateEditionForSave(entry)) {
-      return;
-    }
-    if (!handleExistingEntryDecision(shell, BibliographyType.EDITION, entry)) {
-      return;
-    }
-
-    int entryId = bibliographyRepository.save(entry, BibliographyType.EDITION);
-    if (entryId <= 0) {
-      showRepositorySaveFailed(BibliographyType.EDITION);
-      return;
-    }
-
-    entry.setId(entryId);
-    applyLinkedBibliography(BibliographyType.EDITION, entry, entryId);
-  }
-
-  /**
-   * Speichert eine KI-Quelle und verknüpft sie mit der aktuellen Notiz.
-   *
-   * @param shell Editor-Shell der KI-Quelle
-   */
-  private void saveAndLinkAi(BibliographyEditorShell shell) {
-    AiEntry entry;
-
-    if (currentNote.getBibliographyType() == BibliographyType.AI
-            && currentNote.getBibliographyEntry() instanceof AiEntry ae
-            && currentNote.getBibliographyRefId() != null) {
-      entry = ae;
-      entry.setId(currentNote.getBibliographyRefId());
-    } else {
-      entry = new AiEntry();
-    }
-
-    shell.writeIntoAiEntry(entry);
-
-    if (!validateAiForSave(entry)) {
-      return;
-    }
-    if (!handleExistingEntryDecision(shell, BibliographyType.AI, entry)) {
-      return;
-    }
-
-    int entryId = bibliographyRepository.save(entry, BibliographyType.AI);
-    if (entryId <= 0) {
-      showRepositorySaveFailed(BibliographyType.AI);
-      return;
-    }
-
-    entry.setId(entryId);
-    bibliographyRepository.rememberAiProviderModel(entry.getProvider(), entry.getModel());
-    applyLinkedBibliography(BibliographyType.AI, entry, entryId);
-  }
-
-  private BibliographyType toBibliographyType(TypeChoice typeChoice) {
-    return switch (typeChoice) {
-      case BOOK -> BibliographyType.BOOK;
-      case COLLECTION -> BibliographyType.COLLECTION;
-      case ARTICLE_IN_COLLECTION -> BibliographyType.ARTICLE_IN_COLLECTION;
-      case JOURNAL -> BibliographyType.JOURNAL;
-      case JOURNAL_ARTICLE -> BibliographyType.JOURNAL_ARTICLE;
-      case THESIS -> BibliographyType.THESIS;
-      case INTERNET -> BibliographyType.INTERNET;
-      case EDITION -> BibliographyType.EDITION;
-      case AI -> BibliographyType.AI;
-      default -> BibliographyType.USER;
-    };
-  }
-
-  private enum ExistingEntrySaveDecision {
-    UPDATE_EXISTING,
-    CREATE_NEW,
-    CANCEL
-  }
-
-  private ExistingEntrySaveDecision askExistingEntrySaveDecision(String typeLabel) {
-    ButtonType update = new ButtonType("Vorhandenen Eintrag aktualisieren", ButtonBar.ButtonData.YES);
-    ButtonType createNew = new ButtonType("Neuen Eintrag anlegen", ButtonBar.ButtonData.OTHER);
-    ButtonType cancel = new ButtonType("Abbrechen", ButtonBar.ButtonData.CANCEL_CLOSE);
-
-    Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
-    alert.initOwner(stage);
-    alert.setTitle("Bibliographische Angabe");
-    alert.setHeaderText(typeLabel + " wurde aus einem vorhandenen Eintrag übernommen");
-    alert.setContentText(
-        "Der Eintrag wurde verändert.\n\n" +
-            "Soll der bestehende Datensatz aktualisiert werden oder soll ein neuer Datensatz angelegt werden?"
-    );
-    alert.getButtonTypes().setAll(update, createNew, cancel);
-
-    ButtonType result = alert.showAndWait().orElse(cancel);
-    if (result == update) return ExistingEntrySaveDecision.UPDATE_EXISTING;
-    if (result == createNew) return ExistingEntrySaveDecision.CREATE_NEW;
-    return ExistingEntrySaveDecision.CANCEL;
-  }
-
-  private boolean handleExistingEntryDecision(BibliographyEditorShell shell,
-                                              BibliographyType type,
-                                              BibliographyEntry entry) {
-    Integer sourceId = shell.getSourceEntryId(shell.getTypeChoice());
-    if (sourceId == null || sourceId <= 0) {
-      return true;
-    }
-
-    BibliographyEntry loaded = bibliographyRepository.load(sourceId, type);
-    if (loaded == null) {
-      return true;
-    }
-
-    boolean changed = switch (type) {
-      case BOOK -> !sameBook((BookEntry) loaded, (BookEntry) entry);
-      case COLLECTION -> !sameCollection((CollectionEntry) loaded, (CollectionEntry) entry);
-      case ARTICLE_IN_COLLECTION -> !sameArticleInCollection((ArticleInCollectionEntry) loaded, (ArticleInCollectionEntry) entry);
-      case JOURNAL -> !sameJournal((JournalEntry) loaded, (JournalEntry) entry);
-      case JOURNAL_ARTICLE -> !sameJournalArticle((JournalArticleEntry) loaded, (JournalArticleEntry) entry);
-      case THESIS -> !sameThesis((ThesisEntry) loaded, (ThesisEntry) entry);
-      case INTERNET -> !sameInternet((InternetEntry) loaded, (InternetEntry) entry);
-      case EDITION -> !sameEdition((EditionEntry) loaded, (EditionEntry) entry);
-      case AI -> !sameAi((AiEntry) loaded, (AiEntry) entry);
-      default -> false;
-    };
-
-    if (!changed) {
-      entry.setId(sourceId);
-      return true;
-    }
-
-    ExistingEntrySaveDecision decision = askExistingEntrySaveDecision(type.name());
-
-    if (decision == ExistingEntrySaveDecision.CANCEL) {
-      return false;
-    }
-
-    if (decision == ExistingEntrySaveDecision.UPDATE_EXISTING) {
-      entry.setId(sourceId);
-    } else {
-      entry.setId(null);
-    }
-
-    return true;
-  }
-
-  private boolean sameAuthors(List<Author> a, List<Author> b) {
-    if (a == null) a = List.of();
-    if (b == null) b = List.of();
-    if (a.size() != b.size()) return false;
-
-    for (int i = 0; i < a.size(); i++) {
-      String aLn = a.get(i).getLastName() == null ? "" : a.get(i).getLastName().trim();
-      String aFn = a.get(i).getFirstName() == null ? "" : a.get(i).getFirstName().trim();
-      String bLn = b.get(i).getLastName() == null ? "" : b.get(i).getLastName().trim();
-      String bFn = b.get(i).getFirstName() == null ? "" : b.get(i).getFirstName().trim();
-
-      if (!aLn.equalsIgnoreCase(bLn) || !aFn.equalsIgnoreCase(bFn)) {
-        return false;
+    if (hasLinkedBibliography
+            && baseEntryId != null
+            && baseEntryId > 0
+            && Objects.equals(baseEntryId, linkedEntryId)) {
+      LinkedBibliographyDecision linkedDecision = askLinkedBibliographyDecision(linkedEntryId);
+
+      if (linkedDecision == LinkedBibliographyDecision.CANCEL) {
+        return;
+      }
+
+      if (linkedDecision == LinkedBibliographyDecision.SAVE_AS_NEW) {
+        forceSaveAsNew = true;
       }
     }
-    return true;
-  }
 
-  private boolean sameBook(BookEntry a, BookEntry b) {
-    return Objects.equals(norm(a.getTitle()), norm(b.getTitle()))
-               && Objects.equals(norm(a.getSubtitle()), norm(b.getSubtitle()))
-               && Objects.equals(norm(a.getPublisher()), norm(b.getPublisher()))
-               && Objects.equals(norm(a.getPlace()), norm(b.getPlace()))
-               && Objects.equals(norm(a.getYear()), norm(b.getYear()))
-               && Objects.equals(norm(a.getIsbn()), norm(b.getIsbn()))
-               && Objects.equals(norm(a.getRun()), norm(b.getRun()))
-               && Objects.equals(norm(a.getSeries()), norm(b.getSeries()))
-               && Objects.equals(norm(a.getSeriesNumber()), norm(b.getSeriesNumber()))
-               && sameAuthors(a.getAuthors(), b.getAuthors());
-  }
+    DynamicBibliographyEntry dynamicEntry = mergeWithExistingBibliographyEntry(baseEntryId, editedEntry);
 
-  private boolean sameCollection(CollectionEntry a, CollectionEntry b) {
-    return Objects.equals(norm(a.getTitle()), norm(b.getTitle()))
-               && Objects.equals(norm(a.getSubtitle()), norm(b.getSubtitle()))
-               && Objects.equals(norm(a.getPublisher()), norm(b.getPublisher()))
-               && Objects.equals(norm(a.getPlace()), norm(b.getPlace()))
-               && Objects.equals(norm(a.getYear()), norm(b.getYear()))
-               && Objects.equals(norm(a.getSeries()), norm(b.getSeries()))
-               && sameAuthors(a.getAuthors(), b.getAuthors());
-  }
-
-  private boolean sameArticleInCollection(ArticleInCollectionEntry a, ArticleInCollectionEntry b) {
-    return Objects.equals(norm(a.getTitle()), norm(b.getTitle()))
-               && Objects.equals(norm(a.getPages()), norm(b.getPages()))
-               && Objects.equals(a.getCollectionEntryId(), b.getCollectionEntryId())
-               && Objects.equals(norm(a.getCollectionTitle()), norm(b.getCollectionTitle()))
-               && sameAuthors(a.getAuthors(), b.getAuthors());
-  }
-
-  /**
-   * Prüft, ob zwei Zeitschriften bibliographisch als gleich behandelt werden sollen.
-   *
-   * @param a erste Zeitschrift
-   * @param b zweite Zeitschrift
-   * @return {@code true}, wenn beide inhaltlich gleich sind
-   */
-  private boolean sameJournal(JournalEntry a, JournalEntry b) {
-    if (a == b) {
-      return true;
-    }
-    if (a == null || b == null) {
-      return false;
+    if (forceSaveAsNew) {
+      dynamicEntry.setId(null);
+    } else if (baseEntryId != null && baseEntryId > 0) {
+      dynamicEntry.setId(baseEntryId);
     }
 
-    return norm(a.getTitle()).equals(norm(b.getTitle()))
-               && norm(a.getSubtitle()).equals(norm(b.getSubtitle()))
-               && norm(a.getIssn()).equals(norm(b.getIssn()))
-               && norm(a.getPublisher()).equals(norm(b.getPublisher()))
-               && norm(a.getPlace()).equals(norm(b.getPlace()))
-               && norm(a.getStartYear()).equals(norm(b.getStartYear()))
-               && norm(a.getEndYear()).equals(norm(b.getEndYear()))
-               && norm(a.getNote()).equals(norm(b.getNote()));
+    if (!validateDynamicEntryForSave(dynamicEntry)) {
+      return;
+    }
+
+    if (dynamicEntry.getId() == null || dynamicEntry.getId() <= 0) {
+      List<DynamicBibliographyEntry> duplicates = bibliographyService.findPotentialDuplicates(dynamicEntry);
+
+      if (forceSaveAsNew && hasLinkedBibliography) {
+        duplicates = duplicates.stream()
+                         .filter(entry -> entry != null
+                                              && entry.getId() != null
+                                              && !Objects.equals(entry.getId(), linkedEntryId))
+                         .toList();
+      }
+
+      if (!duplicates.isEmpty()) {
+        DuplicateBibliographyDecision decision = askDuplicateBibliographyDecision(duplicates);
+
+        if (decision == DuplicateBibliographyDecision.CANCEL) {
+          return;
+        }
+
+        if (decision == DuplicateBibliographyDecision.UPDATE_EXISTING) {
+          dynamicEntry.setId(duplicates.getFirst().getId());
+        }
+      }
+    }
+
+    int entryId = bibliographyService.saveEntry(dynamicEntry);
+    if (entryId <= 0) {
+      showBibliographyError(
+          "Speichern fehlgeschlagen",
+          "Der bibliographische Eintrag konnte nicht gespeichert werden."
+      );
+      return;
+    }
+
+    noteRepository.linkBibliographyEntry(currentNote.getId(), entryId);
+    currentNote.setBibliographyRefId(entryId);
+
+    renderBibliographyHost();
   }
 
   /**
-   * Prüft, ob zwei Zeitschriftenartikel bibliographisch als gleich behandelt werden sollen.
+   * Baut aus einem bestehenden bibliographischen Eintrag und den aktuell aus der
+   * Shell gelesenen Änderungen einen vollständigen Speichereintrag.
+   * Bereits vorhandene Werte bleiben erhalten, sofern sie in der aktuellen
+   * Shell-Auslese nicht erneut gesetzt wurden.
    *
-   * @param a erster Zeitschriftenartikel
-   * @param b zweiter Zeitschriftenartikel
-   * @return {@code true}, wenn beide inhaltlich gleich sind
+   * @param baseEntryId optionale ID eines bestehenden Basiseintrags
+   * @param editedEntry aktuell aus der Shell gelesener Eintrag
+   * @return gemergter vollständiger Eintrag
    */
-  private boolean sameJournalArticle(JournalArticleEntry a, JournalArticleEntry b) {
-    if (a == b) {
-      return true;
-    }
-    if (a == null || b == null) {
-      return false;
+  private DynamicBibliographyEntry mergeWithExistingBibliographyEntry(Integer baseEntryId,
+                                                                      DynamicBibliographyEntry editedEntry) {
+    if (editedEntry == null) {
+      return null;
     }
 
-    return norm(a.getTitle()).equals(norm(b.getTitle()))
-               && norm(a.getSubtitle()).equals(norm(b.getSubtitle()))
-               && norm(a.getPublisher()).equals(norm(b.getPublisher()))
-               && norm(a.getJournalTitle()).equals(norm(b.getJournalTitle()))
-               && Objects.equals(a.getJournalEntryId(), b.getJournalEntryId())
-               && norm(a.getVolume()).equals(norm(b.getVolume()))
-               && norm(a.getIssue()).equals(norm(b.getIssue()))
-               && norm(a.getYear()).equals(norm(b.getYear()))
-               && norm(a.getPages()).equals(norm(b.getPages()))
-               && norm(a.getDoi()).equals(norm(b.getDoi()))
-               && sameAuthors(a.getAuthors(), b.getAuthors());
-  }
-
-  /**
-   * Prüft, ob zwei Thesis-Einträge bibliographisch als gleich behandelt werden sollen.
-   *
-   * @param a erste Thesis
-   * @param b zweite Thesis
-   * @return {@code true}, wenn beide inhaltlich gleich sind
-   */
-  private boolean sameThesis(ThesisEntry a, ThesisEntry b) {
-    if (a == b) {
-      return true;
-    }
-    if (a == null || b == null) {
-      return false;
+    if (baseEntryId == null || baseEntryId <= 0) {
+      return editedEntry;
     }
 
-    return norm(a.getTitle()).equals(norm(b.getTitle()))
-               && norm(a.getSubtitle()).equals(norm(b.getSubtitle()))
-               && Objects.equals(a.getThesisType(), b.getThesisType())
-               && norm(a.getUniversity()).equals(norm(b.getUniversity()))
-               && norm(a.getPlace()).equals(norm(b.getPlace()))
-               && norm(a.getYear()).equals(norm(b.getYear()))
-               && norm(a.getAdvisor()).equals(norm(b.getAdvisor()))
-               && norm(a.getSeries()).equals(norm(b.getSeries()))
-               && norm(a.getNote()).equals(norm(b.getNote()))
-               && sameAuthors(a.getAuthors(), b.getAuthors());
-  }
-
-  /**
-   * Prüft, ob zwei Internetquellen bibliographisch als gleich behandelt werden sollen.
-   *
-   * @param a erste Internetquelle
-   * @param b zweite Internetquelle
-   * @return {@code true}, wenn beide inhaltlich gleich sind
-   */
-  private boolean sameInternet(InternetEntry a, InternetEntry b) {
-    if (a == b) {
-      return true;
-    }
-    if (a == null || b == null) {
-      return false;
+    DynamicBibliographyEntry baseEntry = bibliographyService.loadEntry(baseEntryId).orElse(null);
+    if (baseEntry == null) {
+      return editedEntry;
     }
 
-    return norm(a.getTitle()).equals(norm(b.getTitle()))
-               && norm(a.getHostName()).equals(norm(b.getHostName()))
-               && norm(a.getUrl()).equals(norm(b.getUrl()))
-               && norm(a.getPublished()).equals(norm(b.getPublished()))
-               && Objects.equals(a.getAccessedAt(), b.getAccessedAt())
-               && sameAuthors(a.getAuthors(), b.getAuthors());
-  }
+    DynamicBibliographyEntry merged = new DynamicBibliographyEntry();
+    merged.setId(baseEntry.getId());
+    merged.setMediaTypeId(
+        editedEntry.getMediaTypeId() != null ? editedEntry.getMediaTypeId() : baseEntry.getMediaTypeId()
+    );
+    merged.setMediaTypeBibName(
+        editedEntry.getMediaTypeBibName() != null && !editedEntry.getMediaTypeBibName().isBlank()
+            ? editedEntry.getMediaTypeBibName()
+            : baseEntry.getMediaTypeBibName()
+    );
+    merged.setMediaTypeName(
+        editedEntry.getMediaTypeName() != null && !editedEntry.getMediaTypeName().isBlank()
+            ? editedEntry.getMediaTypeName()
+            : baseEntry.getMediaTypeName()
+    );
+    merged.setCreatedAt(baseEntry.getCreatedAt());
+    merged.setUpdatedAt(baseEntry.getUpdatedAt());
 
-  /**
-   * Prüft, ob zwei Editionen bibliographisch als gleich behandelt werden sollen.
-   *
-   * @param a erste Edition
-   * @param b zweite Edition
-   * @return {@code true}, wenn beide inhaltlich gleich sind
-   */
-  private boolean sameEdition(EditionEntry a, EditionEntry b) {
-    if (a == b) {
-      return true;
-    }
-    if (a == null || b == null) {
-      return false;
-    }
-
-    return norm(a.getTitle()).equals(norm(b.getTitle()))
-               && norm(a.getPublisher()).equals(norm(b.getPublisher()))
-               && norm(a.getPlace()).equals(norm(b.getPlace()))
-               && norm(a.getYear()).equals(norm(b.getYear()))
-               && norm(a.getSeries()).equals(norm(b.getSeries()))
-               && norm(a.getVolume()).equals(norm(b.getVolume()))
-               && sameAuthors(a.getAuthors(), b.getAuthors());
-  }
-
-  /**
-   * Prüft, ob zwei KI-Quellen bibliographisch als gleich behandelt werden sollen.
-   *
-   * @param a erste KI-Quelle
-   * @param b zweite KI-Quelle
-   * @return {@code true}, wenn beide inhaltlich gleich sind
-   */
-  private boolean sameAi(AiEntry a, AiEntry b) {
-    if (a == b) {
-      return true;
-    }
-    if (a == null || b == null) {
-      return false;
+    for (BibValue value : baseEntry.getOrderedValues()) {
+      merged.putValue(value);
     }
 
-    return norm(a.getTitle()).equals(norm(b.getTitle()))
-               && norm(a.getProvider()).equals(norm(b.getProvider()))
-               && norm(a.getModel()).equals(norm(b.getModel()))
-               && norm(a.getContext()).equals(norm(b.getContext()))
-               && norm(a.getPromptTitle()).equals(norm(b.getPromptTitle()))
-               && Objects.equals(a.getUsedAt(), b.getUsedAt());
-  }
+    for (BibValue value : editedEntry.getOrderedValues()) {
+      merged.putValue(value);
+    }
 
-  private String norm(String s) {
-    return s == null ? "" : s.trim();
+    return merged;
   }
 
   /**

@@ -1,7 +1,8 @@
 package de.zettelkastenfx.persistence;
 
-import de.zettelkastenfx.bibliography.model.BibliographyType;
-import de.zettelkastenfx.bibliography.persistence.BibliographyRepository;
+import de.zettelkastenfx.bibliography.api.BibliographyService;
+import de.zettelkastenfx.bibliography.api.BibliographyServiceImpl;
+import de.zettelkastenfx.bibliography.model.BibliographyReference;
 import de.zettelkastenfx.notes.model.LinkType;
 import de.zettelkastenfx.notes.model.Note;
 import de.zettelkastenfx.notes.model.NoteLink;
@@ -15,11 +16,21 @@ import java.util.*;
 public class NoteRepository {
 
   private final DataSource ds;
-  private final BibliographyRepository bibliographyRepo;
+  private final BibliographyService bibliographyService;
 
   public NoteRepository(DataSource ds) {
-    this.ds = ds;
-    this.bibliographyRepo = new BibliographyRepository(ds);
+    this(ds, new BibliographyServiceImpl(ds));
+  }
+
+  /**
+   * Erzeugt das Repository mit explizit übergebener Bibliographie-Fassade.
+   *
+   * @param ds Datenquelle der Anwendung
+   * @param bibliographyService Bibliographie-Fassade
+   */
+  public NoteRepository(DataSource ds, BibliographyService bibliographyService) {
+    this.ds = Objects.requireNonNull(ds, "ds");
+    this.bibliographyService = Objects.requireNonNull(bibliographyService, "bibliographyService");
   }
 
   public record KeywordUsageRow(int id, String keyword, int count) {}
@@ -76,13 +87,6 @@ public class NoteRepository {
         note.setBodyBlob(rs.getBytes("content_blob"));
         note.setBodyCodec(rs.getString("content_codec"));
 
-        String bibliographyType = rs.getString("bibliography_type");
-        note.setBibliographyType(
-            bibliographyType == null || bibliographyType.isBlank()
-                ? BibliographyType.USER
-                : BibliographyType.valueOf(bibliographyType)
-        );
-
         Integer bibliographyRefId = (Integer) rs.getObject("bibliography_ref_id");
         note.setBibliographyRefId(bibliographyRefId);
 
@@ -91,15 +95,6 @@ public class NoteRepository {
 
         String updatedString = rs.getString("updated_at");
         note.setUpdatedAt((updatedString == null || updatedString.isEmpty()) ? null : Instant.parse(updatedString));
-
-        note.setBibliographyEntry(null);
-        if (note.getBibliographyType() == BibliographyType.BOOK
-                && bibliographyRefId != null
-                && bibliographyRefId > 0) {
-          note.setBibliographyEntry(
-              bibliographyRepo.load(bibliographyRefId, BibliographyType.BOOK)
-          );
-        }
 
         List<String> keywords = loadKeywordsForNote(c, id);
         note.setKeywords(keywords);
@@ -154,7 +149,7 @@ public class NoteRepository {
         ps.setString(1, note.getTitle());
         ps.setBytes(2, note.getBodyBlob());
         ps.setString(3, note.getBodyCodec());
-        ps.setString(4, note.getBibliographyType().name());
+        ps.setString(4, legacyBibliographyTypeForRefId(note.getBibliographyRefId()));
 
         if (note.getBibliographyRefId() == null) {
           ps.setNull(5, Types.INTEGER);
@@ -208,7 +203,7 @@ public class NoteRepository {
         ps.setString(1, note.getTitle());
         ps.setBytes(2, note.getBodyBlob());
         ps.setString(3, note.getBodyCodec());
-        ps.setString(4, note.getBibliographyType().name());
+        ps.setString(4, legacyBibliographyTypeForRefId(note.getBibliographyRefId()));
 
         if (note.getBibliographyRefId() == null) {
           ps.setNull(5, Types.INTEGER);
@@ -1157,28 +1152,43 @@ public class NoteRepository {
     }
   }
 
-  public void linkBibliography(int noteId, BibliographyType type, int entryId) {
+  /**
+   * Verknüpft eine Notiz mit einem bibliographischen Eintrag.
+   * Die Legacy-Spalte {@code bibliography_type} bleibt bis zu einer späteren
+   * Migration neutralisiert auf {@code USER}.
+   *
+   * @param noteId Zettel-ID
+   * @param entryId Bibliographie-Eintrags-ID
+   */
+  public void linkBibliography(int noteId, int entryId) {
     if (noteId <= 0) {
       throw new IllegalArgumentException("linkBibliography: noteId muss > 0 sein.");
-    }
-    if (type == null || type == BibliographyType.USER) {
-      throw new IllegalArgumentException("linkBibliography: type muss ein echter Bibliographie-Typ sein.");
     }
     if (entryId <= 0) {
       throw new IllegalArgumentException("linkBibliography: entryId muss > 0 sein.");
     }
 
-    String sql = "UPDATE notes SET bibliography_type = ?, bibliography_ref_id = ? WHERE id = ?";
-    try (var c = ds.getConnection(); var ps = c.prepareStatement(sql)) {
-      ps.setString(1, type.name());
+    String sql = """
+        UPDATE notes
+        SET bibliography_type = ?,
+            bibliography_ref_id = ?,
+            updated_at = ?
+        WHERE id = ?
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql)) {
+
+      ps.setString(1, legacyBibliographyTypeForRefId(entryId));
       ps.setInt(2, entryId);
-      ps.setInt(3, noteId);
+      ps.setString(3, Instant.now().toString());
+      ps.setInt(4, noteId);
 
       int changed = ps.executeUpdate();
       if (changed != 1) {
         throw new IllegalStateException("linkBibliography: keine Note aktualisiert (noteId=" + noteId + ")");
       }
-    } catch (java.sql.SQLException e) {
+    } catch (SQLException e) {
       throw new IllegalStateException("linkBibliography fehlgeschlagen (noteId=" + noteId + ")", e);
     }
   }
@@ -1263,5 +1273,137 @@ public class NoteRepository {
           e
       );
     }
+  }
+
+  /**
+   * Lädt die schlanke bibliographische Referenz einer Notiz.
+   *
+   * @param noteId Zettel-ID
+   * @return optionale bibliographische Referenz
+   */
+  public Optional<BibliographyReference> loadBibliographyReference(int noteId) {
+    String sql = """
+        SELECT bibliography_ref_id
+        FROM notes
+        WHERE id = ?
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql)) {
+
+      ps.setInt(1, noteId);
+
+      try (ResultSet rs = ps.executeQuery()) {
+        if (!rs.next()) {
+          return Optional.empty();
+        }
+
+        Integer bibliographyRefId = (Integer) rs.getObject("bibliography_ref_id");
+        if (bibliographyRefId == null || bibliographyRefId <= 0) {
+          return Optional.empty();
+        }
+
+        return bibliographyService.loadReference(bibliographyRefId);
+      }
+    } catch (SQLException e) {
+      throw new IllegalStateException(
+          "loadBibliographyReference fehlgeschlagen (noteId=" + noteId + ")",
+          e
+      );
+    }
+  }
+
+  /**
+   * Verknüpft eine Notiz mit einem bibliographischen Eintrag.
+   * <p>
+   * Die alte Spalte {@code bibliography_type} wird während der Übergangsphase
+   * weiterhin mitgeführt, damit bestehende Altlogik nicht sofort bricht.
+   *
+   * @param noteId Zettel-ID
+   * @param entryId Bibliographie-Eintrags-ID
+   */
+  public void linkBibliographyEntry(int noteId, int entryId) {
+    if (noteId <= 0) {
+      throw new IllegalArgumentException("linkBibliographyEntry: noteId muss > 0 sein.");
+    }
+    if (entryId <= 0) {
+      throw new IllegalArgumentException("linkBibliographyEntry: entryId muss > 0 sein.");
+    }
+
+    String sql = """
+        UPDATE notes
+        SET bibliography_ref_id = ?,
+            bibliography_type = ?,
+            updated_at = ?
+        WHERE id = ?
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql)) {
+
+      ps.setInt(1, entryId);
+      ps.setString(2, legacyBibliographyTypeForRefId(entryId));
+      ps.setString(3, Instant.now().toString());
+      ps.setInt(4, noteId);
+      ps.executeUpdate();
+
+    } catch (SQLException e) {
+      throw new IllegalStateException(
+          "linkBibliographyEntry fehlgeschlagen (noteId=" + noteId + ", entryId=" + entryId + ")",
+          e
+      );
+    }
+  }
+
+  /**
+   * Entfernt die bibliographische Verknüpfung einer Notiz.
+   *
+   * @param noteId Zettel-ID
+   */
+  public void unlinkBibliographyEntry(int noteId) {
+    if (noteId <= 0) {
+      throw new IllegalArgumentException("unlinkBibliographyEntry: noteId muss > 0 sein.");
+    }
+
+    String sql = """
+        UPDATE notes
+        SET bibliography_ref_id = NULL,
+            bibliography_type = ?,
+            updated_at = ?
+        WHERE id = ?
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql)) {
+
+      ps.setString(1, legacyBibliographyTypeForRefId(null));
+      ps.setString(2, Instant.now().toString());
+      ps.setInt(3, noteId);
+      ps.executeUpdate();
+
+    } catch (SQLException e) {
+      throw new IllegalStateException(
+          "unlinkBibliographyEntry fehlgeschlagen (noteId=" + noteId + ")",
+          e
+      );
+    }
+  }
+
+  /**
+   * Liefert den Datenbankwert für die Legacy-Spalte {@code bibliography_type}
+   * ausschließlich noch aus der Existenz einer Referenz-ID.
+   * Bis zur endgültigen Entfernung der Altspalte gilt:
+   * <ul>
+   *   <li>mit Referenz-ID -> {@code USER}</li>
+   *   <li>ohne Referenz-ID -> {@code USER}</li>
+   * </ul>
+   * Die Spalte bleibt damit neutralisiert, ohne dass die Anwendung noch
+   * fachlich von {@code BibliographyType} abhängt.
+   *
+   * @param bibliographyRefId bibliographische Referenz-ID
+   * @return neutraler Legacy-Wert
+   */
+  private String legacyBibliographyTypeForRefId(Integer bibliographyRefId) {
+    return "USER";
   }
 }

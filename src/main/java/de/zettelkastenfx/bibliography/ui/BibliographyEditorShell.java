@@ -1,10 +1,11 @@
 package de.zettelkastenfx.bibliography.ui;
 
 import de.zettelkastenfx.base.BaseIcon;
-import de.zettelkastenfx.base.util.BrowserConnection;
+import de.zettelkastenfx.bibliography.api.BibliographyService;
 import de.zettelkastenfx.bibliography.model.*;
-import de.zettelkastenfx.bibliography.ui.binding.*;
-import de.zettelkastenfx.bibliography.ui.lookup.*;
+import de.zettelkastenfx.bibliography.ui.lookup.AiChoiceProvider;
+import de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion;
+import de.zettelkastenfx.bibliography.ui.lookup.DynamicLookupCoordinator;
 import de.zettelkastenfx.bibliography.ui.support.BibliographyAuthorsView;
 import de.zettelkastenfx.bibliography.ui.support.BibliographyFieldView;
 import javafx.beans.property.BooleanProperty;
@@ -12,13 +13,10 @@ import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
+import lombok.Setter;
 
 import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.EnumMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Orchestriert den Editor für bibliographische Angaben.
@@ -30,147 +28,117 @@ public class BibliographyEditorShell {
   private final VBox root = new VBox(8);
   private final ToggleButton toggleEdit = new ToggleButton();
   private final VBox content = new VBox(8);
-  private final ComboBox<TypeChoice> typeCombo = new ComboBox<>();
+  private final ComboBox<MediaTypeOption> typeCombo = new ComboBox<>();
   private final StackPane formHost = new StackPane();
-  private final Map<TypeChoice, Node> forms = new EnumMap<>(TypeChoice.class);
+
+  @Setter private BibliographyService bibliographyService = null;
+  private final Map<String, VBox> dynamicFormsByMediaType = new LinkedHashMap<>();
+  private final Map<String, Map<String, Object>> dynamicFieldRegistryByMediaType = new LinkedHashMap<>();
+  private final Map<String, List<MediaAttributeDefinition>> attributesByMediaType = new LinkedHashMap<>();
+
+  private final Map<String, MediaTypeOption> mediaTypeOptionsByBibName = new LinkedHashMap<>();
   private final Button btnDelete = BaseIcon.DELETE.button("Angabe löschen");
   private final Button btnAdd = BaseIcon.ADD.button("Speichern & verknüpfen");
-  private final Map<TypeChoice, Integer> selectedEntryIds = new EnumMap<>(TypeChoice.class);
-  private final Map<TypeChoice, Integer> sourceEntryIds = new EnumMap<>(TypeChoice.class);
-  private final EnumMap<TypeChoice, Boolean> autoFillLocked = new EnumMap<>(TypeChoice.class);
-  private final EnumMap<TypeChoice, Boolean> autoFilledTitle = new EnumMap<>(TypeChoice.class);
 
-  private Runnable onRequestCreateCollection = () -> {};
+  private final Map<String, Integer> selectedEntryIdsByMediaType = new LinkedHashMap<>();
+  private final Map<String, Integer> sourceEntryIdsByMediaType = new LinkedHashMap<>();
+  private final Map<String, Boolean> autoFillLockedByMediaType = new LinkedHashMap<>();
+  private final Map<String, Boolean> autoFilledTitleByMediaType = new LinkedHashMap<>();
+  private final Map<String, Integer> relatedEntryIdsByFieldKey = new LinkedHashMap<>();
+  private boolean suppressDynamicRelatedCallbacks;
+
+  @FunctionalInterface
+  public interface RelatedCreationHandler {
+    /**
+     * Fordert das Anlegen eines Related-Zielmediums an.
+     *
+     * @param relatedBibtexName technischer BibTeX-Name des Related-Feldes
+     * @param targetMediaTypeBibName technischer Ziel-Medientypname
+     * @param displayText aktueller Feldtext
+     */
+    void requestCreateRelated(String relatedBibtexName,
+                              String targetMediaTypeBibName,
+                              String displayText);
+  }
+
+  private RelatedCreationHandler onRequestCreateRelated = (relatedBibtexName,
+                                                           targetMediaTypeBibName,
+                                                           displayText) -> {
+  };
   private Runnable onNoneSelected = () -> {};
-  private Runnable onRequestCreateJournal = () -> {};
 
-  private BibliographyLookupProvider lookupProvider = BibliographyLookupProvider.NONE;
-  private BibliographyLookupCoordinator lookupCoordinator;
-  private BookBibliographyBinder bookBinder;
-  private CollectionBibliographyBinder collectionBinder;
-  private ArticleInCollectionBibliographyBinder articleInCollectionBinder;
-
-  // Thesis
-  private ComboBox<ThesisType> thesisTypeCombo;
-  private ThesisBibliographyBinder thesisBinder;
-
-  // Internet
-  private InternetBibliographyBinder internetBinder;
-
-  // Edition
-  private EditionBibliographyBinder editionBinder;
-
-  // Buch
-  private BibliographyAuthorsView bookAuthorsView;
-  private BibliographyFieldView bookTitleField;
-  private BibliographyFieldView bookSubtitleField;
-  private BibliographyFieldView bookPublisherField;
-  private BibliographyFieldView bookPlaceField;
-  private BibliographyFieldView bookYearField;
-  private BibliographyFieldView bookIsbnField;
-  private BibliographyFieldView bookEditionField;
-  private BibliographyFieldView bookSeriesField;
-  private BibliographyFieldView bookSeriesNumberField;
-
-  // Collection
-  private BibliographyAuthorsView collectionAuthorsView;
-  private BibliographyFieldView collectionTitleField;
-  private BibliographyFieldView collectionSubtitleField;
-  private BibliographyFieldView collectionPublisherField;
-  private BibliographyFieldView collectionPlaceField;
-  private BibliographyFieldView collectionYearField;
-  private BibliographyFieldView collectionSeriesField;
-
-  // ArticleInCollection
-  private BibliographyAuthorsView articleAuthorsView;
-  private BibliographyFieldView articleTitleField;
-  private BibliographyFieldView articleCollectionTitleField;
-  private BibliographyFieldView articlePagesField;
-
-  // Journal
-  private BibliographyFieldView journalTitleField;
-  private BibliographyFieldView journalSubtitleField;
-  private BibliographyFieldView journalIssnField;
-  private BibliographyFieldView journalPublisherField;
-  private BibliographyFieldView journalPlaceField;
-  private BibliographyFieldView journalStartYearField;
-  private BibliographyFieldView journalEndYearField;
-  private BibliographyFieldView journalNoteField;
-  private JournalBibliographyBinder journalBinder;
-
-  // JournalArticle
-  private BibliographyAuthorsView journalArticleAuthorsView;
-  private BibliographyFieldView journalArticleTitleField;
-  private BibliographyFieldView journalArticleSubtitleField;
-  private BibliographyFieldView journalArticlePublisherField;
-  private BibliographyFieldView journalArticleJournalTitleField;
-  private BibliographyFieldView journalArticleVolumeField;
-  private BibliographyFieldView journalArticleIssueField;
-  private BibliographyFieldView journalArticleYearField;
-  private BibliographyFieldView journalArticlePagesField;
-  private BibliographyFieldView journalArticleDoiField;
-  private JournalArticleBibliographyBinder journalArticleBinder;
-
-  // Thesis
-  private BibliographyAuthorsView thesisAuthorsView;
-  private BibliographyFieldView thesisTitleField;
-  private BibliographyFieldView thesisSubtitleField;
-  private BibliographyFieldView thesisUniversityField;
-  private BibliographyFieldView thesisPlaceField;
-  private BibliographyFieldView thesisYearField;
-  private BibliographyFieldView thesisAdvisorField;
-  private BibliographyFieldView thesisSeriesField;
-  private BibliographyFieldView thesisNoteField;
-
-  // Internet
-  private BibliographyAuthorsView internetAuthorsView;
-  private BibliographyFieldView internetTitleField;
-  private BibliographyFieldView internetHostNameField;
-  private BibliographyFieldView internetUrlField;
-  private DatePicker internetPublishedPicker;
-  private Label internetAccessedAtLabel;
-  private LocalDateTime internetAccessedAtValue;
-
-  // Edition
-  private BibliographyAuthorsView editionAuthorsView;
-  private BibliographyFieldView editionTitleField;
-  private BibliographyFieldView editionPublisherField;
-  private BibliographyFieldView editionPlaceField;
-  private BibliographyFieldView editionYearField;
-  private BibliographyFieldView editionIsbnField;
-  private BibliographyFieldView editionRunField;
-  private BibliographyFieldView editionSeriesField;
-  private BibliographyFieldView editionVolumeField;
-
-  // AI
-  private BibliographyFieldView aiTitleField;
-  private ComboBox<String> aiProviderCombo;
-  private ComboBox<String> aiModelCombo;
-  private Label aiProviderLabel;
-  private Label aiModelLabel;
-  private BibliographyFieldView aiContextField;
-  private BibliographyFieldView aiPromptTitleField;
-  private DatePicker aiUsedAtPicker;
-  private Label aiUsedAtLabel;
-  private AiBibliographyBinder aiBinder;
+  /**
+   * -- SETTER --
+   *  Setzt den zentralen dynamischen Lookup-Koordinator.
+   *
+   * @param dynamicLookupCoordinator Koordinator; {@code null} deaktiviert die
+   *                                 aus der Shell ausgelagerte Lookup-Logik
+   */
+  @Setter
+  private DynamicLookupCoordinator dynamicLookupCoordinator = null;
 
   private AiChoiceProvider aiChoiceProvider = AiChoiceProvider.NONE;
   private boolean suppressAiChoiceRefresh;
 
   /**
-   * Erzeugt die Shell und initialisiert Aufbau, Formulare und Lookup-Verhalten.
+   * Beschreibt eine auswählbare Medientyp-Option der Shell.
+   * Die Auswahl arbeitet nur noch mit technischem Medientypnamen und
+   * Anzeigenamen.
+   */
+  public static final class MediaTypeOption {
+    private final String mediaTypeBibName;
+    private final String displayName;
+
+    /**
+     * Erzeugt eine auswählbare Medientyp-Option.
+     *
+     * @param mediaTypeBibName technischer Medientypname
+     * @param displayName Anzeigename für die ComboBox
+     */
+    public MediaTypeOption(String mediaTypeBibName, String displayName) {
+      this.mediaTypeBibName = mediaTypeBibName == null ? "" : mediaTypeBibName.trim();
+      this.displayName = displayName == null ? "" : displayName.trim();
+    }
+
+    /**
+     * Liefert den technischen Medientypnamen.
+     *
+     * @return technischer Medientypname
+     */
+    public String mediaTypeBibName() {
+      return mediaTypeBibName;
+    }
+
+    /**
+     * Liefert den Anzeigenamen.
+     *
+     * @return Anzeigename
+     */
+    public String displayName() {
+      return displayName;
+    }
+
+    @Override
+    public String toString() {
+      return displayName.isBlank() ? mediaTypeBibName : displayName;
+    }
+  }
+
+  /**
+   * Erzeugt die Shell und initialisiert nur noch die aktive dynamische
+   * Grundstruktur. Die alten festen Formulare werden beim Erzeugen der Shell
+   * nicht mehr aufgebaut.
    */
   public BibliographyEditorShell() {
     initializeStructure();
-    initializeForms();
     initializeHeaderAndFooter();
     initializeTypeSelection();
-    initializeLookupCoordinator();
-    lookupCoordinator.wireLookupInteractions();
   }
 
   /**
    * Legt die Standardstruktur der Shell an.
+   * Der Inhaltsbereich arbeitet aktiv nur noch mit dem dynamischen
+   * Formular-Host.
    */
   private void initializeStructure() {
     root.getStyleClass().add("biblio-editor-shell");
@@ -179,23 +147,8 @@ public class BibliographyEditorShell {
     typeCombo.getStyleClass().add("biblio-type-combo");
     formHost.getStyleClass().add("biblio-form-host");
     content.getStyleClass().add("biblio-editor-content");
-    setEditMode(true);
-  }
-
-  /**
-   * Baut die Formulare für die unterstützten Bibliographietypen auf.
-   */
-  private void initializeForms() {
-    forms.put(TypeChoice.BOOK, buildBookForm());
-    forms.put(TypeChoice.COLLECTION, buildCollectionForm());
-    forms.put(TypeChoice.ARTICLE_IN_COLLECTION, buildArticleInCollectionForm());
-    forms.put(TypeChoice.JOURNAL, buildJournalForm());
-    forms.put(TypeChoice.JOURNAL_ARTICLE, buildJournalArticleForm());
-    forms.put(TypeChoice.THESIS, buildThesisForm());
-    forms.put(TypeChoice.INTERNET, buildInternetForm());
-    forms.put(TypeChoice.EDITION, buildEditionForm());
-    forms.put(TypeChoice.AI, buildAiForm());
     content.getChildren().setAll(formHost);
+    setEditMode(true);
   }
 
   /**
@@ -208,77 +161,13 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Initialisiert Typauswahl und Formularumschaltung.
+   * Initialisiert die Formularumschaltung der Typauswahl.
+   * Die eigentlichen auswählbaren Medientypen werden von außen über
+   * {@link #setMediaTypeOptions(List)} gesetzt.
    */
   private void initializeTypeSelection() {
-    setTypeChoices(
-        TypeChoice.NONE,
-        TypeChoice.BOOK,
-        TypeChoice.COLLECTION,
-        TypeChoice.ARTICLE_IN_COLLECTION,
-        TypeChoice.JOURNAL,
-        TypeChoice.JOURNAL_ARTICLE,
-        TypeChoice.THESIS,
-        TypeChoice.INTERNET,
-        TypeChoice.EDITION,
-        TypeChoice.AI
-    );
-    typeCombo.setValue(TypeChoice.BOOK);
-    switchForm(typeCombo.getValue());
     typeCombo.valueProperty().addListener((obs, old, value) -> switchForm(value));
-  }
-
-  private void initializeLookupCoordinator() {
-    LookupStateAccess stateAccess = new LookupStateAccess(
-        this::currentAuthors,
-        this::setSelectedEntryId,
-        this::setSourceEntryId,
-        this::isAutoFillLocked,
-        this::setAutoFillLocked,
-        this::wasAutoFilled,
-        this::setAutoFilled
-    );
-
-    LookupFieldAccess fieldAccess = new LookupFieldAccess(
-        bookTitleField,
-        collectionTitleField,
-        articleTitleField,
-        journalTitleField,
-        journalArticleTitleField,
-        internetTitleField,
-        editionTitleField,
-        bookSeriesField,
-        collectionSeriesField,
-        articleCollectionTitleField,
-        journalArticleJournalTitleField,
-        this::getCollectionTitle,
-        this::setCollectionTitle,
-        this::getJournalTitle,
-        this::setJournalTitle
-    );
-
-    LookupEntryAccess entryAccess = new LookupEntryAccess(
-        this::readFromBookEntry,
-        this::readFromCollectionEntry,
-        this::readFromArticleInCollectionEntry,
-        this::readFromJournalEntry,
-        this::readFromJournalArticleEntry,
-        this::readFromInternetEntry,
-        this::readFromEditionEntry,
-        this::getCollectionEntryId,
-        this::setCollectionEntryId,
-        this::getJournalEntryId,
-        this::setJournalEntryId,
-        () -> onRequestCreateCollection.run(),
-        () -> onRequestCreateJournal.run()
-    );
-
-    lookupCoordinator = new BibliographyLookupCoordinator(
-        () -> lookupProvider,
-        stateAccess,
-        fieldAccess,
-        entryAccess
-    );
+    switchForm(typeCombo.getValue());
   }
 
   /**
@@ -319,20 +208,58 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Konfiguriert die verfügbaren Bibliographietypen in der Typauswahl.
+   * Konfiguriert die verfügbaren Medientyp-Optionen der Shell.
    *
-   * @param types auswählbare Typen; bei leerer Übergabe werden Standardtypen verwendet.
+   * @param options auswählbare Optionen; leere oder {@code null}-Werte werden defensiv behandelt
    */
-  public void setTypeChoices(TypeChoice... types) {
-    if (types == null || types.length == 0) {
-      typeCombo.getItems().setAll(TypeChoice.NONE, TypeChoice.BOOK);
-    } else {
-      typeCombo.getItems().setAll(types);
+  public void setMediaTypeOptions(List<MediaTypeOption> options) {
+    mediaTypeOptionsByBibName.clear();
+
+    List<MediaTypeOption> safeOptions = new ArrayList<>();
+    if (options != null) {
+      for (MediaTypeOption option : options) {
+        if (option == null) {
+          continue;
+        }
+
+        String key = normalizeMediaTypeBibName(option.mediaTypeBibName());
+        if (key.isBlank()) {
+          continue;
+        }
+
+        MediaTypeOption normalizedOption = new MediaTypeOption(
+            key,
+            option.displayName()
+        );
+
+        safeOptions.add(normalizedOption);
+        mediaTypeOptionsByBibName.put(key, normalizedOption);
+      }
     }
 
-    if (!typeCombo.getItems().contains(typeCombo.getValue()) && !typeCombo.getItems().isEmpty()) {
-      typeCombo.setValue(typeCombo.getItems().get(0));
+    MediaTypeOption previousSelection = typeCombo.getValue();
+
+    typeCombo.getItems().setAll(safeOptions);
+
+    if (safeOptions.isEmpty()) {
+      typeCombo.setValue(null);
+      switchForm(null);
+      return;
     }
+
+    MediaTypeOption nextSelection = null;
+    if (previousSelection != null) {
+      nextSelection = mediaTypeOptionsByBibName.get(
+          normalizeMediaTypeBibName(previousSelection.mediaTypeBibName())
+      );
+    }
+
+    if (nextSelection == null) {
+      nextSelection = safeOptions.getFirst();
+    }
+
+    typeCombo.setValue(nextSelection);
+    switchForm(nextSelection);
   }
 
   /**
@@ -367,12 +294,658 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Setzt den Lookup-Provider für Vorschläge und Auflösungen.
-   *
-   * @param lookupProvider Provider für Lookup-Operationen; {@code null} deaktiviert Lookups.
+   * Schaltet die Shell in einen Popup-Modus für die Medienverwaltung.
+   * Dabei werden die internen Header-Elemente für Typauswahl und
+   * Bearbeitungstoggle ausgeblendet, während der Löschen-Button als
+   * BOOK_DELETE-Aktion sichtbar bleibt.
    */
-  public void setLookupProvider(BibliographyLookupProvider lookupProvider) {
-    this.lookupProvider = lookupProvider == null ? BibliographyLookupProvider.NONE : lookupProvider;
+  public void configureForMediaManagementPopup() {
+    setEditMode(true);
+
+    toggleEdit.setVisible(false);
+    toggleEdit.setManaged(false);
+
+    typeCombo.visibleProperty().unbind();
+    typeCombo.managedProperty().unbind();
+    typeCombo.setVisible(false);
+    typeCombo.setManaged(false);
+
+    btnDelete.visibleProperty().unbind();
+    btnDelete.managedProperty().unbind();
+    btnDelete.setVisible(true);
+    btnDelete.setManaged(true);
+    btnDelete.setGraphic(BaseIcon.BOOK_DELETE.imageView());
+    btnDelete.setTooltip(new Tooltip("Medium löschen"));
+  }
+
+  /**
+   * Leert die aktuell sichtbare Editoransicht vollständig.
+   */
+  public void clearEditorView() {
+    typeCombo.setValue(null);
+    formHost.getChildren().clear();
+  }
+
+  /**
+   * Liest den aktuellen Zustand des sichtbaren dynamischen Editors in ein
+   * dynamisches Bibliographie-Objekt aus.
+   *
+   * @return dynamischer Bibliographie-Eintrag aus dem aktuellen UI-Zustand
+   */
+  public DynamicBibliographyEntry readDynamicEntry() {
+    MediaTypeDefinition mediaType = resolveSelectedMediaTypeDefinition();
+    if (mediaType == null) {
+      throw new IllegalStateException("Kein Medientyp in der Shell ausgewählt.");
+    }
+
+    DynamicBibliographyEntry entry = new DynamicBibliographyEntry();
+    entry.setMediaTypeId(mediaType.id());
+    entry.setMediaTypeBibName(mediaType.bibName());
+    entry.setMediaTypeName(mediaType.name());
+
+    Integer sourceEntryId = getCurrentSourceEntryId();
+    if (sourceEntryId == null || sourceEntryId <= 0) {
+      sourceEntryId = getCurrentSelectedEntryId();
+    }
+    if (sourceEntryId != null && sourceEntryId > 0) {
+      entry.setId(sourceEntryId);
+    }
+
+    List<MediaAttributeDefinition> attributes = bibliographyService.listAttributesForMediaType(mediaType.id());
+    for (MediaAttributeDefinition attribute : attributes) {
+      if (attribute == null || attribute.fieldDefinition() == null) {
+        continue;
+      }
+
+      String bibtexName = attribute.fieldDefinition().bibtexName();
+      String datatype = attribute.fieldDefinition().datatype();
+
+      if (isPersonDatatype(datatype)) {
+        List<PersonRef> persons = mapAuthors(
+            getCurrentAuthorsForField(mediaType.bibName(), bibtexName)
+        );
+        if (!persons.isEmpty()) {
+          entry.putValue(new PersonBibValue(bibtexName, persons));
+        }
+        continue;
+      }
+
+      if (isRelatedDatatype(datatype)) {
+        Integer relatedEntryId = getCurrentRelatedEntryId(mediaType.bibName(), bibtexName);
+        if (relatedEntryId != null && relatedEntryId > 0) {
+          String displayText = getCurrentFieldValue(mediaType.bibName(), bibtexName);
+          entry.putValue(new RelatedBibValue(
+              bibtexName,
+              relatedEntryId,
+              null,
+              displayText
+          ));
+        }
+        continue;
+      }
+
+      String rawValue = getCurrentFieldValue(bibtexName);
+
+      if (isIntegerDatatype(datatype)) {
+        Integer parsed = parseIntegerValue(rawValue);
+        if (parsed != null || !rawValue.isBlank()) {
+          entry.putValue(new IntegerBibValue(bibtexName, parsed));
+        }
+      } else {
+        if (!rawValue.isBlank()) {
+          entry.putValue(new StringBibValue(bibtexName, rawValue));
+        }
+      }
+    }
+
+    return entry;
+  }
+
+  /**
+   * Schreibt einen dynamischen Bibliographie-Eintrag direkt in die Shell zurück.
+   *
+   * @param entry dynamischer Eintrag
+   * @param editMode gewünschter Bearbeitungsmodus
+   */
+  public void showDynamicEntry(DynamicBibliographyEntry entry, boolean editMode) {
+    if (entry == null) {
+      throw new IllegalArgumentException("entry darf nicht null sein.");
+    }
+
+    String mediaTypeBibName = normalizeMediaTypeBibName(entry.getMediaTypeBibName());
+    if (mediaTypeBibName.isBlank()) {
+      mediaTypeBibName = getSelectedMediaTypeBibName();
+    }
+
+    showNewEditor(mediaTypeBibName);
+    setEditMode(editMode);
+
+    setSelectedEntryId(mediaTypeBibName, entry.getId());
+    setSourceEntryId(mediaTypeBibName, entry.getId());
+    setAutoFillLocked(mediaTypeBibName, false);
+    setAutoFilled(mediaTypeBibName, false);
+
+    for (BibValue value : entry.getOrderedValues()) {
+      switch (value) {
+        case StringBibValue stringBibValue ->
+            setCurrentFieldValue(stringBibValue.bibtexName(), stringBibValue.value());
+
+        case IntegerBibValue integerBibValue ->
+            setCurrentFieldValue(
+                integerBibValue.bibtexName(),
+                integerBibValue.value() == null ? "" : String.valueOf(integerBibValue.value())
+            );
+
+        case RelatedBibValue relatedBibValue ->
+            setCurrentRelatedEntry(
+                relatedBibValue.bibtexName(),
+                relatedBibValue.relatedEntryId(),
+                relatedBibValue.displayValue()
+            );
+
+        case PersonBibValue personBibValue ->
+            setCurrentAuthorsForField(
+                mediaTypeBibName,
+                personBibValue.bibtexName(),
+                mapPersons(personBibValue.value())
+            );
+
+        default -> {
+        }
+      }
+    }
+  }
+
+  /**
+   * Ermittelt den aktuell selektierten Medientyp der Shell.
+   *
+   * @return Medientypdefinition oder {@code null}
+   */
+  private MediaTypeDefinition resolveSelectedMediaTypeDefinition() {
+    if (bibliographyService == null) {
+      return null;
+    }
+
+    String mediaTypeBibName = getSelectedMediaTypeBibName();
+    if (mediaTypeBibName.isBlank()) {
+      return null;
+    }
+
+    return bibliographyService.listMediaTypes().stream()
+               .filter(type -> normalizeMediaTypeBibName(type.bibName()).equals(mediaTypeBibName))
+               .findFirst()
+               .orElse(null);
+  }
+
+  /**
+   * Prüft, ob ein Metadaten-Datentyp als Integer behandelt werden soll.
+   *
+   * @param datatype Metadaten-Datentyp
+   * @return {@code true}, wenn Integer-Semantik vorliegt
+   */
+  private boolean isIntegerDatatype(String datatype) {
+    String normalized = normalizeMediaTypeBibName(datatype);
+    return normalized.equalsIgnoreCase("integer")
+               || normalized.equalsIgnoreCase("year")
+               || normalized.equalsIgnoreCase("month");
+  }
+
+  /**
+   * Prüft, ob ein Metadaten-Datentyp als Related-Feld behandelt werden soll.
+   *
+   * @param datatype Metadaten-Datentyp
+   * @return {@code true}, wenn Related-Semantik vorliegt
+   */
+  private boolean isRelatedDatatype(String datatype) {
+    return "anderer eintrag/integer".equalsIgnoreCase(normalizeMediaTypeBibName(datatype));
+  }
+
+  /**
+   * Parst einen Integer-Wert tolerant aus Text.
+   *
+   * @param raw roher Eingabetext
+   * @return geparster Integer oder {@code null}
+   */
+  private Integer parseIntegerValue(String raw) {
+    String text = raw == null ? "" : raw.trim();
+    if (text.isBlank()) {
+      return null;
+    }
+
+    try {
+      return Integer.parseInt(text);
+    } catch (NumberFormatException ex) {
+      return null;
+    }
+  }
+
+  /**
+   * Wandelt Autoren aus der Shell in Personenreferenzen um.
+   *
+   * @param authors Autorenliste aus der UI
+   * @return Personenreferenzen für das dynamische Modell
+   */
+  private List<PersonRef> mapAuthors(List<Author> authors) {
+    if (authors == null || authors.isEmpty()) {
+      return List.of();
+    }
+
+    List<PersonRef> result = new ArrayList<>();
+    int pos = 1;
+
+    for (Author author : authors) {
+      if (author == null) {
+        continue;
+      }
+
+      String firstName = author.getFirstName() == null ? "" : author.getFirstName().trim();
+      String lastName = author.getLastName() == null ? "" : author.getLastName().trim();
+
+      if (firstName.isBlank() && lastName.isBlank()) {
+        continue;
+      }
+
+      result.add(new PersonRef(
+          author.getId(),
+          firstName,
+          lastName,
+          author.getPosition() > 0 ? author.getPosition() : pos
+      ));
+      pos++;
+    }
+
+    return result;
+  }
+
+  /**
+   * Wandelt Personenreferenzen des dynamischen Modells in Autoren der UI um.
+   *
+   * @param persons Personenreferenzen
+   * @return Autorenliste für die Shell
+   */
+  private List<Author> mapPersons(List<PersonRef> persons) {
+    if (persons == null || persons.isEmpty()) {
+      return List.of();
+    }
+
+    List<Author> result = new ArrayList<>();
+    int pos = 1;
+
+    for (PersonRef person : persons) {
+      if (person == null) {
+        continue;
+      }
+
+      Author author = new Author();
+      author.setId(person.id());
+      author.setFirstName(person.firstName());
+      author.setLastName(person.lastName());
+      author.setPosition(person.position() != null && person.position() > 0 ? person.position() : pos++);
+      result.add(author);
+    }
+
+    return result;
+  }
+
+  /**
+   * Baut für einen Medientyp bei Bedarf ein metadatengesteuertes Formular auf.
+   *
+   * @param mediaType Medientypdefinition
+   */
+  private void ensureDynamicForm(MediaTypeDefinition mediaType) {
+    if (mediaType == null) {
+      return;
+    }
+
+    String mediaTypeBibName = normalizeMediaTypeBibName(mediaType.bibName());
+    if (mediaTypeBibName.isBlank() || bibliographyService == null) {
+      return;
+    }
+
+    if (dynamicFormsByMediaType.containsKey(mediaTypeBibName)) {
+      return;
+    }
+
+    List<MediaAttributeDefinition> attributes =
+        bibliographyService.listAttributesForMediaType(mediaType.id()).stream()
+            .filter(attribute -> attribute.isIdentify()
+                                     || attribute.isNecessary()
+                                     || attribute.isDesired())
+            .toList();
+
+    VBox form = new VBox(8);
+    form.getStyleClass().add("biblio-dynamic-form");
+
+    Map<String, Object> fieldRegistry = new LinkedHashMap<>();
+
+    for (MediaAttributeDefinition attribute : attributes) {
+      createDynamicField(form, fieldRegistry, mediaTypeBibName, attribute);
+    }
+
+    dynamicFormsByMediaType.put(mediaTypeBibName, form);
+    dynamicFieldRegistryByMediaType.put(mediaTypeBibName, fieldRegistry);
+    attributesByMediaType.put(mediaTypeBibName, attributes);
+  }
+
+  /**
+   * Erzeugt eine UI-Komponente für ein einzelnes Attribut des dynamischen
+   * Formulars und registriert diese unter dem technischen BibTeX-Namen.
+   *
+   * @param form Zielcontainer des dynamischen Formulars
+   * @param fieldRegistry Registry der Feldkomponenten des Formulars
+   * @param ownerMediaTypeBibName technischer Medientypname des Formulars
+   * @param attribute Attributdefinition des zu erzeugenden Feldes
+   */
+  private void createDynamicField(VBox form,
+                                  Map<String, Object> fieldRegistry,
+                                  String ownerMediaTypeBibName,
+                                  MediaAttributeDefinition attribute) {
+    if (form == null
+            || fieldRegistry == null
+            || ownerMediaTypeBibName == null
+            || attribute == null
+            || attribute.fieldDefinition() == null) {
+      return;
+    }
+
+    String normalizedOwnerMediaTypeBibName = normalizeMediaTypeBibName(ownerMediaTypeBibName);
+    String bibtexName = normalizeBibtexName(attribute.fieldDefinition().bibtexName());
+    String datatype = normalizeBibtexName(attribute.fieldDefinition().datatype());
+    String labelText = attribute.fieldDefinition().displayName();
+
+    if (bibtexName.isBlank()) {
+      return;
+    }
+
+    if (isPersonDatatype(datatype)) {
+      BibliographyAuthorsView authorsView = new BibliographyAuthorsView(
+          normalizedOwnerMediaTypeBibName,
+          editProperty(),
+          row -> findDynamicAuthorSuggestions(
+              normalizedOwnerMediaTypeBibName,
+              bibtexName,
+              row.getLastName(),
+              getSelectedEntryId(normalizedOwnerMediaTypeBibName)
+          ),
+          this::handleAuthorsEdited,
+          () -> {
+          },
+          this::isLookupSuppressed,
+          this::setSelectedEntryId
+      );
+
+      form.getChildren().add(labeledNode(labelText, authorsView));
+      fieldRegistry.put(bibtexName, authorsView);
+      return;
+    }
+
+    if (isRelatedDatatype(datatype)) {
+      BibliographyFieldView fieldView = new BibliographyFieldView(labelText, editProperty());
+
+      bindDynamicLookupIfAvailable(
+          fieldView,
+          normalizedOwnerMediaTypeBibName,
+          attribute
+      );
+
+      form.getChildren().add(fieldView);
+      fieldRegistry.put(bibtexName, fieldView);
+      return;
+    }
+
+    if (isDatePickerDatatype(datatype, bibtexName)) {
+      DatePicker datePicker = new DatePicker();
+      form.getChildren().add(labeledNode(labelText, datePicker));
+      fieldRegistry.put(bibtexName, datePicker);
+      return;
+    }
+
+    BibliographyFieldView fieldView = new BibliographyFieldView(labelText, editProperty());
+
+    bindDynamicLookupIfAvailable(
+        fieldView,
+        normalizedOwnerMediaTypeBibName,
+        attribute
+    );
+
+    form.getChildren().add(fieldView);
+    fieldRegistry.put(bibtexName, fieldView);
+  }
+
+  /**
+   * Verdrahtet ein Feld bei vorhandenem dynamischen Lookup-Koordinator mit
+   * metadatengetriebener Lookup-Logik.
+   *
+   * @param fieldView Feldansicht
+   * @param ownerMediaTypeBibName technischer Medientypname des Formulars
+   * @param attribute Attributdefinition des Feldes
+   */
+  private void bindDynamicLookupIfAvailable(BibliographyFieldView fieldView,
+                                            String ownerMediaTypeBibName,
+                                            MediaAttributeDefinition attribute) {
+    if (dynamicLookupCoordinator == null || fieldView == null || attribute == null) {
+      return;
+    }
+
+    dynamicLookupCoordinator.bindField(
+        fieldView,
+        ownerMediaTypeBibName,
+        attribute,
+        createLookupShellAccess()
+    );
+  }
+
+  /**
+   * Liefert Autorenvorschläge für ein Personenfeld des dynamischen Editors.
+   * Bevorzugt wird der {@link DynamicLookupCoordinator}; fehlt dieser noch,
+   * wird defensiv direkt auf den Service zurückgefallen.
+   *
+   * @param ownerMediaTypeBibName technischer Medientypname des Formulars
+   * @param personBibtexName technischer Feldname des Personenfeldes
+   * @param lastNamePrefix aktuelles Präfix des Nachnamens
+   * @param selectedEntryId aktuell selektierter Eintrag oder {@code null}
+   * @return passende Autorenvorschläge
+   */
+  private List<AuthorSuggestion> findDynamicAuthorSuggestions(String ownerMediaTypeBibName,
+                                                              String personBibtexName,
+                                                              String lastNamePrefix,
+                                                              Integer selectedEntryId) {
+    if (dynamicLookupCoordinator != null) {
+      return dynamicLookupCoordinator.findPersonSuggestions(
+          ownerMediaTypeBibName,
+          personBibtexName,
+          lastNamePrefix,
+          selectedEntryId
+      );
+    }
+
+    if (bibliographyService == null) {
+      return List.of();
+    }
+
+    return bibliographyService.findAuthorSuggestions(
+        ownerMediaTypeBibName,
+        lastNamePrefix,
+        selectedEntryId
+    );
+  }
+
+  /**
+   * Erzeugt die schmale Shell-Zugriffsfläche für den
+   * {@link DynamicLookupCoordinator}.
+   *
+   * @return Zugriff auf den notwendigen Laufzeitzustand der Shell
+   */
+  private DynamicLookupCoordinator.ShellAccess createLookupShellAccess() {
+    return new DynamicLookupCoordinator.ShellAccess() {
+      @Override
+      public boolean isLookupSuppressed() {
+        return BibliographyEditorShell.this.isLookupSuppressed();
+      }
+
+      @Override
+      public void setLookupSuppressed(boolean suppressed) {
+        BibliographyEditorShell.this.setLookupSuppressed(suppressed);
+      }
+
+      @Override
+      public String getCurrentFieldValue(String mediaTypeBibName, String bibtexName) {
+        return BibliographyEditorShell.this.getCurrentFieldValue(mediaTypeBibName, bibtexName);
+      }
+
+      @Override
+      public Integer getCurrentRelatedEntryId(String mediaTypeBibName, String bibtexName) {
+        return BibliographyEditorShell.this.getCurrentRelatedEntryId(mediaTypeBibName, bibtexName);
+      }
+
+      @Override
+      public void setCurrentRelatedEntry(String mediaTypeBibName,
+                                         String bibtexName,
+                                         Integer entryId,
+                                         String displayText) {
+        BibliographyEditorShell.this.setCurrentRelatedEntry(
+            mediaTypeBibName,
+            bibtexName,
+            entryId,
+            displayText
+        );
+      }
+
+      @Override
+      public Integer getSelectedEntryId(String mediaTypeBibName) {
+        return BibliographyEditorShell.this.getSelectedEntryId(mediaTypeBibName);
+      }
+
+      @Override
+      public void setSelectedEntryId(String mediaTypeBibName, Integer entryId) {
+        BibliographyEditorShell.this.setSelectedEntryId(mediaTypeBibName, entryId);
+      }
+
+      @Override
+      public boolean wasAutoFilled(String mediaTypeBibName) {
+        return BibliographyEditorShell.this.wasAutoFilled(mediaTypeBibName);
+      }
+
+      @Override
+      public void setAutoFilled(String mediaTypeBibName, boolean autoFilled) {
+        BibliographyEditorShell.this.setAutoFilled(mediaTypeBibName, autoFilled);
+      }
+
+      @Override
+      public void setAutoFillLocked(String mediaTypeBibName, boolean locked) {
+        BibliographyEditorShell.this.setAutoFillLocked(mediaTypeBibName, locked);
+      }
+
+      @Override
+      public List<Author> getCurrentAuthors(String mediaTypeBibName) {
+        return BibliographyEditorShell.this.getCurrentAuthorsForField(
+            mediaTypeBibName,
+            "author"
+        );
+      }
+
+      @Override
+      public List<Author> getCurrentPersons(String mediaTypeBibName, String bibtexName) {
+        return BibliographyEditorShell.this.getCurrentAuthorsForField(
+            mediaTypeBibName,
+            bibtexName
+        );
+      }
+
+      @Override
+      public void applyResolvedEntry(String mediaTypeBibName, Integer entryId, boolean markAsAutoFill) {
+        if (bibliographyService == null || entryId == null || entryId <= 0) {
+          return;
+        }
+
+        bibliographyService.loadEntry(entryId).ifPresent(entry -> {
+          BibliographyEditorShell.this.showDynamicEntry(entry, true);
+          BibliographyEditorShell.this.setSelectedEntryId(mediaTypeBibName, entryId);
+          BibliographyEditorShell.this.setSourceEntryId(mediaTypeBibName, entryId);
+          BibliographyEditorShell.this.setAutoFillLocked(mediaTypeBibName, false);
+          BibliographyEditorShell.this.setAutoFilled(mediaTypeBibName, markAsAutoFill);
+        });
+      }
+    };
+  }
+
+  /**
+   * Liest die Autoren eines konkreten dynamischen Personenfeldes aus.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer Feldname
+   * @return Autorenliste des Feldes oder eine leere Liste
+   */
+  private List<Author> getCurrentAuthorsForField(String mediaTypeBibName, String bibtexName) {
+    Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(normalizeMediaTypeBibName(mediaTypeBibName));
+    if (registry == null) {
+      return List.of();
+    }
+
+    Object component = registry.get(normalizeBibtexName(bibtexName));
+    if (component instanceof BibliographyAuthorsView authorsView) {
+      return authorsView.toAuthors();
+    }
+
+    return List.of();
+  }
+
+  /**
+   * Schreibt Autoren in ein konkretes dynamisches Personenfeld zurück.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer Feldname
+   * @param authors zu setzende Autorenliste
+   */
+  private void setCurrentAuthorsForField(String mediaTypeBibName,
+                                         String bibtexName,
+                                         List<Author> authors) {
+    Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(normalizeMediaTypeBibName(mediaTypeBibName));
+    if (registry == null) {
+      return;
+    }
+
+    Object component = registry.get(normalizeBibtexName(bibtexName));
+    if (component instanceof BibliographyAuthorsView authorsView) {
+      applyAuthors(authorsView, authors);
+    }
+  }
+
+  /**
+   * Leert den Formularbereich, wenn für einen Medientyp kein dynamisches
+   * Formular aufgebaut werden kann.
+   * Ein Rücksprung in die alte Enum-gesteuerte Formularlogik findet hier
+   * nicht mehr statt.
+   *
+   * @param option Medientypoption
+   */
+  /**
+   * Verpackt einen Knoten mit Beschriftung.
+   *
+   * @param labelText Beschriftung
+   * @param node Zielknoten
+   * @return Container mit Label und Knoten
+   */
+  private Node labeledNode(String labelText, Node node) {
+    VBox box = new VBox(4);
+    Label label = new Label(labelText == null ? "" : labelText);
+    box.getChildren().addAll(label, node);
+    return box;
+  }
+
+  private boolean isPersonDatatype(String datatype) {
+    return "person".equalsIgnoreCase(normalizeBibtexName(datatype));
+  }
+
+  private boolean isDatePickerDatatype(String datatype, String bibtexName) {
+    String normalizedDatatype = normalizeBibtexName(datatype);
+    String normalizedBibtexName = normalizeBibtexName(bibtexName);
+
+    return "datum".equalsIgnoreCase(normalizedDatatype)
+               || "date".equalsIgnoreCase(normalizedDatatype)
+               || "date".equalsIgnoreCase(normalizedBibtexName)
+               || "urldate".equalsIgnoreCase(normalizedBibtexName)
+               || "ai_used_at".equalsIgnoreCase(normalizedBibtexName);
   }
 
   /**
@@ -382,25 +955,22 @@ public class BibliographyEditorShell {
    */
   public void setAiChoiceProvider(AiChoiceProvider provider) {
     this.aiChoiceProvider = provider == null ? AiChoiceProvider.NONE : provider;
-    refreshAiChoiceItems();
   }
 
   /**
-   * Wechselt das sichtbare Formular entsprechend dem gewählten Typ.
+   * Wechselt das sichtbare Formular entsprechend der gewählten Medientyp-Option.
    *
-   * @param type gewünschter Bibliographietyp.
+   * @param option gewünschte Medientyp-Option
    */
-  private void switchForm(TypeChoice type) {
+  private void switchForm(MediaTypeOption option) {
     formHost.getChildren().clear();
-    if (type == TypeChoice.NONE) {
+
+    if (option == null) {
       onNoneSelected.run();
       return;
     }
 
-    Node form = forms.get(type);
-    if (form != null) {
-      formHost.getChildren().add(form);
-    }
+    showNewEditor(option.mediaTypeBibName());
   }
 
   /**
@@ -430,55 +1000,432 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Liefert den aktuell gewählten Bibliographietyp.
+   * Liefert den aktuell ausgewählten technischen Medientypnamen.
    *
-   * @return selektierter Typ.
+   * @return technischer Medientypname oder leerer String
    */
-  public TypeChoice getTypeChoice() {
-    return typeCombo.getValue();
+  public String getSelectedMediaTypeBibName() {
+    MediaTypeOption option = typeCombo.getValue();
+    return option == null ? "" : normalizeMediaTypeBibName(option.mediaTypeBibName());
   }
 
   /**
-   * Liefert den Titel des aktuell gewählten Formulars.
+   * Prüft, ob für einen technischen Medientyp aktuell eine auswählbare
+   * Option in der Shell vorhanden ist.
    *
-   * @return Titelfeld des aktiven Typs oder leerer String.
+   * @param mediaTypeBibName technischer Medientypname
+   * @return {@code true}, wenn eine passende Option existiert
+   */
+  public boolean supportsMediaTypeBibName(String mediaTypeBibName) {
+    return mediaTypeOptionsByBibName.containsKey(normalizeMediaTypeBibName(mediaTypeBibName));
+  }
+
+  /**
+   * Öffnet einen leeren Editor für einen technischen Medientypnamen.
+   * Wenn der dynamische Formularpfad noch nicht verfügbar ist, wird
+   * automatisch auf das vorhandene Legacy-Formular zurückgefallen.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   */
+  public void showNewEditor(String mediaTypeBibName) {
+    String normalizedBibName = normalizeMediaTypeBibName(mediaTypeBibName);
+    MediaTypeOption option = mediaTypeOptionsByBibName.get(normalizedBibName);
+
+    if (option != null) {
+      typeCombo.setValue(option);
+    }
+
+    if (normalizedBibName.isBlank()) {
+      formHost.getChildren().clear();
+      setEditMode(true);
+      return;
+    }
+
+    if (bibliographyService == null) {
+      formHost.getChildren().clear();
+      setEditMode(true);
+      return;
+    }
+
+    MediaTypeDefinition mediaType = bibliographyService.listMediaTypes().stream()
+                                        .filter(type -> normalizeMediaTypeBibName(type.bibName()).equals(normalizedBibName))
+                                        .findFirst()
+                                        .orElse(null);
+
+    if (mediaType == null) {
+      formHost.getChildren().clear();
+      setEditMode(true);
+      return;
+    }
+
+    ensureDynamicForm(mediaType);
+
+    VBox form = dynamicFormsByMediaType.get(normalizedBibName);
+    if (form == null || form.getChildren().isEmpty()) {
+      formHost.getChildren().clear();
+      setEditMode(true);
+      return;
+    }
+
+    formHost.getChildren().setAll(form);
+    clearDynamicFormValues(normalizedBibName);
+    setEditMode(true);
+  }
+
+  /**
+   * Leert die Werte des dynamischen Formulars eines Medientyps einschließlich
+   * der gemerkten Related-Ziel-IDs seiner Felder.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   */
+  private void clearDynamicFormValues(String mediaTypeBibName) {
+    String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
+    Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(normalizedMediaTypeBibName);
+    if (registry == null) {
+      return;
+    }
+
+    for (Map.Entry<String, Object> entry : registry.entrySet()) {
+      String bibtexName = entry.getKey();
+      Object component = entry.getValue();
+
+      relatedEntryIdsByFieldKey.remove(relatedFieldKey(normalizedMediaTypeBibName, bibtexName));
+
+      if (component instanceof BibliographyFieldView fieldView) {
+        fieldView.setText("");
+        fieldView.hideSuggestions();
+      } else if (component instanceof BibliographyAuthorsView authorsView) {
+        applyAuthors(authorsView, List.of());
+      } else if (component instanceof DatePicker datePicker) {
+        datePicker.setValue(null);
+      }
+    }
+
+    setSelectedEntryId(normalizedMediaTypeBibName, null);
+    setSourceEntryId(normalizedMediaTypeBibName, null);
+    setAutoFillLocked(normalizedMediaTypeBibName, false);
+    setAutoFilled(normalizedMediaTypeBibName, false);
+  }
+
+  /**
+   * Liest einen Feldwert des aktuell sichtbaren dynamischen Formulars über
+   * seinen technischen Feldnamen aus.
+   *
+   * @param bibtexName technischer Feldname
+   * @return Feldinhalt oder leerer String
+   */
+  public String getCurrentFieldValue(String bibtexName) {
+    String key = normalizeBibtexName(bibtexName);
+    String mediaTypeBibName = getSelectedMediaTypeBibName();
+
+    Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(mediaTypeBibName);
+    if (registry == null) {
+      return "";
+    }
+
+    Object component = registry.get(key);
+    if (component instanceof BibliographyFieldView fieldView) {
+      return fieldView.getText();
+    }
+    if (component instanceof DatePicker datePicker) {
+      return datePicker.getValue() == null ? "" : datePicker.getValue().toString();
+    }
+    if (component instanceof BibliographyAuthorsView) {
+      return "";
+    }
+
+    return "";
+  }
+
+  /**
+   * Setzt einen Feldwert des aktuell sichtbaren dynamischen Formulars über
+   * seinen technischen Feldnamen.
+   *
+   * @param bibtexName technischer Feldname
+   * @param value zu setzender Wert
+   */
+  public void setCurrentFieldValue(String bibtexName, String value) {
+    String key = normalizeBibtexName(bibtexName);
+    String text = value == null ? "" : value.trim();
+    String mediaTypeBibName = getSelectedMediaTypeBibName();
+
+    Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(mediaTypeBibName);
+    if (registry == null) {
+      return;
+    }
+
+    Object component = registry.get(key);
+    if (component instanceof BibliographyFieldView fieldView) {
+      fieldView.setText(text);
+      return;
+    }
+    if (component instanceof DatePicker datePicker) {
+      datePicker.setValue(parseLocalDate(text));
+    }
+  }
+
+  /**
+   * Liefert die aktuell ausgewählten Autoren des sichtbaren Formulars.
+   *
+   * @return aktuelle Autorenliste
+   */
+  public List<Author> getCurrentAuthors() {
+    Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(getSelectedMediaTypeBibName());
+    if (registry != null) {
+      for (Object component : registry.values()) {
+        if (component instanceof BibliographyAuthorsView authorsView) {
+          return authorsView.toAuthors();
+        }
+      }
+    }
+    return getAuthors();
+  }
+
+  /**
+   * Setzt die Autoren des aktuell sichtbaren dynamischen Formulars.
+   *
+   * @param authors neue Autorenliste
+   */
+  public void setCurrentAuthors(List<Author> authors) {
+    Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(getSelectedMediaTypeBibName());
+    if (registry == null) {
+      return;
+    }
+
+    for (Object component : registry.values()) {
+      if (component instanceof BibliographyAuthorsView authorsView) {
+        applyAuthors(authorsView, authors);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Liefert die aktuell für ein Related-Feld gemerkte Ziel-ID aus dem
+   * dynamischen Formularzustand.
+   *
+   * @param bibtexName technischer Related-Feldname
+   * @return Ziel-ID oder {@code null}
+   */
+  public Integer getCurrentRelatedEntryId(String bibtexName) {
+    String key = normalizeBibtexName(bibtexName);
+    String mediaTypeBibName = getSelectedMediaTypeBibName();
+    return relatedEntryIdsByFieldKey.get(relatedFieldKey(mediaTypeBibName, key));
+  }
+
+  /**
+   * Liefert die Ursprungs-ID des aktuell im sichtbaren Formular geladenen
+   * bibliographischen Eintrags.
+   *
+   * @return Ursprungs-ID oder {@code null}
+   */
+  public Integer getCurrentSourceEntryId() {
+    return getSourceEntryId(getSelectedMediaTypeBibName());
+  }
+
+  /**
+   * Liefert die aktuell selektierte Eintrags-ID des sichtbaren Formulars.
+   *
+   * @return selektierte Eintrags-ID oder {@code null}
+   */
+  public Integer getCurrentSelectedEntryId() {
+    return getSelectedEntryId(getSelectedMediaTypeBibName());
+  }
+
+  /**
+   * Setzt die aktuell selektierte Related-ID für das sichtbare dynamische
+   * Formular.
+   *
+   * @param bibtexName technischer Related-Feldname
+   * @param entryId Ziel-ID
+   * @param displayText Anzeigetext des Zielmediums
+   */
+  public void setCurrentRelatedEntry(String bibtexName, Integer entryId, String displayText) {
+    setCurrentRelatedEntry(
+        getSelectedMediaTypeBibName(),
+        bibtexName,
+        entryId,
+        displayText
+    );
+  }
+
+  /**
+   * Setzt die aktuell selektierte Related-ID für das sichtbare Formular und
+   * belässt den aktuellen Anzeigetext des Feldes unverändert.
+   *
+   * @param bibtexName technischer Related-Feldname
+   * @param entryId Ziel-ID oder {@code null}
+   */
+  public void setCurrentRelatedEntryId(String bibtexName, Integer entryId) {
+    String displayText = getCurrentFieldValue(getSelectedMediaTypeBibName(), bibtexName);
+    setCurrentRelatedEntry(
+        getSelectedMediaTypeBibName(),
+        bibtexName,
+        entryId,
+        displayText
+    );
+  }
+
+  /**
+   * Fordert das Anlegen eines Related-Zielmediums anhand des technischen
+   * Feldnamens an.
+   *
+   * @param bibtexName technischer Related-Feldname
+   * @param displayText aktueller Feldtext
+   */
+  public void requestCreateRelatedEntry(String bibtexName, String displayText) {
+    if (dynamicLookupCoordinator == null) {
+      return;
+    }
+
+    String ownerMediaTypeBibName = getSelectedMediaTypeBibName();
+    String targetMediaTypeBibName =
+        dynamicLookupCoordinator.resolveRelatedTargetMediaTypeBibName(
+            ownerMediaTypeBibName,
+            bibtexName
+        );
+
+    if (targetMediaTypeBibName.isBlank()) {
+      return;
+    }
+
+    onRequestCreateRelated.requestCreateRelated(
+        normalizeBibtexName(bibtexName),
+        targetMediaTypeBibName,
+        displayText == null ? "" : displayText.trim()
+    );
+  }
+
+  /**
+   * Liefert den Feldtext eines technischen Feldes innerhalb eines bestimmten
+   * Formulars.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer Feldname
+   * @return Feldtext oder leerer String
+   */
+  public String getCurrentFieldValue(String mediaTypeBibName, String bibtexName) {
+    Map<String, Object> registry =
+        dynamicFieldRegistryByMediaType.get(normalizeMediaTypeBibName(mediaTypeBibName));
+    if (registry == null) {
+      return "";
+    }
+
+    Object component = registry.get(normalizeBibtexName(bibtexName));
+
+    if (component instanceof BibliographyFieldView fieldView) {
+      return fieldView.getText();
+    }
+
+    if (component instanceof DatePicker datePicker) {
+      LocalDate value = datePicker.getValue();
+      return value == null ? "" : value.toString();
+    }
+
+    return "";
+  }
+
+  /**
+   * Liefert die aktuell gesetzte Related-ID eines technischen Feldes innerhalb
+   * eines bestimmten Formulars.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer Feldname
+   * @return Related-ID oder {@code null}
+   */
+  public Integer getCurrentRelatedEntryId(String mediaTypeBibName, String bibtexName) {
+    return relatedEntryIdsByFieldKey.get(
+        relatedFieldKey(
+            normalizeMediaTypeBibName(mediaTypeBibName),
+            normalizeBibtexName(bibtexName)
+        )
+    );
+  }
+
+  /**
+   * Setzt die Related-ID samt Anzeige­text eines technischen Feldes innerhalb
+   * eines bestimmten Formulars.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer Feldname
+   * @param entryId Ziel-ID oder {@code null}
+   * @param displayText Anzeige­text
+   */
+  public void setCurrentRelatedEntry(String mediaTypeBibName,
+                                     String bibtexName,
+                                     Integer entryId,
+                                     String displayText) {
+    String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
+    String normalizedBibtexName = normalizeBibtexName(bibtexName);
+    String fieldKey = relatedFieldKey(normalizedMediaTypeBibName, normalizedBibtexName);
+
+    if (entryId == null || entryId <= 0) {
+      relatedEntryIdsByFieldKey.remove(fieldKey);
+    } else {
+      relatedEntryIdsByFieldKey.put(fieldKey, entryId);
+    }
+
+    Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(normalizedMediaTypeBibName);
+    if (registry == null) {
+      return;
+    }
+
+    Object component = registry.get(normalizedBibtexName);
+    if (component instanceof BibliographyFieldView fieldView) {
+      fieldView.setText(displayText == null ? "" : displayText);
+    }
+  }
+
+  /**
+   * Prüft, ob Lookup-Reaktionen momentan unterdrückt werden.
+   *
+   * @return {@code true}, wenn die Shell gerade programmgesteuert aktualisiert wird
+   */
+  public boolean isLookupSuppressed() {
+    return suppressDynamicRelatedCallbacks;
+  }
+
+  /**
+   * Setzt die temporäre Unterdrückung von Lookup-Reaktionen.
+   *
+   * @param suppressed neuer Unterdrückungszustand
+   */
+  public void setLookupSuppressed(boolean suppressed) {
+    this.suppressDynamicRelatedCallbacks = suppressed;
+  }
+
+  /**
+   * Liefert den Titel des aktuell sichtbaren dynamischen Formulars.
+   *
+   * @return Titelfeld des aktiven Formulars oder leerer String
    */
   public String getTitleText() {
-    return switch (getTypeChoice()) {
-      case BOOK -> fieldText(bookTitleField);
-      case COLLECTION -> fieldText(collectionTitleField);
-      case ARTICLE_IN_COLLECTION -> fieldText(articleTitleField);
-      case JOURNAL -> fieldText(journalTitleField);
-      case JOURNAL_ARTICLE -> fieldText(journalArticleTitleField);
-      case THESIS -> fieldText(thesisTitleField);
-      case INTERNET -> fieldText(internetTitleField);
-      case EDITION -> fieldText(editionTitleField);
-      case AI -> fieldText(aiTitleField);
-      case NONE -> "";
-    };
+    return getCurrentFieldValue(getSelectedMediaTypeBibName(), "title");
   }
 
   /**
-   * Liefert die Autoren des aktuell gewählten Formulars.
+   * Liefert die Autoren des aktuell sichtbaren dynamischen Formulars.
    *
-   * @return Autorenliste des aktiven Typs.
+   * @return Autorenliste des aktiven Formulars
    */
   public List<Author> getAuthors() {
-    return switch (getTypeChoice()) {
-      case BOOK -> authorsOf(bookAuthorsView);
-      case COLLECTION -> authorsOf(collectionAuthorsView);
-      case ARTICLE_IN_COLLECTION -> authorsOf(articleAuthorsView);
-      case JOURNAL -> List.of();
-      case JOURNAL_ARTICLE -> authorsOf(journalArticleAuthorsView);
-      case THESIS -> authorsOf(thesisAuthorsView);
-      case INTERNET -> authorsOf(internetAuthorsView);
-      case EDITION -> authorsOf(editionAuthorsView);
-      case AI, NONE -> List.of();
-    };
+    String mediaTypeBibName = getSelectedMediaTypeBibName();
+    Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(mediaTypeBibName);
+    if (registry == null || registry.isEmpty()) {
+      return List.of();
+    }
+
+    for (Object component : registry.values()) {
+      if (component instanceof BibliographyAuthorsView authorsView) {
+        return authorsView.toAuthors();
+      }
+    }
+
+    return List.of();
   }
 
   /**
-   * Registriert einen Callback, der bei Auswahl von {@link TypeChoice#NONE} ausgeführt wird.
+   * Registriert einen Callback, der bei leerer Auswahl ausgef�hrt wird.
    *
    * @param action auszuführender Callback; {@code null} wird als No-Op behandelt.
    */
@@ -488,1183 +1435,41 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Registriert einen Callback zum Anlegen eines Sammelbandes aus dem Artikel-Formular.
+   * Registriert einen generischen Callback zum Anlegen eines Related-Zielmediums.
    *
-   * @param action auszuführender Callback; {@code null} wird als No-Op behandelt.
+   * @param action Callback; {@code null} wird als No-Op behandelt
    */
-  public void setOnRequestCreateCollection(Runnable action) {
-    this.onRequestCreateCollection = action == null ? () -> {
-    } : action;
-  }
-
-  /**
-   * Registriert einen Callback zum Anlegen einer Zeitschrift aus dem JournalArticle-Formular.
-   *
-   * @param action auszuführender Callback; {@code null} wird als No-Op behandelt.
-   */
-  public void setOnRequestCreateJournal(Runnable action) {
-    this.onRequestCreateJournal = action == null ? () -> {
-    } : action;
-  }
-
-  /**
-   * Liefert die aktuell ausgewählte Sammelband-ID.
-   *
-   * @return ID des Sammelbandes oder {@code null}.
-   */
-  public Integer getCollectionEntryId() {
-    return articleInCollectionBinder == null ? null : articleInCollectionBinder.getCollectionEntryId();
-  }
-
-  /**
-   * Setzt die aktuell ausgewählte Sammelband-ID im Artikel-Binder.
-   *
-   * @param entryId ID des Sammelbandes oder {@code null}.
-   */
-  public void setCollectionEntryId(Integer entryId) {
-    if (articleInCollectionBinder != null) {
-      articleInCollectionBinder.setCollectionEntryId(entryId);
+  public void setOnRequestCreateRelated(RelatedCreationHandler action) {
+    this.onRequestCreateRelated = action == null
+                                      ? (relatedBibtexName, targetMediaTypeBibName, displayText) -> {
     }
+                                      : action;
   }
 
   /**
-   * Liefert den aktuell eingetragenen Sammelbandtitel.
+   * Reagiert auf Änderungen in Autorenfeldern eines technischen Medientyps.
+   * Im dynamischen Editor bedeutet eine Autorenänderung zunächst nur, dass eine
+   * eventuell vorher aufgelöste Titelselektion und Autofill-Sperre dieses
+   * Medientyps zurückgesetzt wird.
    *
-   * @return Titel des Sammelbandfeldes oder leerer String.
+   * @param mediaTypeBibName technischer Medientypname des betroffenen Formulars
    */
-  public String getCollectionTitle() {
-    return fieldText(articleCollectionTitleField);
-  }
-
-  /**
-   * Setzt den Titel des Sammelbandfeldes im Artikel-Formular.
-   *
-   * @param title neuer Sammelbandtitel.
-   */
-  public void setCollectionTitle(String title) {
-    if (articleCollectionTitleField != null) {
-      articleCollectionTitleField.setText(title);
+  private void handleAuthorsEdited(String mediaTypeBibName) {
+    String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
+    if (normalizedMediaTypeBibName.isBlank()) {
+      return;
     }
+    setAutoFillLocked(normalizedMediaTypeBibName, false);
+    setAutoFilled(normalizedMediaTypeBibName, false);
   }
 
   /**
-   * Reagiert auf Änderungen in den Autorenfeldern.
+   * Liefert die Autorenliste eines technischen Medientyps aus dem aktuellen
+   * dynamischen Formularzustand.
    *
-   * @param type Typ des betroffenen Formulars.
+   * @param mediaTypeBibName technischer Medientypname
+   * @return aktuelle Autorenliste
    */
-  private void handleAuthorsEdited(TypeChoice type) {
-    if (lookupCoordinator != null) {
-      lookupCoordinator.handleAuthorsEdited(type);
-    }
-  }
-
-  private boolean isLookupSuppressed() {
-    return lookupCoordinator != null && lookupCoordinator.isSuppressLookupCallbacks();
-  }
-
-  /**
-   * Liefert die Autorenliste eines Typs aus dem UI-Zustand.
-   *
-   * @param type gewünschter Bibliographietyp.
-   * @return aktuelle Autorenliste.
-   */
-  private List<Author> currentAuthors(TypeChoice type) {
-    return switch (type) {
-      case BOOK -> authorsOf(bookAuthorsView);
-      case COLLECTION -> authorsOf(collectionAuthorsView);
-      case ARTICLE_IN_COLLECTION -> authorsOf(articleAuthorsView);
-      case JOURNAL -> List.of();
-      case JOURNAL_ARTICLE -> authorsOf(journalArticleAuthorsView);
-      case THESIS -> authorsOf(thesisAuthorsView);
-      case INTERNET -> authorsOf(internetAuthorsView);
-      case EDITION -> authorsOf(editionAuthorsView);
-      case AI, NONE -> List.of();
-    };
-  }
-
-  /**
-   * Liefert die selektierte Eintrags-ID eines Typs.
-   *
-   * @param type gewünschter Bibliographietyp.
-   * @return selektierte Eintrags-ID oder {@code null}.
-   */
-  private Integer getSelectedEntryId(TypeChoice type) {
-    return selectedEntryIds.get(type);
-  }
-
-  /**
-   * Setzt oder entfernt die selektierte Eintrags-ID eines Typs.
-   *
-   * @param type    gewünschter Bibliographietyp.
-   * @param entryId zu speichernde ID; ungültige Werte entfernen den Eintrag.
-   */
-  private void setSelectedEntryId(TypeChoice type, Integer entryId) {
-    updateEntryIdMap(selectedEntryIds, type, entryId);
-  }
-
-  /**
-   * Baut das Formular für Bücher.
-   *
-   * @return Node des Buchformulars.
-   */
-  private Node buildBookForm() {
-    VBox box = createFormContainer("Buch");
-
-    bookAuthorsView = createAuthorsView(TypeChoice.BOOK);
-    bookTitleField = createField("Buchtitel (Pflicht)");
-    bookSubtitleField = createField("Untertitel");
-    bookPublisherField = createField("Verlag");
-    bookPlaceField = createField("Erscheinungsort");
-    bookYearField = createField("Erscheinungsjahr");
-    bookIsbnField = createField("ISBN");
-    bookEditionField = createField("Auflage");
-    bookSeriesField = createField("Reihentitel");
-    bookSeriesNumberField = createField("Reihennummer");
-
-    bookBinder = new BookBibliographyBinder(
-        bookTitleField,
-        bookSubtitleField,
-        bookPublisherField,
-        bookPlaceField,
-        bookYearField,
-        bookIsbnField,
-        bookEditionField,
-        bookSeriesField,
-        bookSeriesNumberField,
-        bookAuthorsView,
-        id -> setSelectedEntryId(TypeChoice.BOOK, id),
-        id -> setSourceEntryId(TypeChoice.BOOK, id),
-        value -> setAutoFilled(TypeChoice.BOOK, value),
-        value -> setAutoFillLocked(TypeChoice.BOOK, value)
-    );
-
-    box.getChildren().addAll(
-        bookAuthorsView,
-        bookTitleField,
-        bookSubtitleField,
-        bookPublisherField,
-        bookPlaceField,
-        bookYearField,
-        bookIsbnField,
-        bookEditionField,
-        bookSeriesField,
-        bookSeriesNumberField
-    );
-    return box;
-  }
-
-  /**
-   * Baut das Formular für Zeitschriften.
-   *
-   * @return Node des Zeitschriftenformulars.
-   */
-  private Node buildJournalForm() {
-    VBox box = createFormContainer("Zeitschrift");
-
-    journalTitleField = createField("Titel der Zeitschrift (Pflicht)");
-    journalSubtitleField = createField("Untertitel");
-    journalIssnField = createField("ISSN");
-    journalPublisherField = createField("Verlag / Institution");
-    journalPlaceField = createField("Erscheinungsort");
-    journalStartYearField = createField("Startjahr");
-    journalEndYearField = createField("Endjahr");
-    journalNoteField = createField("Notiz");
-
-    journalBinder = new JournalBibliographyBinder(
-        journalTitleField,
-        journalSubtitleField,
-        journalIssnField,
-        journalPublisherField,
-        journalPlaceField,
-        journalStartYearField,
-        journalEndYearField,
-        journalNoteField,
-        id -> setSelectedEntryId(TypeChoice.JOURNAL, id),
-        id -> setSourceEntryId(TypeChoice.JOURNAL, id),
-        value -> setAutoFilled(TypeChoice.JOURNAL, value),
-        value -> setAutoFillLocked(TypeChoice.JOURNAL, value)
-    );
-
-    box.getChildren().addAll(
-        journalTitleField,
-        journalSubtitleField,
-        journalIssnField,
-        journalPublisherField,
-        journalPlaceField,
-        journalStartYearField,
-        journalEndYearField,
-        journalNoteField
-    );
-    return box;
-  }
-
-  /**
-   * Baut das Formular für Zeitschriftenartikel.
-   *
-   * @return Node des Zeitschriftenartikelformulars.
-   */
-  private Node buildJournalArticleForm() {
-    VBox box = createFormContainer("Zeitschriftenartikel");
-
-    journalArticleAuthorsView = createAuthorsView(TypeChoice.JOURNAL_ARTICLE);
-    journalArticleTitleField = createField("Artikeltitel (Pflicht)");
-    journalArticleSubtitleField = createField("Untertitel");
-    journalArticlePublisherField = createField("Verlag / Institution");
-    journalArticleJournalTitleField = createField("Zeitschrift");
-    journalArticleVolumeField = createField("Band");
-    journalArticleIssueField = createField("Heft");
-    journalArticleYearField = createField("Jahr");
-    journalArticlePagesField = createField("Seiten");
-    journalArticleDoiField = createField("DOI");
-
-    journalArticleBinder = new JournalArticleBibliographyBinder(
-        journalArticleAuthorsView,
-        journalArticleTitleField,
-        journalArticleSubtitleField,
-        journalArticlePublisherField,
-        journalArticleJournalTitleField,
-        journalArticleVolumeField,
-        journalArticleIssueField,
-        journalArticleYearField,
-        journalArticlePagesField,
-        journalArticleDoiField,
-        id -> setSelectedEntryId(TypeChoice.JOURNAL_ARTICLE, id),
-        id -> setSourceEntryId(TypeChoice.JOURNAL_ARTICLE, id),
-        value -> setAutoFilled(TypeChoice.JOURNAL_ARTICLE, value),
-        value -> setAutoFillLocked(TypeChoice.JOURNAL_ARTICLE, value)
-    );
-
-    Button btnAddJournal = BaseIcon.BOOK_ADD.button("Zeitschrift anlegen");
-    btnAddJournal.getStyleClass().add("biblio-journal-add");
-    btnAddJournal.visibleProperty().bind(toggleEdit.selectedProperty());
-    btnAddJournal.managedProperty().bind(toggleEdit.selectedProperty());
-    btnAddJournal.setOnAction(e -> onRequestCreateJournal.run());
-
-    HBox.setHgrow(journalArticleJournalTitleField, Priority.ALWAYS);
-    HBox journalRow = new HBox(8, journalArticleJournalTitleField, btnAddJournal);
-    journalRow.setAlignment(Pos.CENTER_LEFT);
-    journalRow.getStyleClass().add("biblio-journal-row");
-
-    box.getChildren().addAll(
-        journalArticleAuthorsView,
-        journalArticleTitleField,
-        journalArticleSubtitleField,
-        journalArticlePublisherField,
-        journalRow,
-        journalArticleVolumeField,
-        journalArticleIssueField,
-        journalArticleYearField,
-        journalArticlePagesField,
-        journalArticleDoiField
-    );
-    return box;
-  }
-
-  /**
-   * Baut das Formular für Hochschulschriften.
-   *
-   * @return Node des Thesis-Formulars.
-   */
-  private Node buildThesisForm() {
-    VBox box = createFormContainer("Thesis");
-
-    thesisAuthorsView = createAuthorsView(TypeChoice.THESIS);
-    thesisTitleField = createField("Titel der Arbeit (Pflicht)");
-    thesisSubtitleField = createField("Untertitel");
-
-    thesisTypeCombo = new ComboBox<>();
-    thesisTypeCombo.getItems().setAll(ThesisType.values());
-    thesisTypeCombo.setValue(ThesisType.DISSERTATION);
-    thesisTypeCombo.setMaxWidth(Double.MAX_VALUE);
-
-    Label thesisTypeLabel = new Label("Typ der Hochschulschrift");
-    HBox thesisTypeBox = new HBox(8, thesisTypeLabel, thesisTypeCombo);
-    thesisTypeBox.setAlignment(Pos.CENTER_LEFT);
-    HBox.setHgrow(thesisTypeCombo, Priority.ALWAYS);
-
-    thesisUniversityField = createField("Hochschule / Universität");
-    thesisPlaceField = createField("Ort");
-    thesisYearField = createField("Jahr");
-    thesisAdvisorField = createField("Betreuer");
-    thesisSeriesField = createField("Schriftenreihe");
-    thesisNoteField = createField("Notiz");
-
-    thesisBinder = new ThesisBibliographyBinder(
-        thesisAuthorsView,
-        thesisTitleField,
-        thesisSubtitleField,
-        thesisTypeCombo::getValue,
-        thesisTypeCombo::setValue,
-        thesisUniversityField,
-        thesisPlaceField,
-        thesisYearField,
-        thesisAdvisorField,
-        thesisSeriesField,
-        thesisNoteField,
-        id -> setSelectedEntryId(TypeChoice.THESIS, id),
-        id -> setSourceEntryId(TypeChoice.THESIS, id),
-        value -> setAutoFilled(TypeChoice.THESIS, value),
-        value -> setAutoFillLocked(TypeChoice.THESIS, value)
-    );
-
-    box.getChildren().addAll(
-        thesisAuthorsView,
-        thesisTitleField,
-        thesisSubtitleField,
-        thesisTypeBox,
-        thesisUniversityField,
-        thesisPlaceField,
-        thesisYearField,
-        thesisAdvisorField,
-        thesisSeriesField,
-        thesisNoteField
-    );
-    return box;
-  }
-
-  /**
-   * Baut das Formular für Internetquellen.
-   *
-   * @return Node des Internet-Formulars.
-   */
-  private Node buildInternetForm() {
-    VBox box = createFormContainer("Internetquelle");
-
-    internetAuthorsView = createAuthorsView(TypeChoice.INTERNET);
-    internetTitleField = createField("Titel (Pflicht)");
-    internetHostNameField = createField("Hostname / Projekt");
-    internetUrlField = createField("URL");
-
-    Button btnOpenUrl = BaseIcon.WWW_PAGE.button();
-    btnOpenUrl.visibleProperty().bind(toggleEdit.selectedProperty());
-    btnOpenUrl.managedProperty().bind(toggleEdit.selectedProperty());
-    btnOpenUrl.setOnAction(e -> openInternetUrlInBrowser());
-
-    HBox.setHgrow(internetUrlField, Priority.ALWAYS);
-    HBox urlRow = new HBox(8, internetUrlField, btnOpenUrl);
-    urlRow.setAlignment(Pos.CENTER_LEFT);
-    urlRow.getStyleClass().add("biblio-internet-url-row");
-
-    configureInternetUrlReadOnlyLink();
-
-    internetPublishedPicker = new DatePicker();
-    internetPublishedPicker.setMaxWidth(Double.MAX_VALUE);
-
-    Label publishedLabel = new Label("Veröffentlicht am ");
-    publishedLabel.visibleProperty().bind(toggleEdit.selectedProperty().not());
-    publishedLabel.managedProperty().bind(toggleEdit.selectedProperty().not());
-
-    internetPublishedPicker.visibleProperty().bind(toggleEdit.selectedProperty());
-    internetPublishedPicker.managedProperty().bind(toggleEdit.selectedProperty());
-
-    updateInternetPublishedLabel(publishedLabel);
-
-    internetPublishedPicker.valueProperty().addListener((obs, old, value) ->
-                                                            updateInternetPublishedLabel(publishedLabel)
-    );
-
-    HBox.setHgrow(internetPublishedPicker, Priority.ALWAYS);
-    HBox publishedRow = new HBox(8, publishedLabel, internetPublishedPicker);
-    publishedRow.setAlignment(Pos.CENTER_LEFT);
-    publishedRow.getStyleClass().add("biblio-published-row");
-
-    internetAccessedAtLabel = new Label("Letzter Zugriff");
-    internetAccessedAtLabel.getStyleClass().add("biblio-accessed-at-label");
-
-    Region accessedSpacer = new Region();
-    HBox.setHgrow(accessedSpacer, Priority.ALWAYS);
-
-    Button btnRefreshAccessedAt = BaseIcon.ARROW_REFRESH.button();
-    btnRefreshAccessedAt.visibleProperty().bind(toggleEdit.selectedProperty());
-    btnRefreshAccessedAt.managedProperty().bind(toggleEdit.selectedProperty());
-    btnRefreshAccessedAt.setOnAction(e -> setInternetAccessedAt(LocalDateTime.now()));
-
-    HBox accessedAtRow = new HBox(8, internetAccessedAtLabel, accessedSpacer, btnRefreshAccessedAt);
-    accessedAtRow.setAlignment(Pos.CENTER_LEFT);
-    accessedAtRow.getStyleClass().add("biblio-accessed-at-row");
-
-    internetBinder = new InternetBibliographyBinder(
-        internetAuthorsView,
-        internetTitleField,
-        internetHostNameField,
-        internetUrlField,
-        this::getInternetPublished,
-        this::setInternetPublished,
-        this::parseInternetAccessedAt,
-        this::setInternetAccessedAt,
-        id -> setSelectedEntryId(TypeChoice.INTERNET, id),
-        id -> setSourceEntryId(TypeChoice.INTERNET, id),
-        value -> setAutoFilled(TypeChoice.INTERNET, value),
-        value -> setAutoFillLocked(TypeChoice.INTERNET, value)
-    );
-
-    setInternetPublished(null);
-    setInternetAccessedAt(null);
-
-    box.getChildren().addAll(
-        internetAuthorsView,
-        internetTitleField,
-        internetHostNameField,
-        urlRow,
-        publishedRow,
-        accessedAtRow
-    );
-    return box;
-  }
-
-  /**
-   * Baut das Formular für Editionen.
-   *
-   * @return Node des Editionsformulars.
-   */
-  private Node buildEditionForm() {
-    VBox box = createFormContainer("Edition");
-
-    editionAuthorsView = createAuthorsView(TypeChoice.EDITION);
-    editionTitleField = createField("Titel der Edition (Pflicht)");
-    editionPublisherField = createField("Verlag / Institution");
-    editionPlaceField = createField("Ort");
-    editionYearField = createField("Jahr");
-    editionIsbnField = createField("ISBN");
-    editionRunField = createField("Auflage");
-    editionSeriesField = createField("Reihe");
-    editionVolumeField = createField("Band");
-
-    editionBinder = new EditionBibliographyBinder(
-        editionAuthorsView,
-        editionTitleField,
-        editionPublisherField,
-        editionPlaceField,
-        editionYearField,
-        editionIsbnField,
-        editionRunField,
-        editionSeriesField,
-        editionVolumeField,
-        id -> setSelectedEntryId(TypeChoice.EDITION, id),
-        id -> setSourceEntryId(TypeChoice.EDITION, id),
-        value -> setAutoFilled(TypeChoice.EDITION, value),
-        value -> setAutoFillLocked(TypeChoice.EDITION, value)
-    );
-
-    box.getChildren().addAll(
-        editionAuthorsView,
-        editionTitleField,
-        editionPublisherField,
-        editionPlaceField,
-        editionYearField,
-        editionIsbnField,
-        editionRunField,
-        editionSeriesField,
-        editionVolumeField
-    );
-    return box;
-  }
-
-  /**
-   * Baut das Formular für KI-Quellen.
-   *
-   * @return Node des KI-Formulars.
-   */
-  private Node buildAiForm() {
-    VBox box = createFormContainer("KI-Quelle");
-
-    aiTitleField = createField("Titel (Pflicht)");
-
-    aiProviderCombo = createEditableChoiceCombo();
-    aiModelCombo = createEditableChoiceCombo();
-
-    configureAiChoiceCombo(aiProviderCombo, true);
-    configureAiChoiceCombo(aiModelCombo, false);
-
-    aiProviderLabel = new Label();
-    aiProviderLabel.visibleProperty().bind(toggleEdit.selectedProperty().not());
-    aiProviderLabel.managedProperty().bind(toggleEdit.selectedProperty().not());
-
-    aiModelLabel = new Label();
-    aiModelLabel.visibleProperty().bind(toggleEdit.selectedProperty().not());
-    aiModelLabel.managedProperty().bind(toggleEdit.selectedProperty().not());
-
-    aiProviderCombo.visibleProperty().bind(toggleEdit.selectedProperty());
-    aiProviderCombo.managedProperty().bind(toggleEdit.selectedProperty());
-
-    aiModelCombo.visibleProperty().bind(toggleEdit.selectedProperty());
-    aiModelCombo.managedProperty().bind(toggleEdit.selectedProperty());
-
-    HBox.setHgrow(aiProviderCombo, Priority.ALWAYS);
-    HBox providerRow = new HBox(8, new Label("Anbieter:"), aiProviderLabel, aiProviderCombo);
-    providerRow.setAlignment(Pos.CENTER_LEFT);
-    providerRow.getStyleClass().add("biblio-ai-provider-row");
-
-    HBox.setHgrow(aiModelCombo, Priority.ALWAYS);
-    HBox modelRow = new HBox(8, new Label("Modell:"), aiModelLabel, aiModelCombo);
-    modelRow.setAlignment(Pos.CENTER_LEFT);
-    modelRow.getStyleClass().add("biblio-ai-model-row");
-
-    aiContextField = createField("Kontext");
-    aiPromptTitleField = createField("Prompttitel");
-
-    aiUsedAtPicker = new DatePicker();
-    aiUsedAtPicker.setMaxWidth(Double.MAX_VALUE);
-
-    Label usedAtLabel = new Label();
-    usedAtLabel.visibleProperty().bind(toggleEdit.selectedProperty().not());
-    usedAtLabel.managedProperty().bind(toggleEdit.selectedProperty().not());
-
-    aiUsedAtPicker.visibleProperty().bind(toggleEdit.selectedProperty());
-    aiUsedAtPicker.managedProperty().bind(toggleEdit.selectedProperty());
-
-    aiUsedAtLabel = usedAtLabel;
-    updateAiUsedAtLabel();
-
-    aiUsedAtPicker.valueProperty().addListener((obs, old, value) -> updateAiUsedAtLabel());
-
-    HBox.setHgrow(aiUsedAtPicker, Priority.ALWAYS);
-    HBox usedAtRow = new HBox(8, usedAtLabel, aiUsedAtPicker);
-    usedAtRow.setAlignment(Pos.CENTER_LEFT);
-    usedAtRow.getStyleClass().add("biblio-ai-used-at-row");
-
-    aiBinder = new AiBibliographyBinder(
-        aiTitleField,
-        this::getAiProvider,
-        this::setAiProvider,
-        this::getAiModel,
-        this::setAiModel,
-        aiContextField,
-        aiPromptTitleField,
-        this::parseAiUsedAt,
-        this::setAiUsedAt,
-        id -> setSelectedEntryId(TypeChoice.AI, id),
-        id -> setSourceEntryId(TypeChoice.AI, id),
-        value -> setAutoFilled(TypeChoice.AI, value),
-        value -> setAutoFillLocked(TypeChoice.AI, value)
-    );
-
-    setAiProvider("");
-    setAiModel("");
-    setAiUsedAt(null);
-    refreshAiChoiceItems();
-
-    box.getChildren().addAll(
-        aiTitleField,
-        providerRow,
-        modelRow,
-        aiContextField,
-        aiPromptTitleField,
-        usedAtRow
-    );
-    return box;
-  }
-
-  /**
-   * Baut das Formular für Sammelbände.
-   *
-   * @return Node des Sammelbandformulars.
-   */
-  private Node buildCollectionForm() {
-    VBox box = createFormContainer("Sammelband");
-
-    collectionAuthorsView = createAuthorsView(TypeChoice.COLLECTION);
-    collectionTitleField = createField("Titel des Sammelbands (Pflicht)");
-    collectionSubtitleField = createField("Untertitel");
-    collectionPublisherField = createField("Verlag");
-    collectionPlaceField = createField("Erscheinungsort");
-    collectionYearField = createField("Erscheinungsjahr");
-    collectionSeriesField = createField("Reihentitel");
-
-    collectionBinder = new CollectionBibliographyBinder(
-        collectionTitleField,
-        collectionSubtitleField,
-        collectionPublisherField,
-        collectionPlaceField,
-        collectionYearField,
-        collectionSeriesField,
-        collectionAuthorsView,
-        id -> setSelectedEntryId(TypeChoice.COLLECTION, id),
-        id -> setSourceEntryId(TypeChoice.COLLECTION, id),
-        value -> setAutoFilled(TypeChoice.COLLECTION, value),
-        value -> setAutoFillLocked(TypeChoice.COLLECTION, value)
-    );
-
-    box.getChildren().addAll(
-        collectionAuthorsView,
-        collectionTitleField,
-        collectionSubtitleField,
-        collectionPublisherField,
-        collectionPlaceField,
-        collectionYearField,
-        collectionSeriesField
-    );
-    return box;
-  }
-
-  /**
-   * Baut das Formular für Artikel in Sammelbänden.
-   *
-   * @return Node des Artikelformulars.
-   */
-  private Node buildArticleInCollectionForm() {
-    VBox box = createFormContainer("Artikel in Sammelband");
-
-    articleAuthorsView = createAuthorsView(TypeChoice.ARTICLE_IN_COLLECTION);
-    articleTitleField = createField("Artikeltitel (Pflicht)");
-    articleCollectionTitleField = createField("Sammelband (Titel)");
-    articlePagesField = createField("Seiten");
-
-    // articleCollectionTitleField.editor.textProperty().addListener((obs, old, value) -> collectionEntryId = null);
-
-    articleInCollectionBinder = new ArticleInCollectionBibliographyBinder(
-        articleTitleField,
-        articleCollectionTitleField,
-        articlePagesField,
-        articleAuthorsView,
-        id -> setSelectedEntryId(TypeChoice.ARTICLE_IN_COLLECTION, id),
-        id -> setSourceEntryId(TypeChoice.ARTICLE_IN_COLLECTION, id),
-        value -> setAutoFilled(TypeChoice.ARTICLE_IN_COLLECTION, value),
-        value -> setAutoFillLocked(TypeChoice.ARTICLE_IN_COLLECTION, value)
-    );
-
-    Button btnAddCollection = BaseIcon.BOOK_ADD.button("Sammelband anlegen");
-    btnAddCollection.getStyleClass().add("biblio-collection-add");
-    btnAddCollection.visibleProperty().bind(toggleEdit.selectedProperty());
-    btnAddCollection.managedProperty().bind(toggleEdit.selectedProperty());
-    btnAddCollection.setOnAction(e -> onRequestCreateCollection.run());
-
-    HBox.setHgrow(articleCollectionTitleField, Priority.ALWAYS);
-    HBox row = new HBox(8, articleCollectionTitleField, btnAddCollection);
-    row.setAlignment(Pos.CENTER_LEFT);
-    row.getStyleClass().add("biblio-collection-row");
-
-    box.getChildren().addAll(articleAuthorsView, articleTitleField, row, articlePagesField);
-    return box;
-  }
-
-  /**
-   * Zeigt einen vorhandenen Bucheintrag an.
-   *
-   * @param entry    anzuzeigender Bucheintrag.
-   * @param editMode gewünschter Bearbeitungsmodus.
-   */
-  public void showBook(BookEntry entry, boolean editMode) {
-    typeCombo.setValue(TypeChoice.BOOK);
-    readFromBookEntry(entry);
-    setEditMode(editMode);
-  }
-
-  /**
-   * Öffnet einen leeren Editor für neue Bücher.
-   */
-  public void showNewBookEditor() {
-    typeCombo.setValue(TypeChoice.BOOK);
-    clearBookForm();
-    setEditMode(true);
-  }
-
-  /**
-   * Überträgt die aktuellen Buchformularwerte in einen Bucheintrag.
-   *
-   * @param entry Zielobjekt für die Übernahme.
-   */
-  public void writeIntoBookEntry(BookEntry entry) {
-    if (bookBinder != null) {
-      bookBinder.writeInto(entry);
-    }
-  }
-
-  /**
-   * Befüllt das Buchformular aus einem vorhandenen Bucheintrag.
-   *
-   * @param entry Quellobjekt; {@code null} leert das Formular.
-   */
-  public void readFromBookEntry(BookEntry entry) {
-    if (bookBinder != null) {
-      bookBinder.readFrom(entry);
-    }
-  }
-
-  /**
-   * Leert das Buchformular.
-   */
-  public void clearBookForm() {
-    if (bookBinder != null) {
-      bookBinder.clear();
-    }
-  }
-
-  /**
-   * Zeigt einen vorhandenen Sammelbandeintrag an.
-   *
-   * @param entry    anzuzeigender Sammelbandeintrag.
-   * @param editMode gewünschter Bearbeitungsmodus.
-   */
-  public void showCollection(CollectionEntry entry, boolean editMode) {
-    typeCombo.setValue(TypeChoice.COLLECTION);
-    readFromCollectionEntry(entry);
-    setEditMode(editMode);
-  }
-
-  /**
-   * Öffnet einen leeren Editor für neue Sammelbände.
-   */
-  public void showNewCollectionEditor() {
-    typeCombo.setValue(TypeChoice.COLLECTION);
-    clearCollectionForm();
-    setEditMode(true);
-  }
-
-  /**
-   * Überträgt die aktuellen Formularwerte des Sammelbands in einen Eintrag.
-   *
-   * @param entry Zielobjekt für die Übernahme.
-   */
-  public void writeIntoCollectionEntry(CollectionEntry entry) {
-    if (collectionBinder != null) {
-      collectionBinder.writeInto(entry);
-    }
-  }
-
-  /**
-   * Befüllt das Sammelbandformular aus einem vorhandenen Eintrag.
-   *
-   * @param entry Quellobjekt; {@code null} leert das Formular.
-   */
-  public void readFromCollectionEntry(CollectionEntry entry) {
-    if (collectionBinder != null) {
-      collectionBinder.readFrom(entry);
-    }
-  }
-
-  /**
-   * Leert das Sammelbandformular.
-   */
-  public void clearCollectionForm() {
-    if (collectionBinder != null) {
-      collectionBinder.clear();
-    }
-  }
-
-  /**
-   * Zeigt einen vorhandenen Artikeleintrag an.
-   *
-   * @param entry    anzuzeigender Artikeleintrag.
-   * @param editMode gewünschter Bearbeitungsmodus.
-   */
-  public void showArticleInCollection(ArticleInCollectionEntry entry, boolean editMode) {
-    typeCombo.setValue(TypeChoice.ARTICLE_IN_COLLECTION);
-    readFromArticleInCollectionEntry(entry);
-    setEditMode(editMode);
-  }
-
-  /**
-   * Öffnet einen leeren Editor für neue Artikel in Sammelbänden.
-   */
-  public void showNewArticleInCollectionEditor() {
-    typeCombo.setValue(TypeChoice.ARTICLE_IN_COLLECTION);
-    clearArticleInCollectionForm();
-    setEditMode(true);
-  }
-
-  /**
-   * Überträgt die aktuellen Formularwerte des Artikels in einen Eintrag.
-   *
-   * @param entry Zielobjekt für die Übernahme.
-   */
-  public void writeIntoArticleInCollectionEntry(ArticleInCollectionEntry entry) {
-    if (articleInCollectionBinder != null) {
-      articleInCollectionBinder.writeInto(entry);
-    }
-  }
-
-  /**
-   * Befüllt das Artikelformular aus einem vorhandenen Eintrag.
-   *
-   * @param entry Quellobjekt; {@code null} leert das Formular.
-   */
-  public void readFromArticleInCollectionEntry(ArticleInCollectionEntry entry) {
-    if (articleInCollectionBinder != null) {
-      articleInCollectionBinder.readFrom(entry);
-    }
-  }
-
-  /**
-   * Leert das Artikelformular.
-   */
-  public void clearArticleInCollectionForm() {
-    if (articleInCollectionBinder != null) {
-      articleInCollectionBinder.clear();
-    }
-  }
-
-  /**
-   * Zeigt einen vorhandenen Zeitschrifteneintrag an.
-   *
-   * @param entry anzuzeigender Zeitschrifteneintrag.
-   * @param editMode gewünschter Bearbeitungsmodus.
-   */
-  public void showJournal(JournalEntry entry, boolean editMode) {
-    typeCombo.setValue(TypeChoice.JOURNAL);
-    readFromJournalEntry(entry);
-    setEditMode(editMode);
-  }
-
-  /**
-   * Öffnet einen leeren Editor für neue Zeitschriften.
-   */
-  public void showNewJournalEditor() {
-    typeCombo.setValue(TypeChoice.JOURNAL);
-    clearJournalForm();
-    setEditMode(true);
-  }
-
-  /**
-   * Überträgt die aktuellen Formularwerte der Zeitschrift in einen Eintrag.
-   *
-   * @param entry Zielobjekt für die Übernahme.
-   */
-  public void writeIntoJournalEntry(JournalEntry entry) {
-    if (journalBinder != null) {
-      journalBinder.writeInto(entry);
-    }
-  }
-
-  /**
-   * Befüllt das Zeitschriftenformular aus einem vorhandenen Eintrag.
-   *
-   * @param entry Quellobjekt; {@code null} leert das Formular.
-   */
-  public void readFromJournalEntry(JournalEntry entry) {
-    if (journalBinder != null) {
-      journalBinder.readFrom(entry);
-    }
-  }
-
-  /**
-   * Leert das Zeitschriftenformular.
-   */
-  public void clearJournalForm() {
-    if (journalBinder != null) {
-      journalBinder.clear();
-    }
-  }
-
-  /**
-   * Zeigt einen vorhandenen Thesis-Eintrag an.
-   *
-   * @param entry anzuzeigender Thesis-Eintrag.
-   * @param editMode gewünschter Bearbeitungsmodus.
-   */
-  public void showThesis(ThesisEntry entry, boolean editMode) {
-    typeCombo.setValue(TypeChoice.THESIS);
-    readFromThesisEntry(entry);
-    setEditMode(editMode);
-  }
-
-  /**
-   * Öffnet einen leeren Editor für neue Hochschulschriften.
-   */
-  public void showNewThesisEditor() {
-    typeCombo.setValue(TypeChoice.THESIS);
-    clearThesisForm();
-    setEditMode(true);
-  }
-
-  /**
-   * Überträgt die aktuellen Formularwerte der Thesis in einen Eintrag.
-   *
-   * @param entry Zielobjekt für die Übernahme.
-   */
-  public void writeIntoThesisEntry(ThesisEntry entry) {
-    if (thesisBinder != null) {
-      thesisBinder.writeInto(entry);
-    }
-  }
-
-  /**
-   * Befüllt das Thesis-Formular aus einem vorhandenen Eintrag.
-   *
-   * @param entry Quellobjekt; {@code null} leert das Formular.
-   */
-  public void readFromThesisEntry(ThesisEntry entry) {
-    if (thesisBinder != null) {
-      thesisBinder.readFrom(entry);
-    }
-  }
-
-  /**
-   * Leert das Thesis-Formular.
-   */
-  public void clearThesisForm() {
-    if (thesisBinder != null) {
-      thesisBinder.clear();
-    }
-  }
-
-  /**
-   * Zeigt einen vorhandenen Internet-Eintrag an.
-   *
-   * @param entry anzuzeigender Internet-Eintrag.
-   * @param editMode gewünschter Bearbeitungsmodus.
-   */
-  public void showInternet(InternetEntry entry, boolean editMode) {
-    typeCombo.setValue(TypeChoice.INTERNET);
-    readFromInternetEntry(entry);
-    setEditMode(editMode);
-  }
-
-  /**
-   * Öffnet einen leeren Editor für neue Internetquellen.
-   */
-  public void showNewInternetEditor() {
-    typeCombo.setValue(TypeChoice.INTERNET);
-    clearInternetForm();
-    setEditMode(true);
-  }
-
-  /**
-   * Überträgt die aktuellen Formularwerte der Internetquelle in einen Eintrag.
-   *
-   * @param entry Zielobjekt für die Übernahme.
-   */
-  public void writeIntoInternetEntry(InternetEntry entry) {
-    if (internetBinder != null) {
-      internetBinder.writeInto(entry);
-    }
-  }
-
-  /**
-   * Befüllt das Internet-Formular aus einem vorhandenen Eintrag.
-   *
-   * @param entry Quellobjekt; {@code null} leert das Formular.
-   */
-  public void readFromInternetEntry(InternetEntry entry) {
-    if (internetBinder != null) {
-      internetBinder.readFrom(entry);
-    }
-  }
-
-  /**
-   * Leert das Internet-Formular.
-   */
-  public void clearInternetForm() {
-    if (internetBinder != null) {
-      internetBinder.clear();
-    }
-  }
-
-  /**
-   * Zeigt einen vorhandenen Editions-Eintrag an.
-   *
-   * @param entry anzuzeigender Editions-Eintrag.
-   * @param editMode gewünschter Bearbeitungsmodus.
-   */
-  public void showEdition(EditionEntry entry, boolean editMode) {
-    typeCombo.setValue(TypeChoice.EDITION);
-    readFromEditionEntry(entry);
-    setEditMode(editMode);
-  }
-
-  /**
-   * Öffnet einen leeren Editor für neue Editionen.
-   */
-  public void showNewEditionEditor() {
-    typeCombo.setValue(TypeChoice.EDITION);
-    clearEditionForm();
-    setEditMode(true);
-  }
-
-  /**
-   * Überträgt die aktuellen Formularwerte der Edition in einen Eintrag.
-   *
-   * @param entry Zielobjekt für die Übernahme.
-   */
-  public void writeIntoEditionEntry(EditionEntry entry) {
-    if (editionBinder != null) {
-      editionBinder.writeInto(entry);
-    }
-  }
-
-  /**
-   * Befüllt das Editionsformular aus einem vorhandenen Eintrag.
-   *
-   * @param entry Quellobjekt; {@code null} leert das Formular.
-   */
-  public void readFromEditionEntry(EditionEntry entry) {
-    if (editionBinder != null) {
-      editionBinder.readFrom(entry);
-    }
-  }
-
-  /**
-   * Leert das Editionsformular.
-   */
-  public void clearEditionForm() {
-    if (editionBinder != null) {
-      editionBinder.clear();
-    }
-  }
-
-  /**
-   * Zeigt einen vorhandenen KI-Eintrag an.
-   *
-   * @param entry anzuzeigender KI-Eintrag.
-   * @param editMode gewünschter Bearbeitungsmodus.
-   */
-  public void showAi(AiEntry entry, boolean editMode) {
-    typeCombo.setValue(TypeChoice.AI);
-    readFromAiEntry(entry);
-    setEditMode(editMode);
-  }
-
-  /**
-   * Öffnet einen leeren Editor für neue KI-Quellen.
-   */
-  public void showNewAiEditor() {
-    typeCombo.setValue(TypeChoice.AI);
-    clearAiForm();
-    setEditMode(true);
-  }
-
-  /**
-   * Überträgt die aktuellen Formularwerte der KI-Quelle in einen Eintrag.
-   *
-   * @param entry Zielobjekt für die Übernahme.
-   */
-  public void writeIntoAiEntry(AiEntry entry) {
-    if (aiBinder != null) {
-      aiBinder.writeInto(entry);
-    }
-  }
-
-  /**
-   * Befüllt das KI-Formular aus einem vorhandenen Eintrag.
-   *
-   * @param entry Quellobjekt; {@code null} leert das Formular.
-   */
-  public void readFromAiEntry(AiEntry entry) {
-    if (aiBinder != null) {
-      aiBinder.readFrom(entry);
-    }
-  }
-
-  /**
-   * Leert das KI-Formular.
-   */
-  public void clearAiForm() {
-    if (aiBinder != null) {
-      aiBinder.clear();
-    }
-  }
-
-  /**
-   * Zeigt einen vorhandenen Zeitschriftenartikel an.
-   *
-   * @param entry anzuzeigender Zeitschriftenartikel.
-   * @param editMode gewünschter Bearbeitungsmodus.
-   */
-  public void showJournalArticle(JournalArticleEntry entry, boolean editMode) {
-    typeCombo.setValue(TypeChoice.JOURNAL_ARTICLE);
-    readFromJournalArticleEntry(entry);
-    setEditMode(editMode);
-  }
-
-  /**
-   * Öffnet einen leeren Editor für neue Zeitschriftenartikel.
-   */
-  public void showNewJournalArticleEditor() {
-    typeCombo.setValue(TypeChoice.JOURNAL_ARTICLE);
-    clearJournalArticleForm();
-    setEditMode(true);
-  }
-
-  /**
-   * Überträgt die aktuellen Formularwerte des Zeitschriftenartikels in einen Eintrag.
-   *
-   * @param entry Zielobjekt für die Übernahme.
-   */
-  public void writeIntoJournalArticleEntry(JournalArticleEntry entry) {
-    if (journalArticleBinder != null) {
-      journalArticleBinder.writeInto(entry);
-    }
-  }
-
-  /**
-   * Befüllt das Zeitschriftenartikelformular aus einem vorhandenen Eintrag.
-   *
-   * @param entry Quellobjekt; {@code null} leert das Formular.
-   */
-  public void readFromJournalArticleEntry(JournalArticleEntry entry) {
-    if (journalArticleBinder != null) {
-      journalArticleBinder.readFrom(entry);
-    }
-  }
-
-  /**
-   * Leert das Zeitschriftenartikelformular.
-   */
-  public void clearJournalArticleForm() {
-    if (journalArticleBinder != null) {
-      journalArticleBinder.clear();
-    }
-  }
-
-  /**
-   * Baut ein generisches Platzhalterformular.
-   *
-   * @param title Titel des Formulars.
-   * @return Platzhalter-Node.
-   */
-  private Node placeholderForm(String title) {
-    VBox box = createFormContainer(title);
-    BibliographyFieldView fieldA = createField("Feld A");
-    BibliographyFieldView fieldB = createField("Feld B");
-    BibliographyFieldView fieldC = createField("Feld C");
-    box.getChildren().addAll(fieldA, fieldB, fieldC);
-    return box;
-  }
-
-  /**
-   * Erzeugt einen Form-Container mit Überschrift.
-   *
-   * @param title Formulartitel.
-   * @return vorbereitete Formular-Box.
-   */
-  private VBox createFormContainer(String title) {
-    VBox box = new VBox(6);
-    box.getStyleClass().add("biblio-form");
-    Label head = new Label(title);
-    head.getStyleClass().add("biblio-form-title");
-    box.getChildren().add(head);
-    return box;
-  }
-
-  /**
-   * Erzeugt ein Bibliographiefeld im aktuellen Bearbeitungsmodus.
-   *
-   * @param prompt Prompttext des Feldes.
-   * @return neu erzeugtes Feld.
-   */
-  private BibliographyFieldView createField(String prompt) {
-    return new BibliographyFieldView(prompt, editProperty());
-  }
-
-  /**
-   * Erzeugt eine Autorenansicht für einen Bibliographietyp.
-   *
-   * @param ownerType Bibliographietyp des Formulars.
-   * @return neu erzeugte Autorenansicht.
-   */
-  private BibliographyAuthorsView createAuthorsView(TypeChoice ownerType) {
-    return new BibliographyAuthorsView(
-        ownerType,
-        editProperty(),
-        row -> lookupProvider.findAuthors(ownerType, row.getLastName(), getSelectedEntryId(ownerType)),
-        this::handleAuthorsEdited,
-        () -> {
-        },
-        this::isLookupSuppressed,
-        this::setSelectedEntryId
-    );
-  }
-
   /**
    * Liefert die Property des Bearbeitungsmodus.
    *
@@ -1680,501 +1485,190 @@ public class BibliographyEditorShell {
    * @param field auszulesendes Feld.
    * @return Feldinhalt oder leerer String.
    */
-  private String fieldText(BibliographyFieldView field) {
-    return field == null ? "" : field.getText();
-  }
-
   /**
    * Liest die Autoren einer Autorenansicht sicher aus.
    *
    * @param view auszulesende Autorenansicht.
    * @return Autorenliste oder leere Liste.
    */
-  private List<Author> authorsOf(BibliographyAuthorsView view) {
-    return view == null ? List.of() : view.toAuthors();
-  }
-
   /**
    * Aktualisiert eine Map mit optionaler Eintrags-ID.
    *
-   * @param map     Ziel-Map.
-   * @param type    Bibliographietyp als Schlüssel.
-   * @param entryId zu setzende ID; ungültige Werte entfernen den Schlüssel.
+   * @param map Ziel-Map
+   * @param key Schlüssel der Ziel-Map
+   * @param entryId zu setzende ID; ungültige Werte entfernen den Schlüssel
+   * @param <K> Schlüsseltyp der Ziel-Map
    */
-  private void updateEntryIdMap(Map<TypeChoice, Integer> map, TypeChoice type, Integer entryId) {
+  private <K> void updateEntryIdMap(Map<K, Integer> map, K key, Integer entryId) {
+    if (map == null || key == null) {
+      return;
+    }
+
     if (entryId == null || entryId <= 0) {
-      map.remove(type);
+      map.remove(key);
     } else {
-      map.put(type, entryId);
+      map.put(key, entryId);
     }
   }
 
   /**
-   * Prüft, ob der automatische Titelfill für einen Typ gesperrt ist.
+   * Setzt den Text eines Bibliographiefeldes sicher.
    *
-   * @param type gewünschter Bibliographietyp.
-   * @return {@code true}, wenn kein weiterer Autofill erfolgen soll.
+   * @param field Ziel-Feld
+   * @param value neuer Text
    */
-  private boolean isAutoFillLocked(TypeChoice type) {
-    return Boolean.TRUE.equals(autoFillLocked.get(type));
+  /**
+   * Normalisiert einen technischen BibTeX-Namen defensiv.
+   *
+   * @param value Eingabewert
+   * @return bereinigter Feldname
+   */
+  private String normalizeBibtexName(String value) {
+    return value == null ? "" : value.trim();
   }
 
   /**
-   * Setzt die Sperre für automatisches Titelfill eines Typs.
+   * Liest einen dynamischen Bibliographie-Eintrag direkt in die Shell ein.
    *
-   * @param type   gewünschter Bibliographietyp.
-   * @param locked neue Sperreinstellung.
+   * @param entry dynamischer Bibliographie-Eintrag
    */
-  private void setAutoFillLocked(TypeChoice type, boolean locked) {
-    autoFillLocked.put(type, locked);
-  }
-
   /**
-   * Prüft, ob der Titel eines Typs zuvor automatisch gefüllt wurde.
+   * Parst ein Datum tolerant aus ISO-Text.
    *
-   * @param type gewünschter Bibliographietyp.
-   * @return {@code true}, wenn Autofill zuvor stattgefunden hat.
+   * @param value Eingabetext
+   * @return geparstes Datum oder {@code null}
    */
-  private boolean wasAutoFilled(TypeChoice type) {
-    return Boolean.TRUE.equals(autoFilledTitle.get(type));
-  }
-
-  /**
-   * Merkt, ob ein Titel automatisch gefüllt wurde.
-   *
-   * @param type  gewünschter Bibliographietyp.
-   * @param value neuer Merkerzustand.
-   */
-  private void setAutoFilled(TypeChoice type, boolean value) {
-    autoFilledTitle.put(type, value);
-  }
-
-  /**
-   * Liefert die Ursprungs-ID eines geladenen Eintrags.
-   *
-   * @param type gewünschter Bibliographietyp.
-   * @return Ursprungs-ID oder {@code null}.
-   */
-  public Integer getSourceEntryId(TypeChoice type) {
-    return sourceEntryIds.get(type);
-  }
-
-  /**
-   * Setzt oder entfernt die Ursprungs-ID eines geladenen Eintrags.
-   *
-   * @param type    gewünschter Bibliographietyp.
-   * @param entryId zu speichernde Ursprungs-ID.
-   */
-  private void setSourceEntryId(TypeChoice type, Integer entryId) {
-    updateEntryIdMap(sourceEntryIds, type, entryId);
-  }
-
-  /**
-   * Liefert die aktuell ausgewählte Zeitschriften-ID.
-   *
-   * @return ID der Zeitschrift oder {@code null}.
-   */
-  public Integer getJournalEntryId() {
-    return journalArticleBinder == null ? null : journalArticleBinder.getJournalEntryId();
-  }
-
-  /**
-   * Setzt die aktuell ausgewählte Zeitschriften-ID im JournalArticle-Binder.
-   *
-   * @param entryId ID der Zeitschrift oder {@code null}.
-   */
-  public void setJournalEntryId(Integer entryId) {
-    if (journalArticleBinder != null) {
-      journalArticleBinder.setJournalEntryId(entryId);
-    }
-  }
-
-  /**
-   * Liefert den aktuell eingetragenen Zeitschriftentitel.
-   *
-   * @return Titel des Zeitschriftenfeldes oder leerer String.
-   */
-  public String getJournalTitle() {
-    return fieldText(journalArticleJournalTitleField);
-  }
-
-  /**
-   * Setzt den Titel des Zeitschriftenfeldes im JournalArticle-Formular.
-   *
-   * @param title neuer Zeitschriftentitel.
-   */
-  public void setJournalTitle(String title) {
-    if (journalArticleJournalTitleField != null) {
-      journalArticleJournalTitleField.setText(title);
-    }
-  }
-
-  /**
-   * Liest den Zugriffszeitpunkt der Internetquelle aus dem Formular.
-   *
-   * @return geparster Zeitpunkt oder {@code null}, wenn das Feld leer oder ungültig ist
-   */
-  private LocalDateTime parseInternetAccessedAt() {
-    return internetAccessedAtValue;
-  }
-
-  /**
-   * Setzt den Zugriffszeitpunkt der Internetquelle im Formular.
-   *
-   * @param value neuer Zeitpunkt oder {@code null}
-   */
-  private void setInternetAccessedAt(LocalDateTime value) {
-    internetAccessedAtValue = value;
-
-    if (internetAccessedAtLabel != null) {
-      if (value == null) {
-        internetAccessedAtLabel.setText("Letzter Zugriff: noch nicht gespeichert");
-      } else {
-        internetAccessedAtLabel.setText("Letzter Zugriff: " + value.format(DateTimeFormatter.ofPattern("dd.MM.yyyy")));
-      }
-    }
-  }
-
-  /**
-   * Liest den Nutzungszeitpunkt der KI-Quelle aus dem Formular.
-   *
-   * @return Zeitpunkt mit Tagesbeginn oder {@code null}
-   */
-  private LocalDateTime parseAiUsedAt() {
-    if (aiUsedAtPicker == null || aiUsedAtPicker.getValue() == null) {
+  private LocalDate parseLocalDate(String value) {
+    String text = value == null ? "" : value.trim();
+    if (text.isBlank()) {
       return null;
     }
-    return aiUsedAtPicker.getValue().atStartOfDay();
-  }
-
-  /**
-   * Setzt den Nutzungszeitpunkt der KI-Quelle im Formular.
-   *
-   * @param value neuer Zeitpunkt oder {@code null}
-   */
-  private void setAiUsedAt(LocalDateTime value) {
-    if (aiUsedAtPicker != null) {
-      aiUsedAtPicker.setValue(value == null ? null : value.toLocalDate());
-    }
-    updateAiUsedAtLabel();
-  }
-
-  /**
-   * Aktualisiert das Label für den KI-Nutzungszeitpunkt.
-   */
-  private void updateAiUsedAtLabel() {
-    if (aiUsedAtLabel == null) {
-      return;
-    }
-
-    LocalDate value = aiUsedAtPicker == null ? null : aiUsedAtPicker.getValue();
-    if (value == null) {
-      aiUsedAtLabel.setText("Verwendet am");
-    } else {
-      aiUsedAtLabel.setText("Verwendet am " + value.format(DateTimeFormatter.ofPattern("dd.MM.yyyy")));
-    }
-  }
-
-  /**
-   * Erzeugt eine editierbare ComboBox für KI-Auswahlen.
-   *
-   * @return editierbare ComboBox
-   */
-  private ComboBox<String> createEditableChoiceCombo() {
-    ComboBox<String> combo = new ComboBox<>();
-    combo.setEditable(true);
-    combo.setMaxWidth(Double.MAX_VALUE);
-    return combo;
-  }
-
-  /**
-   * Verdrahtet eine ComboBox für Anbieter oder Modell.
-   *
-   * @param combo Ziel-ComboBox
-   * @param providerCombo {@code true} für Anbieter, {@code false} für Modell
-   */
-  private void configureAiChoiceCombo(ComboBox<String> combo, boolean providerCombo) {
-    combo.getEditor().textProperty().addListener((obs, old, value) -> {
-      if (suppressAiChoiceRefresh) {
-        return;
-      }
-
-      updateAiChoiceLabels();
-
-      if (value != null && value.trim().length() >= 2) {
-        if (providerCombo) {
-          refreshAiProviderItems();
-        } else {
-          refreshAiModelItems();
-        }
-        combo.show();
-      }
-    });
-
-    combo.setOnShowing(e -> {
-      if (providerCombo) {
-        refreshAiProviderItems();
-      } else {
-        refreshAiModelItems();
-      }
-    });
-
-    combo.valueProperty().addListener((obs, old, value) -> {
-      if (suppressAiChoiceRefresh) {
-        return;
-      }
-
-      updateAiChoiceLabels();
-
-      if (providerCombo) {
-        refreshAiModelItems();
-      } else {
-        refreshAiProviderItems();
-      }
-    });
-
-    combo.getEditor().focusedProperty().addListener((obs, old, focused) -> {
-      if (!focused) {
-        updateAiChoiceLabels();
-
-        if (providerCombo) {
-          refreshAiModelItems();
-        } else {
-          refreshAiProviderItems();
-        }
-      }
-    });
-  }
-
-  /**
-   * Aktualisiert beide KI-Auswahlboxen.
-   */
-  private void refreshAiChoiceItems() {
-    refreshAiProviderItems();
-    refreshAiModelItems();
-  }
-
-  /**
-   * Aktualisiert die Anbieterliste unter Berücksichtigung von Recents und Modellfilter.
-   */
-  private void refreshAiProviderItems() {
-    if (aiProviderCombo == null) {
-      return;
-    }
-
-    String prefix = aiProviderCombo.getEditor().getText() == null ? "" : aiProviderCombo.getEditor().getText().trim();
-    String modelFilter = getAiModel();
-
-    List<String> recents = aiChoiceProvider.loadRecentProviders(3);
-    List<String> hits = prefix.length() >= 2
-                            ? aiChoiceProvider.findProviders(prefix, modelFilter, 50)
-                            : List.of();
-
-    aiProviderCombo.getItems().setAll(mergeRecentAndHits(recents, hits));
-  }
-
-  /**
-   * Aktualisiert die Modellliste unter Berücksichtigung von Recents und Anbieterfilter.
-   */
-  private void refreshAiModelItems() {
-    if (aiModelCombo == null) {
-      return;
-    }
-
-    String prefix = aiModelCombo.getEditor().getText() == null ? "" : aiModelCombo.getEditor().getText().trim();
-    String providerFilter = getAiProvider();
-
-    List<String> recents = aiChoiceProvider.loadRecentModels(3);
-    List<String> hits = prefix.length() >= 2
-                            ? aiChoiceProvider.findModels(prefix, providerFilter, 50)
-                            : List.of();
-
-    aiModelCombo.getItems().setAll(mergeRecentAndHits(recents, hits));
-  }
-
-  /**
-   * Führt Recents und alphabetische Treffer zusammen, ohne Duplikate.
-   *
-   * @param recents zuletzt verwendete Werte
-   * @param hits reguläre Treffer
-   * @return kombinierte Liste
-   */
-  private List<String> mergeRecentAndHits(List<String> recents, List<String> hits) {
-    java.util.LinkedHashSet<String> values = new java.util.LinkedHashSet<>();
-
-    if (recents != null) {
-      for (String value : recents) {
-        if (value != null && !value.isBlank()) {
-          values.add(value.trim());
-        }
-      }
-    }
-
-    if (hits != null) {
-      for (String value : hits) {
-        if (value != null && !value.isBlank()) {
-          values.add(value.trim());
-        }
-      }
-    }
-
-    return List.copyOf(values);
-  }
-
-  /**
-   * Liefert den aktuell eingetragenen Anbieter.
-   *
-   * @return Anbieter oder leerer String
-   */
-  private String getAiProvider() {
-    if (aiProviderCombo == null) {
-      return "";
-    }
-    String value = aiProviderCombo.getEditor().getText();
-    return value == null ? "" : value.trim();
-  }
-
-  /**
-   * Setzt den Anbieter in der ComboBox.
-   *
-   * @param value neuer Anbieter
-   */
-  private void setAiProvider(String value) {
-    if (aiProviderCombo == null) {
-      return;
-    }
-
-    suppressAiChoiceRefresh = true;
-    try {
-      aiProviderCombo.getSelectionModel().clearSelection();
-      aiProviderCombo.getEditor().setText(value == null ? "" : value.trim());
-    } finally {
-      suppressAiChoiceRefresh = false;
-    }
-
-    updateAiChoiceLabels();
-  }
-
-  /**
-   * Liefert das aktuell eingetragene Modell.
-   *
-   * @return Modell oder leerer String
-   */
-  private String getAiModel() {
-    if (aiModelCombo == null) {
-      return "";
-    }
-    String value = aiModelCombo.getEditor().getText();
-    return value == null ? "" : value.trim();
-  }
-
-  /**
-   * Setzt das Modell in der ComboBox.
-   *
-   * @param value neues Modell
-   */
-  private void setAiModel(String value) {
-    if (aiModelCombo == null) {
-      return;
-    }
-
-    suppressAiChoiceRefresh = true;
-    try {
-      aiModelCombo.getSelectionModel().clearSelection();
-      aiModelCombo.getEditor().setText(value == null ? "" : value.trim());
-    } finally {
-      suppressAiChoiceRefresh = false;
-    }
-
-    updateAiChoiceLabels();
-  }
-
-  /**
-   * Aktualisiert die Labels für Anbieter und Modell im Lesemodus.
-   */
-  private void updateAiChoiceLabels() {
-    if (aiProviderLabel != null) {
-      String provider = getAiProvider();
-      aiProviderLabel.setText(provider == null || provider.isBlank() ? "" : provider);
-    }
-
-    if (aiModelLabel != null) {
-      String model = getAiModel();
-      aiModelLabel.setText(model == null || model.isBlank() ? "" : model);
-    }
-  }
-
-  /**
-   * Öffnet die im Internetformular eingetragene URL im Standardbrowser des Systems.
-   */
-  private void openInternetUrlInBrowser() {
-    String raw = fieldText(internetUrlField).trim();
-    BrowserConnection.openBrowser(raw);
-  }
-
-  /**
-   * Konfiguriert die URL-Anzeige im Lesemodus als klickbaren Link.
-   */
-  private void configureInternetUrlReadOnlyLink() {
-    if (internetUrlField == null || internetUrlField.getLabel() == null) {
-      return;
-    }
-
-    internetUrlField.getLabel().setUnderline(true);
-    internetUrlField.getLabel().setOnMouseClicked(e -> {
-      if (!isEditMode()) {
-        openInternetUrlInBrowser();
-      }
-    });
-  }
-
-  /**
-   * Liefert das Veröffentlichungsdatum der Internetquelle als Text.
-   *
-   * @return ISO-Datumsstring oder leerer String
-   */
-  private String getInternetPublished() {
-    LocalDate value = internetPublishedPicker == null ? null : internetPublishedPicker.getValue();
-    return value == null ? "" : value.toString();
-  }
-
-  /**
-   * Setzt das Veröffentlichungsdatum der Internetquelle.
-   *
-   * @param value ISO-Datumsstring oder leer
-   */
-  private void setInternetPublished(String value) {
-    if (internetPublishedPicker == null) {
-      return;
-    }
-
-    if (value == null || value.isBlank()) {
-      internetPublishedPicker.setValue(null);
-      return;
-    }
 
     try {
-      internetPublishedPicker.setValue(LocalDate.parse(value.trim()));
+      return LocalDate.parse(text);
     } catch (Exception ex) {
-      internetPublishedPicker.setValue(null);
+      return null;
     }
   }
 
   /**
-   * Aktualisiert das Veröffentlichungslabel der Internetquelle abhängig vom DatePicker-Wert.
+   * Schreibt Autoren direkt in die zugrunde liegende Autorenansicht.
    *
-   * @param label zu aktualisierendes Label
+   * @param view Zielansicht
+   * @param authors neue Autorenliste
    */
-  private void updateInternetPublishedLabel(Label label) {
-    if (label == null) {
+  private void applyAuthors(BibliographyAuthorsView view, List<Author> authors) {
+    if (view == null) {
       return;
     }
 
-    LocalDate value = internetPublishedPicker == null ? null : internetPublishedPicker.getValue();
-    if (value == null) {
-      label.setText("Veröffentlicht am");
-    } else {
-      label.setText("Veröffentlicht am " + value.format(DateTimeFormatter.ofPattern("dd.MM.yyyy")));
-    }
+    List<Author> safeAuthors = authors == null ? List.of() : new ArrayList<>(authors);
+    view.fromAuthors(safeAuthors);
+  }
+
+  /**
+   * Normalisiert einen technischen Medientypnamen.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return normalisierter Medientypname oder leerer String
+   */
+  private String normalizeMediaTypeBibName(String mediaTypeBibName) {
+    return mediaTypeBibName == null ? "" : mediaTypeBibName.trim().toLowerCase();
+  }
+
+  /**
+   * Baut einen stabilen Schlüssel für ein Related-Feld innerhalb eines
+   * bestimmten Medientyps auf.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer Feldname
+   * @return zusammengesetzter Feldschlüssel
+   */
+  private String relatedFieldKey(String mediaTypeBibName, String bibtexName) {
+    return normalizeMediaTypeBibName(mediaTypeBibName) + "::" + normalizeBibtexName(bibtexName);
+  }
+
+  /**
+   * Liefert die selektierte Eintrags-ID eines technischen Medientyps.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return selektierte Eintrags-ID oder {@code null}
+   */
+  private Integer getSelectedEntryId(String mediaTypeBibName) {
+    return selectedEntryIdsByMediaType.get(normalizeMediaTypeBibName(mediaTypeBibName));
+  }
+
+  /**
+   * Setzt oder entfernt die selektierte Eintrags-ID eines technischen Medientyps.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param entryId zu speichernde ID; ungültige Werte entfernen den Eintrag
+   */
+  private void setSelectedEntryId(String mediaTypeBibName, Integer entryId) {
+    updateEntryIdMap(selectedEntryIdsByMediaType, normalizeMediaTypeBibName(mediaTypeBibName), entryId);
+  }
+
+  /**
+   * Prüft, ob der automatische Titelfill für einen technischen Medientyp gesperrt ist.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return {@code true}, wenn kein weiterer Autofill erfolgen soll
+   */
+  private boolean isAutoFillLocked(String mediaTypeBibName) {
+    return Boolean.TRUE.equals(autoFillLockedByMediaType.get(normalizeMediaTypeBibName(mediaTypeBibName)));
+  }
+
+  /**
+   * Setzt die Sperre für automatisches Titelfill eines technischen Medientyps.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param locked neue Sperreinstellung
+   */
+  private void setAutoFillLocked(String mediaTypeBibName, boolean locked) {
+    autoFillLockedByMediaType.put(normalizeMediaTypeBibName(mediaTypeBibName), locked);
+  }
+
+  /**
+   * Prüft, ob der Titel eines technischen Medientyps zuvor automatisch gefüllt wurde.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return {@code true}, wenn Autofill zuvor stattgefunden hat
+   */
+  private boolean wasAutoFilled(String mediaTypeBibName) {
+    return Boolean.TRUE.equals(
+        autoFilledTitleByMediaType.get(normalizeMediaTypeBibName(mediaTypeBibName))
+    );
+  }
+
+  /**
+   * Merkt, ob ein Titel eines technischen Medientyps automatisch gefüllt wurde.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param value neuer Merkerzustand
+   */
+  private void setAutoFilled(String mediaTypeBibName, boolean value) {
+    autoFilledTitleByMediaType.put(normalizeMediaTypeBibName(mediaTypeBibName), value);
+  }
+
+  /**
+   * Liefert die Ursprungs-ID eines geladenen Eintrags für einen technischen Medientyp.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return Ursprungs-ID oder {@code null}
+   */
+  private Integer getSourceEntryId(String mediaTypeBibName) {
+    return sourceEntryIdsByMediaType.get(normalizeMediaTypeBibName(mediaTypeBibName));
+  }
+
+  /**
+   * Setzt oder entfernt die Ursprungs-ID eines geladenen Eintrags für einen technischen Medientyp.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param entryId zu speichernde Ursprungs-ID
+   */
+  private void setSourceEntryId(String mediaTypeBibName, Integer entryId) {
+    updateEntryIdMap(sourceEntryIdsByMediaType, normalizeMediaTypeBibName(mediaTypeBibName), entryId);
   }
 }
+
+

@@ -1,7 +1,5 @@
 package de.zettelkastenfx.notes.model;
 
-import de.zettelkastenfx.bibliography.model.BibliographyEntry;
-import de.zettelkastenfx.bibliography.model.BibliographyType;
 import de.zettelkastenfx.notes.editor.NoteEditorPane;
 import de.zettelkastenfx.notes.keywords.KeywordsTablePane;
 import de.zettelkastenfx.persistence.InlineCssRtfxBlobCodec;
@@ -18,9 +16,7 @@ public class Note {
   @Getter private String title = "";
   @Getter byte[] bodyBlob = new byte[0];
   @Getter String bodyCodec = InlineCssRtfxBlobCodec.CODEC_NAME;
-  @Getter private BibliographyType bibliographyType = BibliographyType.USER;
-  @Setter @Getter private Integer bibliographyRefId; // nullable // doppelt?
-  @Setter @Getter private BibliographyEntry bibliographyEntry;
+  @Setter @Getter private Integer bibliographyRefId;
 
   @Getter private List<String> keywords = new ArrayList<>();
   @Setter @Getter private List<NoteLink> successors = new ArrayList<>();
@@ -34,10 +30,6 @@ public class Note {
     this.bodyCodec = (bodyCodec == null || bodyCodec.isBlank())
                          ? InlineCssRtfxBlobCodec.CODEC_NAME
                          : bodyCodec;
-  }
-
-  public void setBibliographyType(BibliographyType bibliographyType) {
-    this.bibliographyType = bibliographyType == null ? BibliographyType.USER : bibliographyType;
   }
 
   public void setKeywords(List<String> keywords) {
