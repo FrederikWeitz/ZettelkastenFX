@@ -84,9 +84,36 @@ public class BibliographyServiceImpl implements BibliographyService {
                .toList();
   }
 
+  /**
+   * Lädt einen Medientyp anhand seines technischen Namens.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return optionale Medientypdefinition
+   */
+  @Override
+  public Optional<MediaTypeDefinition> loadMediaTypeByBibName(String mediaTypeBibName) {
+    return metadataRepository.loadMediaTypeByBibName(mediaTypeBibName);
+  }
+
   @Override
   public List<MediaAttributeDefinition> listAttributesForMediaType(int mediaTypeId) {
     return metadataRepository.loadAttributesForMediaType(mediaTypeId);
+  }
+
+  /**
+   * Liefert alle Attributdefinitionen eines Medientyps anhand seines
+   * technischen Namens.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return Attributdefinitionen des Medientyps
+   */
+  @Override
+  public List<MediaAttributeDefinition> listAttributesForMediaType(String mediaTypeBibName) {
+    Integer mediaTypeId = resolveMediaTypeId(mediaTypeBibName);
+    if (mediaTypeId == null) {
+      return List.of();
+    }
+    return listAttributesForMediaType(mediaTypeId);
   }
 
   @Override
@@ -94,6 +121,183 @@ public class BibliographyServiceImpl implements BibliographyService {
     return metadataRepository.loadAttributesForMediaType(mediaTypeId).stream()
                .filter(MediaAttributeDefinition::isIdentify)
                .toList();
+  }
+
+  /**
+   * Lädt eine Attributdefinition eines Medientyps anhand technischer Namen.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer Feldname
+   * @return optionale Attributdefinition
+   */
+  @Override
+  public Optional<MediaAttributeDefinition> loadAttributeDefinition(String mediaTypeBibName,
+                                                                    String bibtexName) {
+    String normalizedBibtexName = normalizeTechnicalName(bibtexName);
+    if (normalizedBibtexName.isBlank()) {
+      return Optional.empty();
+    }
+
+    return listAttributesForMediaType(mediaTypeBibName).stream()
+               .filter(Objects::nonNull)
+               .filter(attribute -> attribute.fieldDefinition() != null)
+               .filter(attribute -> normalizeTechnicalName(attribute.fieldDefinition().bibtexName())
+                                        .equals(normalizedBibtexName))
+               .findFirst();
+  }
+
+  /**
+   * Erzeugt eine synthetische Attributdefinition für ein zusätzlich in der
+   * Shell ergänztes BibTeX-Feld.
+   * Diese Definition dient ausschließlich dazu, Lookup- und Related-Logik
+   * an dieselben Metadatenpfade zu binden wie reguläre Formularfelder.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param fieldDefinition Felddefinition des Zusatzfeldes
+   * @return optionale synthetische Attributdefinition
+   */
+  @Override
+  public Optional<MediaAttributeDefinition> createSyntheticAdditionalAttribute(String mediaTypeBibName,
+                                                                               BibtexFieldDefinition fieldDefinition) {
+    if (fieldDefinition == null) {
+      return Optional.empty();
+    }
+
+    return loadMediaTypeByBibName(mediaTypeBibName)
+               .map(mediaType -> new MediaAttributeDefinition(
+                   mediaType.id(),
+                   fieldDefinition.id(),
+                   "desired",
+                   fieldDefinition
+               ));
+  }
+
+  /**
+   * Liefert alle definierten BibTeX-Felder in stabiler Reihenfolge.
+   *
+   * @return alle BibTeX-Felddefinitionen
+   */
+  @Override
+  public List<BibtexFieldDefinition> listBibtexTypes() {
+    return metadataRepository.loadBibtexTypes();
+  }
+
+  /**
+   * Lädt eine BibTeX-Felddefinition anhand ihres technischen Namens.
+   *
+   * @param bibtexName technischer Feldname
+   * @return optionale Felddefinition
+   */
+  @Override
+  public Optional<BibtexFieldDefinition> loadBibtexTypeByBibName(String bibtexName) {
+    return metadataRepository.loadBibtexTypeByBibName(bibtexName);
+  }
+
+  /**
+   * Lädt das von einem BibTeX-Feld abhängige Pflichtfeld, falls eines über
+   * {@code requires} definiert ist.
+   *
+   * @param fieldDefinition Ausgangsfeld
+   * @return abhängige Felddefinition oder leer
+   */
+  @Override
+  public Optional<BibtexFieldDefinition> loadRequiredBibtexType(BibtexFieldDefinition fieldDefinition) {
+    if (fieldDefinition == null) {
+      return Optional.empty();
+    }
+
+    String requiredBibtexName = normalizeTechnicalName(fieldDefinition.requires());
+    if (requiredBibtexName.isBlank()) {
+      return Optional.empty();
+    }
+
+    return loadBibtexTypeByBibName(requiredBibtexName);
+  }
+
+  /**
+   * Liefert alle zusätzlich auswählbaren BibTeX-Felder eines Medientyps.
+   * Bereits vorhandene sowie als {@code forbidden} markierte Felder werden
+   * ausgeschlossen. Die Filterung des Suchtexts erfolgt über Anzeigename und
+   * technischen BibTeX-Namen.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param existingBibtexNames bereits im Formular vorhandene Feldnamen
+   * @param query aktueller Suchtext
+   * @return auswählbare zusätzliche BibTeX-Felder
+   */
+  @Override
+  public List<BibtexFieldDefinition> findAvailableAdditionalBibtexTypes(String mediaTypeBibName,
+                                                                        java.util.Set<String> existingBibtexNames,
+                                                                        String query) {
+    Integer mediaTypeId = resolveMediaTypeId(mediaTypeBibName);
+    if (mediaTypeId == null) {
+      return List.of();
+    }
+
+    String normalizedQuery = normalizeSearchText(query);
+
+    java.util.Set<String> existing = new java.util.LinkedHashSet<>();
+    if (existingBibtexNames != null) {
+      for (String value : existingBibtexNames) {
+        String normalized = normalizeTechnicalName(value);
+        if (!normalized.isBlank()) {
+          existing.add(normalized);
+        }
+      }
+    }
+
+    java.util.Set<String> forbidden = metadataRepository.loadAttributesForMediaType(mediaTypeId).stream()
+                                          .filter(java.util.Objects::nonNull)
+                                          .filter(attribute -> attribute.fieldDefinition() != null)
+                                          .filter(attribute -> "forbidden".equalsIgnoreCase(
+                                              attribute.mode() == null ? "" : attribute.mode().trim()
+                                          ))
+                                          .map(attribute -> normalizeTechnicalName(attribute.fieldDefinition().bibtexName()))
+                                          .filter(value -> !value.isBlank())
+                                          .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+
+    return metadataRepository.loadBibtexTypes().stream()
+               .filter(java.util.Objects::nonNull)
+               .filter(field -> !normalizeTechnicalName(field.bibtexName()).isBlank())
+               .filter(field -> !existing.contains(normalizeTechnicalName(field.bibtexName())))
+               .filter(field -> !forbidden.contains(normalizeTechnicalName(field.bibtexName())))
+               .filter(field -> {
+                 if (normalizedQuery.isBlank()) {
+                   return true;
+                 }
+
+                 String displayName = normalizeSearchText(field.displayName());
+                 String bibtexName = normalizeSearchText(field.bibtexName());
+                 return displayName.contains(normalizedQuery) || bibtexName.contains(normalizedQuery);
+               })
+               .toList();
+  }
+
+  /**
+   * Löst eine manuell eingegebene Zusatzfeld-Auswahl gegen dieselben Regeln auf
+   * wie das Vorschlagsdropdown.
+   * Es werden nur solche Felder zurückgegeben, die für den Medientyp aktuell
+   * tatsächlich zusätzlich auswählbar sind.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param existingBibtexNames bereits im Formular vorhandene Feldnamen
+   * @param rawText manueller Eingabetext
+   * @return passende und erlaubte Felddefinition oder leer
+   */
+  @Override
+  public Optional<BibtexFieldDefinition> resolveAvailableAdditionalBibtexType(String mediaTypeBibName,
+                                                                              java.util.Set<String> existingBibtexNames,
+                                                                              String rawText) {
+    String normalizedText = normalizeSearchText(rawText);
+    if (normalizedText.isBlank()) {
+      return Optional.empty();
+    }
+
+    return findAvailableAdditionalBibtexTypes(mediaTypeBibName, existingBibtexNames, normalizedText).stream()
+               .filter(Objects::nonNull)
+               .filter(field -> normalizeSearchText(field.displayName()).equals(normalizedText)
+                                    || normalizeTechnicalName(field.bibtexName()).equals(normalizedText))
+               .findFirst();
   }
 
   /**
@@ -121,6 +325,180 @@ public class BibliographyServiceImpl implements BibliographyService {
       return List.of();
     }
     return listIdentifyAttributesForMediaType(mediaTypeId);
+  }
+
+  /**
+   * Liefert alle Attribute eines Medientyps, die lokal für die Validierung
+   * eines Speichervorgangs relevant sind.
+   * Berücksichtigt werden alle Felder mit {@code identify} oder
+   * {@code necessary}.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return für die lokale Validierung relevante Attribute
+   */
+  @Override
+  public List<MediaAttributeDefinition> listRequiredAttributesForMediaType(String mediaTypeBibName) {
+    return listAttributesForMediaType(mediaTypeBibName).stream()
+               .filter(Objects::nonNull)
+               .filter(attribute -> attribute.isIdentify() || attribute.isNecessary())
+               .toList();
+  }
+
+  /**
+   * Prüft einen lokalen Editorzustand auf Erfüllung aller fachlich
+   * erforderlichen Pflichtattribute eines Medientyps.
+   * Berücksichtigt werden alle Felder mit {@code identify} oder
+   * {@code necessary}.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param fieldValues aktuelle Feldwerte nach technischem BibTeX-Namen
+   * @param personFieldNames technische Feldnamen belegter Personenfelder
+   * @param relatedFieldNames technische Feldnamen belegter Related-Felder
+   * @return {@code true}, wenn alle Pflichtattribute lokal erfüllt sind
+   */
+  @Override
+  public boolean isLocallyValidForSave(String mediaTypeBibName,
+                                       java.util.Map<String, String> fieldValues,
+                                       java.util.Set<String> personFieldNames,
+                                       java.util.Set<String> relatedFieldNames) {
+    if (resolveMediaTypeId(mediaTypeBibName) == null) {
+      return false;
+    }
+
+    java.util.Map<String, String> safeFieldValues = fieldValues == null
+                                                        ? java.util.Map.of()
+                                                        : fieldValues;
+
+    java.util.Set<String> safePersonFieldNames = personFieldNames == null
+                                                     ? java.util.Set.of()
+                                                     : personFieldNames.stream()
+                                                       .filter(java.util.Objects::nonNull)
+                                                       .map(this::normalizeTechnicalName)
+                                                       .filter(value -> !value.isBlank())
+                                                       .collect(java.util.stream.Collectors.toSet());
+
+    java.util.Set<String> safeRelatedFieldNames = relatedFieldNames == null
+                                                      ? java.util.Set.of()
+                                                      : relatedFieldNames.stream()
+                                                        .filter(java.util.Objects::nonNull)
+                                                        .map(this::normalizeTechnicalName)
+                                                        .filter(value -> !value.isBlank())
+                                                        .collect(java.util.stream.Collectors.toSet());
+
+    for (MediaAttributeDefinition attribute : listRequiredAttributesForMediaType(mediaTypeBibName)) {
+      if (attribute == null || attribute.fieldDefinition() == null) {
+        continue;
+      }
+
+      String bibtexName = normalizeTechnicalName(attribute.fieldDefinition().bibtexName());
+      String datatype = normalizeTechnicalName(attribute.fieldDefinition().datatype());
+
+      if (bibtexName.isBlank()) {
+        continue;
+      }
+
+      if (isPersonDatatype(datatype)) {
+        if (!safePersonFieldNames.contains(bibtexName)) {
+          return false;
+        }
+        continue;
+      }
+
+      if (isRelatedDatatype(datatype)) {
+        if (!safeRelatedFieldNames.contains(bibtexName)) {
+          return false;
+        }
+        continue;
+      }
+
+      String value = safeFieldValues.getOrDefault(bibtexName, "");
+      if (value == null || value.trim().isBlank()) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Prüft, ob ein Datentyp als Personenfeld behandelt wird.
+   *
+   * @param datatype technischer Datentyp
+   * @return {@code true}, wenn Personensemantik vorliegt
+   */
+  private boolean isPersonDatatype(String datatype) {
+    return "person".equals(normalizeTechnicalName(datatype));
+  }
+
+  /**
+   * Prüft, ob ein Datentyp als Related-Feld behandelt wird.
+   *
+   * @param datatype technischer Datentyp
+   * @return {@code true}, wenn Related-Semantik vorliegt
+   */
+  private boolean isRelatedDatatype(String datatype) {
+    return "anderer eintrag/integer".equals(normalizeTechnicalName(datatype));
+  }
+
+  /**
+   * Liefert alle im Editor sichtbar aufzubauenden Attribute eines Medientyps
+   * in der gewünschten Anzeige-Reihenfolge.
+   * Berücksichtigt werden die Modi {@code identify}, {@code necessary},
+   * {@code desired} und {@code mandatory}.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return sortierte Editor-Attribute des Medientyps
+   */
+  @Override
+  public List<MediaAttributeDefinition> listEditorAttributesForMediaType(String mediaTypeBibName) {
+    return listAttributesForMediaType(mediaTypeBibName).stream()
+               .filter(Objects::nonNull)
+               .filter(attribute -> {
+                 if (attribute.isIdentify() || attribute.isNecessary() || attribute.isDesired()) {
+                   return true;
+                 }
+
+                 String mode = attribute.mode() == null ? "" : attribute.mode().trim().toLowerCase(java.util.Locale.ROOT);
+                 return "mandatory".equals(mode);
+               })
+               .sorted(java.util.Comparator
+                           .comparingInt(this::editorDisplayRank)
+                           .thenComparing(attribute -> {
+                             if (attribute == null || attribute.fieldDefinition() == null) {
+                               return Integer.MAX_VALUE;
+                             }
+                             return attribute.fieldDefinition().id();
+                           }))
+               .toList();
+  }
+
+  /**
+   * Liefert den Anzeigerang eines Attributs innerhalb des Editors.
+   *
+   * @param attribute Attributdefinition
+   * @return Sortierrang
+   */
+  private int editorDisplayRank(MediaAttributeDefinition attribute) {
+    if (attribute == null) {
+      return Integer.MAX_VALUE;
+    }
+
+    if (attribute.isIdentify()) {
+      return 0;
+    }
+    if (attribute.isNecessary()) {
+      return 1;
+    }
+    if (attribute.isDesired()) {
+      return 2;
+    }
+
+    String mode = attribute.mode() == null ? "" : attribute.mode().trim().toLowerCase(java.util.Locale.ROOT);
+    if ("mandatory".equals(mode)) {
+      return 3;
+    }
+
+    return 4;
   }
 
   /**
@@ -604,6 +982,26 @@ public class BibliographyServiceImpl implements BibliographyService {
         yield "";
       }
     };
+  }
+
+  /**
+   * Normalisiert einen Suchtext für Vergleich und Filterung.
+   *
+   * @param text Eingabetext
+   * @return normalisierter Suchtext
+   */
+  private String normalizeSearchText(String text) {
+    return text == null ? "" : text.trim().toLowerCase(java.util.Locale.ROOT);
+  }
+
+  /**
+   * Normalisiert einen technischen Namen defensiv.
+   *
+   * @param value technischer Name
+   * @return normalisierte Form
+   */
+  private String normalizeTechnicalName(String value) {
+    return value == null ? "" : value.trim().toLowerCase(java.util.Locale.ROOT);
   }
 
   /**

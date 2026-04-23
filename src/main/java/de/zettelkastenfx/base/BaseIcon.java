@@ -26,6 +26,9 @@ public enum BaseIcon {
   DELETE_PACKAGE("delete_package", "Paket löschen"),
   EDIT_PACKAGE("edit_package", "Paket editieren"),
 
+  AUTHOR("author", "Autor"),
+  AUTHORS("authors", "Autoren"),
+
   BIBLIOGRAPHY("bibliography", "Bibliographie"),
 
   BOOK("book", "Bibliografie"),
@@ -44,6 +47,8 @@ public enum BaseIcon {
   BULLET_RED("bullet_red", "gesperrt"),
 
   CLEAR_FORMATTING("clear_formatting", "Formatierung löschen"),
+
+  COLUMN_MEDIA("table_media", "Medien"),
 
   CROSS("cross", "Schließen"),
 
@@ -182,11 +187,7 @@ public enum BaseIcon {
    * @return ToggleButton mit ImageView und Standard-Tooltip
    */
   public ToggleButton toggleButton() {
-    ToggleButton button = new ToggleButton();
-    button.getStyleClass().add("icon-button");
-    button.setGraphic(imageView());
-    button.setTooltip(new Tooltip(tooltip()));
-    return button;
+    return toggleButton(tooltip());
   }
 
   /**
@@ -200,7 +201,7 @@ public enum BaseIcon {
     ToggleButton button = new ToggleButton();
     button.getStyleClass().add("icon-button");
     button.setGraphic(imageView());
-    if (tooltip != null) {
+    if (tooltip != null && !tooltip.isBlank()) {
       button.setTooltip(new Tooltip(tooltip));
     }
     return button;

@@ -260,6 +260,16 @@ public class DynamicLookupCoordinator {
       return;
     }
 
+    if (isWebsiteIdentifyFallback(ownerMediaTypeBibName, bibtexName)) {
+      bindWebsiteIdentifyFallback(
+          fieldView,
+          ownerMediaTypeBibName,
+          bibtexName,
+          shellAccess
+      );
+      return;
+    }
+
     if (isRelatedDatatype) {
       bindRelatedField(
           fieldView,
@@ -268,6 +278,234 @@ public class DynamicLookupCoordinator {
           shellAccess
       );
     }
+  }
+
+  /**
+   * Prüft, ob für Website-Felder ein metadatenfreier Identify-Fallback
+   * aktiviert werden soll.
+   * Dies betrifft unter dem aktuellen Ausbau die beiden gekoppelten Felder
+   * {@code title} und {@code url}.
+   *
+   * @param ownerMediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer Feldname
+   * @return {@code true}, wenn ein Website-Identify-Fallback verwendet werden soll
+   */
+  private boolean isWebsiteIdentifyFallback(String ownerMediaTypeBibName, String bibtexName) {
+    String normalizedMediaType = normalize(ownerMediaTypeBibName);
+    String normalizedBibtexName = normalize(bibtexName);
+
+    if (!"website".equals(normalizedMediaType)) {
+      return false;
+    }
+
+    return "title".equals(normalizedBibtexName) || "url".equals(normalizedBibtexName);
+  }
+
+  /**
+   * Verdrahtet die beiden Website-Identify-Felder {@code title} und {@code url}
+   * auch dann als reaktive Identify-Felder, wenn für eines der beiden Felder
+   * noch keine explizite Lookup-Definition in den Metadaten hinterlegt ist.
+   *
+   * @param fieldView Feldansicht
+   * @param ownerMediaTypeBibName technischer Medientypname
+   * @param identifyBibtexName technischer Feldname ({@code title} oder {@code url})
+   * @param shellAccess Shell-Zugriff
+   */
+  private void bindWebsiteIdentifyFallback(BibliographyFieldView fieldView,
+                                           String ownerMediaTypeBibName,
+                                           String identifyBibtexName,
+                                           ShellAccess shellAccess) {
+    fieldView.getEditor().textProperty().addListener((obs, oldValue, newValue) -> {
+      if (shellAccess.isLookupSuppressed()) {
+        return;
+      }
+
+      if (shellAccess.wasAutoFilled(ownerMediaTypeBibName)) {
+        shellAccess.setAutoFillLocked(ownerMediaTypeBibName, true);
+        shellAccess.setAutoFilled(ownerMediaTypeBibName, false);
+      }
+
+      shellAccess.setSelectedEntryId(ownerMediaTypeBibName, null);
+      showWebsiteIdentifySuggestions(
+          fieldView,
+          ownerMediaTypeBibName,
+          identifyBibtexName,
+          shellAccess
+      );
+    });
+
+    fieldView.getEditor().focusedProperty().addListener((obs, oldValue, focused) -> {
+      if (!focused) {
+        handleWebsiteIdentifyCommit(
+            fieldView,
+            ownerMediaTypeBibName,
+            identifyBibtexName,
+            shellAccess
+        );
+      }
+    });
+
+    fieldView.getEditor().setOnKeyPressed(event -> {
+      switch (event.getCode()) {
+        case ENTER, TAB -> handleWebsiteIdentifyCommit(
+            fieldView,
+            ownerMediaTypeBibName,
+            identifyBibtexName,
+            shellAccess
+        );
+        case ESCAPE -> fieldView.hideSuggestions();
+        default -> {
+        }
+      }
+    });
+  }
+
+  /**
+   * Zeigt Vorschläge für das Website-Feld {@code title} oder {@code url}.
+   *
+   * @param fieldView Feldansicht
+   * @param ownerMediaTypeBibName technischer Medientypname
+   * @param identifyBibtexName aktives Identify-Feld
+   * @param shellAccess Shell-Zugriff
+   */
+  private void showWebsiteIdentifySuggestions(BibliographyFieldView fieldView,
+                                              String ownerMediaTypeBibName,
+                                              String identifyBibtexName,
+                                              ShellAccess shellAccess) {
+    if (fieldView == null || fieldView.getEditor() == null || !fieldView.getEditor().isFocused()) {
+      if (fieldView != null) {
+        fieldView.hideSuggestions();
+      }
+      return;
+    }
+
+    String query = fieldView.getText();
+    if (query == null || query.trim().length() < 1) {
+      fieldView.hideSuggestions();
+      return;
+    }
+
+    Map<String, String> stringFilters = collectIdentifyStringFilters(
+        ownerMediaTypeBibName,
+        identifyBibtexName,
+        shellAccess
+    );
+    Map<String, List<Author>> personFilters = collectIdentifyPersonFilters(
+        ownerMediaTypeBibName,
+        identifyBibtexName,
+        shellAccess
+    );
+
+    List<IdentifySuggestion> hits = bibliographyService.findIdentifySuggestions(
+        ownerMediaTypeBibName,
+        identifyBibtexName,
+        query,
+        stringFilters,
+        personFilters,
+        20
+    );
+
+    if (hits.isEmpty() || containsOnlyCurrentIdentifyValue(query, hits)) {
+      fieldView.hideSuggestions();
+      return;
+    }
+
+    List<CustomMenuItem> items = new ArrayList<>();
+    for (IdentifySuggestion hit : hits) {
+      Label option = new Label(hit.displayValue());
+      CustomMenuItem item = new CustomMenuItem(option, true);
+      item.setOnAction(e -> applyIdentifySuggestion(
+          fieldView,
+          ownerMediaTypeBibName,
+          hit,
+          shellAccess
+      ));
+      items.add(item);
+    }
+
+    fieldView.showSuggestions(items);
+  }
+
+  /**
+   * Commit-Logik für die Website-Identify-Felder {@code title} und {@code url}.
+   *
+   * @param fieldView Feldansicht
+   * @param ownerMediaTypeBibName technischer Medientypname
+   * @param identifyBibtexName aktives Identify-Feld
+   * @param shellAccess Shell-Zugriff
+   */
+  private void handleWebsiteIdentifyCommit(BibliographyFieldView fieldView,
+                                           String ownerMediaTypeBibName,
+                                           String identifyBibtexName,
+                                           ShellAccess shellAccess) {
+    if (fieldView == null) {
+      return;
+    }
+
+    fieldView.hideSuggestions();
+
+    if (shellAccess.isLookupSuppressed()) {
+      return;
+    }
+
+    String text = fieldView.getText();
+    if (text == null || text.isBlank()) {
+      shellAccess.setSelectedEntryId(ownerMediaTypeBibName, null);
+      return;
+    }
+
+    if (matchesCurrentSelectionExactly(
+        ownerMediaTypeBibName,
+        identifyBibtexName,
+        text,
+        shellAccess
+    )) {
+      return;
+    }
+
+    Map<String, String> stringFilters = collectIdentifyStringFilters(
+        ownerMediaTypeBibName,
+        identifyBibtexName,
+        shellAccess
+    );
+    Map<String, List<Author>> personFilters = collectIdentifyPersonFilters(
+        ownerMediaTypeBibName,
+        identifyBibtexName,
+        shellAccess
+    );
+
+    IdentifySuggestion exact = bibliographyService.resolveExactIdentify(
+        ownerMediaTypeBibName,
+        identifyBibtexName,
+        text,
+        stringFilters,
+        personFilters
+    );
+
+    if (exact != null && exact.entryId() != null && exact.entryId() > 0) {
+      applyIdentifySuggestion(fieldView, ownerMediaTypeBibName, exact, shellAccess);
+      return;
+    }
+
+    List<IdentifySuggestion> hits = bibliographyService.findIdentifySuggestions(
+        ownerMediaTypeBibName,
+        identifyBibtexName,
+        text,
+        stringFilters,
+        personFilters,
+        2
+    );
+
+    if (hits.size() == 1) {
+      applyIdentifySuggestion(fieldView, ownerMediaTypeBibName, hits.getFirst(), shellAccess);
+      return;
+    }
+
+    tryAutoResolveIdentifyCombinationForField(
+        ownerMediaTypeBibName,
+        identifyBibtexName,
+        shellAccess
+    );
   }
 
   /**
@@ -303,18 +541,28 @@ public class DynamicLookupCoordinator {
       }
     });
 
-    fieldView.getEditor().setOnKeyPressed(event -> {
-      switch (event.getCode()) {
-        case ENTER, TAB -> handleRelatedCommit(
-            fieldView,
+    fieldView.getEditor().textProperty().addListener((obs, oldValue, newValue) -> {
+      if (shellAccess.isLookupSuppressed()) {
+        return;
+      }
+
+      String normalizedText = newValue == null ? "" : newValue;
+
+      /*
+       * Die bestehende Related-ID bleibt erhalten, solange der Nutzer den
+       * Feldinhalt nicht wirklich leert. Dadurch gehen unveränderte oder nur
+       * programmgesteuert gesetzte Related-Felder nicht verloren.
+       */
+      if (normalizedText.isBlank()) {
+        shellAccess.setCurrentRelatedEntry(
             ownerMediaTypeBibName,
             relatedBibtexName,
-            shellAccess
+            null,
+            ""
         );
-        case ESCAPE -> fieldView.hideSuggestions();
-        default -> {
-        }
       }
+
+      showRelatedSuggestions(fieldView, ownerMediaTypeBibName, relatedBibtexName, shellAccess);
     });
   }
 
@@ -571,12 +819,22 @@ public class DynamicLookupCoordinator {
     }
 
     String text = fieldView.getText();
+    String identifyBibtexName = normalize(lookupDefinition.fieldDefinition().bibtexName());
+
     if (text.isBlank()) {
       shellAccess.setSelectedEntryId(ownerMediaTypeBibName, null);
       return;
     }
 
-    String identifyBibtexName = normalize(lookupDefinition.fieldDefinition().bibtexName());
+    if (matchesCurrentSelectionExactly(
+        ownerMediaTypeBibName,
+        identifyBibtexName,
+        text,
+        shellAccess
+    )) {
+      return;
+    }
+
     Map<String, String> stringFilters = collectIdentifyStringFilters(
         ownerMediaTypeBibName,
         identifyBibtexName,
@@ -613,8 +871,132 @@ public class DynamicLookupCoordinator {
 
       if (hits.size() == 1) {
         applyIdentifySuggestion(fieldView, ownerMediaTypeBibName, hits.getFirst(), shellAccess);
+        return;
       }
     }
+
+    tryAutoResolveIdentifyCombination(
+        ownerMediaTypeBibName,
+        lookupDefinition,
+        shellAccess
+    );
+  }
+
+  /**
+   * Prüft, ob die aktuell bereits gefüllten Identify-Felder eines Medientyps
+   * zusammen genau einen bestehenden Eintrag bestimmen. Ist dies der Fall,
+   * wird der Eintrag vollständig in das Formular übernommen.
+   *
+   * @param ownerMediaTypeBibName technischer Medientypname des Formulars
+   * @param lookupDefinition Lookup-Metadaten des aktuell bearbeiteten Feldes
+   * @param shellAccess Shell-Zugriff
+   */
+  private void tryAutoResolveIdentifyCombination(String ownerMediaTypeBibName,
+                                                 MediaAttributeLookupDefinition lookupDefinition,
+                                                 ShellAccess shellAccess) {
+    if (lookupDefinition == null || lookupDefinition.fieldDefinition() == null) {
+      return;
+    }
+
+    tryAutoResolveIdentifyCombinationForField(
+        ownerMediaTypeBibName,
+        lookupDefinition.fieldDefinition().bibtexName(),
+        shellAccess
+    );
+  }
+
+  /**
+   * Prüft feldunabhängig, ob die aktuell gefüllten Identify-Felder zusammen
+   * genau einen bestehenden Eintrag bestimmen.
+   *
+   * @param ownerMediaTypeBibName technischer Medientypname
+   * @param activeIdentifyBibtexName aktives Identify-Feld
+   * @param shellAccess Shell-Zugriff
+   */
+  private void tryAutoResolveIdentifyCombinationForField(String ownerMediaTypeBibName,
+                                                         String activeIdentifyBibtexName,
+                                                         ShellAccess shellAccess) {
+    if (shellAccess == null) {
+      return;
+    }
+
+    String normalizedBibtexName = normalize(activeIdentifyBibtexName);
+    if (normalizedBibtexName.isBlank()) {
+      return;
+    }
+
+    String activeValue = shellAccess.getCurrentFieldValue(ownerMediaTypeBibName, normalizedBibtexName);
+    if (normalize(activeValue).isBlank()) {
+      return;
+    }
+
+    Map<String, String> stringFilters = collectIdentifyStringFilters(
+        ownerMediaTypeBibName,
+        normalizedBibtexName,
+        shellAccess
+    );
+    Map<String, List<Author>> personFilters = collectIdentifyPersonFilters(
+        ownerMediaTypeBibName,
+        normalizedBibtexName,
+        shellAccess
+    );
+
+    List<IdentifySuggestion> hits = bibliographyService.findIdentifySuggestions(
+        ownerMediaTypeBibName,
+        normalizedBibtexName,
+        activeValue,
+        stringFilters,
+        personFilters,
+        2
+    );
+
+    if (hits.size() == 1) {
+      IdentifySuggestion hit = hits.getFirst();
+      if (hit != null && hit.entryId() != null && hit.entryId() > 0) {
+        Integer currentSelectedEntryId = shellAccess.getSelectedEntryId(ownerMediaTypeBibName);
+        if (Objects.equals(currentSelectedEntryId, hit.entryId())) {
+          return;
+        }
+        shellAccess.applyResolvedEntry(ownerMediaTypeBibName, hit.entryId(), true);
+      }
+    }
+  }
+
+  /**
+   * Prüft, ob der aktuell selektierte Eintrag bereits exakt zur aktuellen
+   * Identify-Eingabe des aktiven Feldes passt.
+   *
+   * @param ownerMediaTypeBibName technischer Medientypname
+   * @param identifyBibtexName aktives Identify-Feld
+   * @param currentText aktueller Feldtext
+   * @param shellAccess Shell-Zugriff
+   * @return {@code true}, wenn die aktuelle Selektion bereits exakt passt
+   */
+  private boolean matchesCurrentSelectionExactly(String ownerMediaTypeBibName,
+                                                 String identifyBibtexName,
+                                                 String currentText,
+                                                 ShellAccess shellAccess) {
+    if (shellAccess == null) {
+      return false;
+    }
+
+    Integer selectedEntryId = shellAccess.getSelectedEntryId(ownerMediaTypeBibName);
+    if (selectedEntryId == null || selectedEntryId <= 0) {
+      return false;
+    }
+
+    DynamicBibliographyEntry entry = bibliographyService.loadEntry(selectedEntryId).orElse(null);
+    if (entry == null) {
+      return false;
+    }
+
+    BibValue value = entry.findValue(identifyBibtexName).orElse(null);
+    if (value == null) {
+      return false;
+    }
+
+    String displayValue = extractDisplayValue(value);
+    return normalize(displayValue).equalsIgnoreCase(normalize(currentText));
   }
 
   /**
@@ -836,6 +1218,22 @@ public class DynamicLookupCoordinator {
     fieldView.hideSuggestions();
   }
 
+  /**
+   * Löst die Felddefinition eines technischen BibTeX-Feldes direkt über die
+   * Metadaten auf.
+   *
+   * @param relatedBibtexName technischer Feldname
+   * @return optionale Felddefinition
+   */
+  private Optional<BibtexFieldDefinition> resolveBibtexFieldDefinition(String relatedBibtexName) {
+    String normalizedRelated = normalize(relatedBibtexName);
+    if (normalizedRelated.isBlank()) {
+      return Optional.empty();
+    }
+
+    return bibliographyService.loadBibtexTypeByBibName(normalizedRelated);
+  }
+
   private RelatedLookupContext resolveRelatedLookupContext(String ownerMediaTypeBibName,
                                                            String relatedBibtexName) {
     String normalizedOwner = normalize(ownerMediaTypeBibName);
@@ -877,14 +1275,14 @@ public class DynamicLookupCoordinator {
 
   private Optional<RelatedMediaDefinition> resolveRelatedDefinition(String ownerMediaTypeBibName,
                                                                     String relatedBibtexName) {
-    Optional<MediaAttributeLookupDefinition> lookupDefinition =
-        bibliographyService.loadLookupDefinition(ownerMediaTypeBibName, relatedBibtexName);
+    Optional<BibtexFieldDefinition> fieldDefinition =
+        resolveBibtexFieldDefinition(relatedBibtexName);
 
-    if (lookupDefinition.isEmpty()) {
+    if (fieldDefinition.isEmpty()) {
       return Optional.empty();
     }
 
-    return bibliographyService.loadRelatedDefinition(lookupDefinition.get().bibtexTypeId());
+    return bibliographyService.loadRelatedDefinition(fieldDefinition.get().id());
   }
 
   private List<RelatedSuggestion> searchRelatedSuggestions(RelatedLookupContext context, String query) {

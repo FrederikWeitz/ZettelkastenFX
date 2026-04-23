@@ -22,6 +22,9 @@ import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
 import javafx.scene.control.*;
+import javafx.scene.control.Button;
+import javafx.scene.control.Label;
+import javafx.scene.control.TextField;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseButton;
@@ -31,7 +34,12 @@ import javafx.stage.Popup;
 import javafx.stage.Stage;
 import org.fxmisc.richtext.InlineCssTextArea;
 
+import java.awt.*;
+import java.net.URI;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.*;
+import java.util.List;
 
 public class ZettelWindowController {
 
@@ -165,19 +173,19 @@ public class ZettelWindowController {
     wireGlobalBodyDeactivateHandlers(editor);
 
     // Toolbar: neue Seiten
-    view.getToolButtonPageAdd().setOnAction(event -> createNewEmptyNote());
-    view.getToolButtonPageCopy().setOnAction(event -> createCopyOfCurrentNote());
-    view.getToolButtonPageWithBibliography().setOnAction(event -> createCopyBibliography());
-    view.getToolButtonLinkEdit().setOnAction(event -> toggleLinkEditPopup());
-    view.getToolButtonToggleServiceArea().setOnAction(event -> toggleServiceArea());
-    view.getToolButtonBibliography().setOnAction(event -> openMediaManagementDialog());
+    view.getToolButtonPageAdd().setOnAction(_ -> createNewEmptyNote());
+    view.getToolButtonPageCopy().setOnAction(_ -> createCopyOfCurrentNote());
+    view.getToolButtonPageWithBibliography().setOnAction(_ -> createCopyBibliography());
+    view.getToolButtonLinkEdit().setOnAction(_ -> toggleLinkEditPopup());
+    view.getToolButtonToggleServiceArea().setOnAction(_ -> toggleServiceArea());
+    view.getToolButtonBibliography().setOnAction(_ -> openMediaManagementDialog());
 
     // Toolbar: Service-Fenster
-    view.getServiceAreaMagnifyLinkButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.MAGNIFY_LINK));
-    view.getServiceAreaKeyButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.KEY));
-    view.getServiceAreaBookButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.BOOK));
-    view.getServiceAreaListButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.LIST));
-    view.getServiceAreaClusterButton().setOnAction(event -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.PERFORMANCE_ANALYSIS));
+    view.getServiceAreaMagnifyLinkButton().setOnAction(_ -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.MAGNIFY_LINK));
+    view.getServiceAreaKeyButton().setOnAction(_ -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.KEY));
+    view.getServiceAreaBookButton().setOnAction(_ -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.BOOK));
+    view.getServiceAreaListButton().setOnAction(_ -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.LIST));
+    view.getServiceAreaClusterButton().setOnAction(_ -> handleServiceAreaModeToggle(ZettelWindowView.ServiceAreaMode.PERFORMANCE_ANALYSIS));
 
     // Verdrahtet Service-Fenster-Inhalte
     wireMagnifyLinkEvents();
@@ -1606,7 +1614,7 @@ public class ZettelWindowController {
    * Zuerst wird der aktuelle Zettel gespeichert. Anschließend wird am
    * aktuellen Zettel sofort ein Verweis auf die neue Ziel-ID angelegt.
    * Danach wird der neue Zielzettel als leerer Entwurf geöffnet.
-   *
+   * <p>
    * Bleibt dieser Zielzettel beim Verlassen ungültig und ist er zugleich
    * der letzte Zettel, wird der Verweis wieder entfernt.
    *
@@ -1924,6 +1932,8 @@ public class ZettelWindowController {
         }
     );
 
+    bundle.shell().configureForNoteLinkingContext();
+    bundle.shell().setOnCloseEditor(this::renderBibliographyHost);
     return bundle.shell();
   }
 
@@ -1949,6 +1959,27 @@ public class ZettelWindowController {
     alert.setHeaderText(header);
     alert.setContentText(content);
     alert.showAndWait();
+  }
+
+  /**
+   * Zeigt einen Hinweis an, dass unter dem Zettel für den gewählten Medientyp
+   * kein neuer Eintrag angelegt werden darf.
+   *
+   * @param typeLabel Anzeigename des Medientyps
+   */
+  private void showUnderNoteSelectionOnlyWarning(String typeLabel) {
+    String effectiveTypeLabel = safeTrim(typeLabel);
+    if (effectiveTypeLabel.isBlank()) {
+      effectiveTypeLabel = "Dieser Medientyp";
+    }
+
+    showBibliographyWarning(
+        effectiveTypeLabel,
+        effectiveTypeLabel
+            + " kann unter dem Zettel nicht als neuer Eintrag angelegt werden.\n\n"
+            + "Bitte wähle hier einen bereits vorhandenen Eintrag aus.\n"
+            + "Neue Einträge sind in diesem Bereich derzeit nur für Internet- und KI-Texte erlaubt."
+    );
   }
 
   private boolean confirmMissingRequiredFields(String typeLabel, String missingText) {
@@ -2095,16 +2126,37 @@ public class ZettelWindowController {
     return currentNoteExistsInDatabase();
   }
 
+  /**
+   * Erzeugt den roten Bibliographie-Button im Vorschauzustand unter dem Zettel.
+   * Der Button erscheint nur als Grafik, mit transparentem Hintergrund und ohne Rand.
+   *
+   * @return konfigurierte Schaltfläche zum Öffnen des Editors
+   */
+  private Button createCompactBibliographyOpenButton() {
+    Button button = new Button();
+    button.setGraphic(BaseIcon.BULLET_RED.imageView());
+    button.setTooltip(new Tooltip("Bibliographische Angabe bearbeiten"));
+    button.setFocusTraversable(false);
+    button.setContentDisplay(ContentDisplay.GRAPHIC_ONLY);
+    button.setMinWidth(18);
+    button.setPrefWidth(18);
+    button.setMaxWidth(18);
+    button.setMinHeight(18);
+    button.setPrefHeight(18);
+    button.setMaxHeight(18);
+    button.setStyle("-fx-background-color: transparent; -fx-padding: 0; -fx-border-color: transparent;");
+    button.setOnAction(e -> showBibliographyEditor());
+    return button;
+  }
+
   private void showCreateBibliographyButton() {
     var host = view.getNoteEditorPane().getBibliographyHost();
     host.getChildren().clear();
 
-    var btnCreate = new Button("Bibliographische Angabe erstellen");
-    btnCreate.getStyleClass().add("biblio-create-button");
-    btnCreate.setOnAction(e -> showBibliographyEditor());
+    Button btnCreate = createCompactBibliographyOpenButton();
 
-    var row = new HBox(btnCreate);
-    row.setAlignment(javafx.geometry.Pos.CENTER);
+    HBox row = new HBox(btnCreate);
+    row.setAlignment(Pos.CENTER_LEFT);
     row.setMaxWidth(Double.MAX_VALUE);
     host.getChildren().add(row);
   }
@@ -2113,14 +2165,427 @@ public class ZettelWindowController {
     var host = view.getNoteEditorPane().getBibliographyHost();
     host.getChildren().clear();
 
-    var btnOpen = new Button("Bibliographische Angabe öffnen");
-    btnOpen.getStyleClass().add("biblio-create-button");
-    btnOpen.setOnAction(e -> showBibliographyEditor());
+    Button btnOpen = createCompactBibliographyOpenButton();
 
-    var row = new HBox(btnOpen);
-    row.setAlignment(javafx.geometry.Pos.CENTER);
+    HBox row = new HBox(btnOpen);
+    row.setAlignment(Pos.CENTER_LEFT);
     row.setMaxWidth(Double.MAX_VALUE);
     host.getChildren().add(row);
+  }
+
+  /**
+   * Rendert eine kompakte Anzeige der aktuell verknüpften bibliographischen
+   * Angabe unterhalb des Zettels.
+   * Die Vorschau zeigt einen roten Bearbeiten-Button direkt vor dem Text und
+   * verwendet im Lesemodus einen dezenten grauen Hintergrund.
+   *
+   * @param entry geladener bibliographischer Eintrag
+   */
+  private void showCompactBibliographyPreview(DynamicBibliographyEntry entry) {
+    var host = view.getNoteEditorPane().getBibliographyHost();
+    host.getChildren().clear();
+
+    if (isWebsiteEntry(entry)) {
+      host.getChildren().add(buildWebsitePreviewRow(entry));
+      return;
+    }
+
+    if (isAiTextEntry(entry)) {
+      host.getChildren().add(buildAiTextPreviewRow(entry));
+      return;
+    }
+
+    HBox row = new HBox(8);
+    row.setAlignment(Pos.CENTER_LEFT);
+    row.setMaxWidth(Double.MAX_VALUE);
+    row.setStyle("-fx-background-color: #D3D3D3; -fx-padding: 6 8 6 8;");
+
+    Button openButton = createCompactBibliographyOpenButton();
+
+    String previewText = buildBibliographyPreviewText(entry);
+    Label previewLabel = new Label(previewText);
+    previewLabel.getStyleClass().add("biblio-preview-text");
+    previewLabel.setWrapText(true);
+    previewLabel.setMaxWidth(Double.MAX_VALUE);
+    HBox.setHgrow(previewLabel, Priority.ALWAYS);
+
+    row.getChildren().addAll(openButton, previewLabel);
+    host.getChildren().add(row);
+  }
+
+  /**
+   * Prüft, ob es sich beim Eintrag um einen Internet-/Website-Eintrag handelt.
+   *
+   * @param entry bibliographischer Eintrag
+   * @return {@code true}, wenn der Eintrag ein Website-Eintrag ist
+   */
+  private boolean isWebsiteEntry(DynamicBibliographyEntry entry) {
+    if (entry == null) {
+      return false;
+    }
+
+    String mediaTypeBibName = safeTrim(entry.getMediaTypeBibName()).toLowerCase(Locale.ROOT);
+    return "website".equals(mediaTypeBibName);
+  }
+
+  /**
+   * Prüft, ob es sich beim Eintrag um einen KI-Text-Eintrag handelt.
+   *
+   * @param entry bibliographischer Eintrag
+   * @return {@code true}, wenn der Eintrag ein KI-Text-Eintrag ist
+   */
+  private boolean isAiTextEntry(DynamicBibliographyEntry entry) {
+    if (entry == null) {
+      return false;
+    }
+
+    String mediaTypeBibName = safeTrim(entry.getMediaTypeBibName()).toLowerCase(Locale.ROOT);
+    return "aitext".equals(mediaTypeBibName);
+  }
+
+  /**
+   * Baut die kompakte Vorschauzeile für einen Website-Eintrag unter dem Zettel.
+   * Angezeigt werden roter Bearbeiten-Button, Titel oder URL sowie rechts ein
+   * Browser-Button.
+   *
+   * @param entry Website-Eintrag
+   * @return UI-Zeile für die Vorschau
+   */
+  private HBox buildWebsitePreviewRow(DynamicBibliographyEntry entry) {
+    HBox row = new HBox(8);
+    row.setAlignment(Pos.CENTER_LEFT);
+    row.setMaxWidth(Double.MAX_VALUE);
+    row.setStyle("-fx-background-color: #D3D3D3; -fx-padding: 6 8 6 8;");
+
+    Button openButton = createCompactBibliographyOpenButton();
+
+    String title = resolvePreviewTitle(entry);
+    String url = resolveWebsiteUrl(entry);
+    String displayText = !title.isBlank() ? title : url;
+
+    Label previewLabel = new Label(displayText);
+    previewLabel.getStyleClass().add("biblio-preview-text");
+    previewLabel.setWrapText(false);
+    previewLabel.setTextOverrun(OverrunStyle.ELLIPSIS);
+    previewLabel.setMaxWidth(Double.MAX_VALUE);
+    HBox.setHgrow(previewLabel, Priority.ALWAYS);
+
+    Button browserButton = BaseIcon.WWW_PAGE.button("Website öffnen");
+    browserButton.setFocusTraversable(false);
+    browserButton.setDisable(url.isBlank());
+    browserButton.setOnAction(e -> openWebsiteInBrowser(url));
+
+    row.getChildren().addAll(openButton, previewLabel, browserButton);
+    return row;
+  }
+
+  /**
+   * Baut die kompakte Vorschauzeile für einen KI-Text-Eintrag unter dem Zettel.
+   * Angezeigt werden roter Bearbeiten-Button sowie zwei kurze Zeilen:
+   * oben der Titel, unten Anbieter / Modell / Datum.
+   *
+   * @param entry KI-Text-Eintrag
+   * @return UI-Zeile für die Vorschau
+   */
+  private HBox buildAiTextPreviewRow(DynamicBibliographyEntry entry) {
+    HBox row = new HBox(8);
+    row.setAlignment(Pos.TOP_LEFT);
+    row.setMaxWidth(Double.MAX_VALUE);
+    row.setStyle("-fx-background-color: #D3D3D3; -fx-padding: 6 8 6 8;");
+
+    Button openButton = createCompactBibliographyOpenButton();
+
+    VBox textBox = new VBox(2);
+    textBox.setAlignment(Pos.CENTER_LEFT);
+    textBox.setMaxWidth(Double.MAX_VALUE);
+    HBox.setHgrow(textBox, Priority.ALWAYS);
+
+    Label titleLabel = new Label(resolveBibliographyShell().buildAiPreviewTitle(entry));
+    titleLabel.getStyleClass().add("biblio-preview-text");
+    titleLabel.setWrapText(false);
+    titleLabel.setTextOverrun(OverrunStyle.ELLIPSIS);
+    titleLabel.setMaxWidth(Double.MAX_VALUE);
+
+    Label metaLabel = new Label(resolveBibliographyShell().buildAiPreviewMeta(entry));
+    metaLabel.getStyleClass().add("biblio-preview-text");
+    metaLabel.setWrapText(false);
+    metaLabel.setTextOverrun(OverrunStyle.ELLIPSIS);
+    metaLabel.setMaxWidth(Double.MAX_VALUE);
+
+    textBox.getChildren().addAll(titleLabel, metaLabel);
+    row.getChildren().addAll(openButton, textBox);
+    return row;
+  }
+
+  /**
+   * Liefert eine temporäre Bibliographie-Shell als Träger der
+   * bibliographischen Vorschau- und Datumslogik.
+   *
+   * @return konfigurierte Bibliographie-Shell
+   */
+  private BibliographyEditorShell resolveBibliographyShell() {
+    BibliographyEditorShell shell = new BibliographyEditorShell();
+    shell.setBibliographyService(bibliographyService);
+    return shell;
+  }
+
+  /**
+   * Ermittelt die URL eines Website-Eintrags.
+   *
+   * @param entry bibliographischer Eintrag
+   * @return URL oder leerer String
+   */
+  private String resolveWebsiteUrl(DynamicBibliographyEntry entry) {
+    if (entry == null) {
+      return "";
+    }
+
+    return entry.findValue("url")
+               .filter(StringBibValue.class::isInstance)
+               .map(StringBibValue.class::cast)
+               .map(StringBibValue::value)
+               .map(this::safeTrim)
+               .filter(text -> !text.isBlank())
+               .orElse("");
+  }
+
+  /**
+   * Öffnet eine URL im Systembrowser.
+   *
+   * @param url zu öffnende URL
+   */
+  private void openWebsiteInBrowser(String url) {
+    String normalizedUrl = safeTrim(url);
+    if (normalizedUrl.isBlank()) {
+      return;
+    }
+
+    try {
+      if (!Desktop.isDesktopSupported() || !Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+        showBibliographyWarning(
+            "Browser nicht verfügbar",
+            "Die URL kann auf diesem System nicht direkt im Browser geöffnet werden."
+        );
+        return;
+      }
+
+      Desktop.getDesktop().browse(URI.create(normalizedUrl));
+    } catch (Exception ex) {
+      showBibliographyError(
+          "URL konnte nicht geöffnet werden",
+          "Die Website konnte nicht im Browser geöffnet werden:\n\n" + normalizedUrl
+      );
+    }
+  }
+
+  /**
+   * Erzeugt den kompakten Vorschautext für die bibliographische Anzeige unter
+   * dem Zettel.
+   * Bevorzugt wird die erste Person des wichtigsten Personenfeldes sowie der
+   * Titel. Fehlt beides oder ist der Datensatz unvollständig, wird defensiv auf
+   * den Referenztext zurückgegriffen.
+   *
+   * @param entry bibliographischer Eintrag
+   * @return kompakter Vorschautext
+   */
+  private String buildBibliographyPreviewText(DynamicBibliographyEntry entry) {
+    if (entry == null) {
+      return "";
+    }
+
+    String personText = resolvePreviewPerson(entry);
+    String titleText = resolvePreviewTitle(entry);
+
+    if (!personText.isBlank() && !titleText.isBlank()) {
+      return personText + ": " + titleText;
+    }
+    if (!titleText.isBlank()) {
+      return titleText;
+    }
+    if (!personText.isBlank()) {
+      return personText;
+    }
+
+    if (entry.getId() != null && entry.getId() > 0) {
+      return bibliographyService.loadReference(entry.getId())
+                 .map(BibliographyReference::displayText)
+                 .map(this::safeTrim)
+                 .filter(text -> !text.isBlank())
+                 .orElse("Bibliographische Angabe #" + entry.getId());
+    }
+
+    return "Bibliographische Angabe";
+  }
+
+  /**
+   * Ermittelt den Titel für die kompakte Vorschau.
+   *
+   * @param entry bibliographischer Eintrag
+   * @return Titel oder leerer String
+   */
+  private String resolvePreviewTitle(DynamicBibliographyEntry entry) {
+    if (entry == null) {
+      return "";
+    }
+
+    return entry.findValue("title")
+               .filter(StringBibValue.class::isInstance)
+               .map(StringBibValue.class::cast)
+               .map(StringBibValue::value)
+               .map(this::safeTrim)
+               .filter(text -> !text.isBlank())
+               .orElse("");
+  }
+
+  /**
+   * Ermittelt die erste Person des wichtigsten Personenfeldes für die kompakte
+   * Vorschau unter dem Zettel.
+   * Vorrang hat ein Personenfeld mit {@code identify}, danach eines mit
+   * {@code necessary}. Bei Gleichstand gewinnt die kleinere BibTeX-Feld-ID.
+   *
+   * @param entry bibliographischer Eintrag
+   * @return formatierte Person oder leerer String
+   */
+  private String resolvePreviewPerson(DynamicBibliographyEntry entry) {
+    if (entry == null || entry.getMediaTypeId() == null || entry.getMediaTypeId() <= 0) {
+      return "";
+    }
+
+    MediaAttributeDefinition personAttribute = bibliographyService
+                                                   .listAttributesForMediaType(entry.getMediaTypeId())
+                                                   .stream()
+                                                   .filter(attribute -> attribute != null && attribute.fieldDefinition() != null)
+                                                   .filter(attribute -> isPersonDatatype(attribute.fieldDefinition().datatype()))
+                                                   .filter(attribute -> attribute.isIdentify() || attribute.isNecessary())
+                                                   .sorted(
+                                                       Comparator
+                                                           .comparingInt(this::personPreviewPriority)
+                                                           .thenComparingInt(attribute -> attribute.fieldDefinition().id())
+                                                   )
+                                                   .findFirst()
+                                                   .orElse(null);
+
+    if (personAttribute == null) {
+      return "";
+    }
+
+    String bibtexName = safeTrim(personAttribute.fieldDefinition().bibtexName());
+    if (bibtexName.isBlank()) {
+      return "";
+    }
+
+    return entry.findValue(bibtexName)
+               .filter(PersonBibValue.class::isInstance)
+               .map(PersonBibValue.class::cast)
+               .map(PersonBibValue::value)
+               .filter(persons -> persons != null && !persons.isEmpty())
+               .map(persons -> persons.getFirst())
+               .map(this::formatPreviewPerson)
+               .orElse("");
+  }
+
+  /**
+   * Liefert die Sortierpriorität eines Personenfeldes für die kompakte
+   * Bibliographie-Vorschau.
+   *
+   * @param attribute Attributdefinition
+   * @return Sortierpriorität
+   */
+  private int personPreviewPriority(MediaAttributeDefinition attribute) {
+    if (attribute == null) {
+      return Integer.MAX_VALUE;
+    }
+    if (attribute.isIdentify()) {
+      return 0;
+    }
+    if (attribute.isNecessary()) {
+      return 1;
+    }
+    return Integer.MAX_VALUE;
+  }
+
+  /**
+   * Prüft, ob ein Metadaten-Datentyp als Personenfeld behandelt wird.
+   *
+   * @param datatype Metadaten-Datentyp
+   * @return {@code true}, wenn es sich um ein Personenfeld handelt
+   */
+  private boolean isPersonDatatype(String datatype) {
+    return "person".equalsIgnoreCase(safeTrim(datatype));
+  }
+
+  /**
+   * Formatiert eine Person für die kompakte Vorschau in der Form
+   * "Nachname, Vorname".
+   *
+   * @param person Personenreferenz
+   * @return formatierter Name oder leerer String
+   */
+  private String formatPreviewPerson(PersonRef person) {
+    if (person == null) {
+      return "";
+    }
+
+    String lastName = safeTrim(person.lastName());
+    String firstName = safeTrim(person.firstName());
+
+    if (lastName.isBlank() && firstName.isBlank()) {
+      return "";
+    }
+    if (lastName.isBlank()) {
+      return firstName;
+    }
+    if (firstName.isBlank()) {
+      return lastName;
+    }
+
+    return lastName + ", " + firstName;
+  }
+
+  /**
+   * Trimmt einen Text defensiv.
+   *
+   * @param value Eingabetext
+   * @return getrimmter Text oder leerer String
+   */
+  private String safeTrim(String value) {
+    return value == null ? "" : value.trim();
+  }
+
+  /**
+   * Prüft, ob unter dem Zettel für einen Medientyp überhaupt ein neuer
+   * bibliographischer Eintrag angelegt werden darf.
+   * Im aktuellen Ausbau ist dies nur für Internet- und KI-Einträge erlaubt.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return {@code true}, wenn neue Einträge erlaubt sind
+   */
+  private boolean isCreatableUnderNote(String mediaTypeBibName) {
+    String normalized = safeTrim(mediaTypeBibName).toLowerCase(Locale.ROOT);
+    return "website".equals(normalized) || "aitext".equals(normalized);
+  }
+
+  /**
+   * Prüft, ob die Shell aktuell bereits auf einen bestehenden
+   * bibliographischen Eintrag zeigt.
+   * Dafür werden sowohl die aktuelle Selektion als auch die Ursprungs-ID des
+   * geladenen Formulars berücksichtigt.
+   *
+   * @param shell Bibliographie-Shell
+   * @return {@code true}, wenn ein bestehender Eintrag referenziert wird
+   */
+  private boolean pointsToExistingBibliographyEntry(BibliographyEditorShell shell) {
+    if (shell == null) {
+      return false;
+    }
+
+    Integer selectedEntryId = shell.getCurrentSelectedEntryId();
+    if (selectedEntryId != null && selectedEntryId > 0) {
+      return true;
+    }
+
+    Integer sourceEntryId = shell.getCurrentSourceEntryId();
+    return sourceEntryId != null && sourceEntryId > 0;
   }
 
   private DynamicBibliographyEntry resolveCurrentDynamicBibliographyEntry() {
@@ -2133,6 +2598,8 @@ public class ZettelWindowController {
 
   /**
    * Rendert den Bibliographiebereich des aktuellen Zettels neu.
+   * Unter dem Zettel wird zunächst nur eine kompakte Vorschau angezeigt.
+   * Die eigentliche Bearbeitung erfolgt erst nach bewusstem Öffnen des Editors.
    */
   private void renderBibliographyHost() {
     boolean visible = view.getBottomToolbar().bookToggle().isSelected();
@@ -2156,9 +2623,7 @@ public class ZettelWindowController {
       return;
     }
 
-    var shell = createBibliographyShell();
-    shell.showDynamicEntry(entry, false);
-    showBibliographyShell(shell);
+    showCompactBibliographyPreview(entry);
   }
 
   /**
@@ -2503,6 +2968,15 @@ public class ZettelWindowController {
           dynamicEntry.setId(duplicates.getFirst().getId());
         }
       }
+    }
+
+    String mediaTypeBibName = safeTrim(dynamicEntry.getMediaTypeBibName());
+    boolean creatableUnderNote = isCreatableUnderNote(mediaTypeBibName);
+    boolean pointsToExistingEntry = pointsToExistingBibliographyEntry(shell);
+
+    if (!creatableUnderNote && !pointsToExistingEntry) {
+      showUnderNoteSelectionOnlyWarning(dynamicEntry.getMediaTypeName());
+      return;
     }
 
     int entryId = bibliographyService.saveEntry(dynamicEntry);

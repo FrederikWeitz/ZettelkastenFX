@@ -58,6 +58,14 @@ public interface BibliographyService {
   List<MediaTypeDefinition> listDirectAssignableMediaTypes();
 
   /**
+   * Lädt einen Medientyp anhand seines technischen Namens.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return optionale Medientypdefinition
+   */
+  Optional<MediaTypeDefinition> loadMediaTypeByBibName(String mediaTypeBibName);
+
+  /**
    * Liefert alle Attributdefinitionen eines Medientyps.
    *
    * @param mediaTypeId Datenbank-ID des Medientyps
@@ -66,12 +74,82 @@ public interface BibliographyService {
   List<MediaAttributeDefinition> listAttributesForMediaType(int mediaTypeId);
 
   /**
+   * Liefert alle Attributdefinitionen eines Medientyps anhand seines
+   * technischen Namens.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return Attributdefinitionen des Medientyps
+   */
+  List<MediaAttributeDefinition> listAttributesForMediaType(String mediaTypeBibName);
+
+  /**
+   * Lädt eine Attributdefinition eines Medientyps anhand technischer Namen.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer Feldname
+   * @return optionale Attributdefinition
+   */
+  Optional<MediaAttributeDefinition> loadAttributeDefinition(String mediaTypeBibName, String bibtexName);
+
+  /**
+   * Erzeugt eine synthetische Attributdefinition für ein zusätzlich in der
+   * Shell ergänztes BibTeX-Feld.
+   * Diese Definition dient ausschließlich dazu, Lookup- und Related-Logik
+   * an dieselben Metadatenpfade zu binden wie reguläre Formularfelder.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param fieldDefinition Felddefinition des Zusatzfeldes
+   * @return optionale synthetische Attributdefinition
+   */
+  Optional<MediaAttributeDefinition> createSyntheticAdditionalAttribute(String mediaTypeBibName,
+                                                                        BibtexFieldDefinition fieldDefinition);
+
+  /**
    * Liefert nur die Identifikationsattribute eines Medientyps.
    *
    * @param mediaTypeId Datenbank-ID des Medientyps
    * @return Identifikationsattribute des Medientyps
    */
   List<MediaAttributeDefinition> listIdentifyAttributesForMediaType(int mediaTypeId);
+
+  /**
+   * Liefert alle Attribute eines Medientyps, die lokal für die Validierung
+   * eines Speichervorgangs relevant sind.
+   * Berücksichtigt werden alle Felder mit {@code identify} oder
+   * {@code necessary}.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return für die lokale Validierung relevante Attribute
+   */
+  List<MediaAttributeDefinition> listRequiredAttributesForMediaType(String mediaTypeBibName);
+
+  /**
+   * Prüft einen lokalen Editorzustand auf Erfüllung aller fachlich
+   * erforderlichen Pflichtattribute eines Medientyps.
+   * Berücksichtigt werden alle Felder mit {@code identify} oder
+   * {@code necessary}.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param fieldValues aktuelle Feldwerte nach technischem BibTeX-Namen
+   * @param personFieldNames technische Feldnamen belegter Personenfelder
+   * @param relatedFieldNames technische Feldnamen belegter Related-Felder
+   * @return {@code true}, wenn alle Pflichtattribute lokal erfüllt sind
+   */
+  boolean isLocallyValidForSave(String mediaTypeBibName,
+                                java.util.Map<String, String> fieldValues,
+                                java.util.Set<String> personFieldNames,
+                                java.util.Set<String> relatedFieldNames);
+
+  /**
+   * Liefert alle im Editor sichtbar aufzubauenden Attribute eines Medientyps
+   * in der gewünschten Anzeige-Reihenfolge.
+   * Berücksichtigt werden die Modi {@code identify}, {@code necessary},
+   * {@code desired} und {@code mandatory}.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return sortierte Editor-Attribute des Medientyps
+   */
+  List<MediaAttributeDefinition> listEditorAttributesForMediaType(String mediaTypeBibName);
 
   /**
    * Liefert alle Lookup-Definitionen eines Medientyps.
@@ -89,6 +167,60 @@ public interface BibliographyService {
    * @return Identify-Attribute des Medientyps
    */
   List<MediaAttributeDefinition> listIdentifyAttributesForMediaType(String mediaTypeBibName);
+
+  /**
+   * Liefert alle definierten BibTeX-Felder in stabiler Reihenfolge.
+   *
+   * @return alle BibTeX-Felddefinitionen
+   */
+  List<BibtexFieldDefinition> listBibtexTypes();
+
+  /**
+   * Lädt eine BibTeX-Felddefinition anhand ihres technischen Namens.
+   *
+   * @param bibtexName technischer Feldname
+   * @return optionale Felddefinition
+   */
+  Optional<BibtexFieldDefinition> loadBibtexTypeByBibName(String bibtexName);
+
+  /**
+   * Lädt das von einem BibTeX-Feld abhängige Pflichtfeld, falls eines über
+   * {@code requires} definiert ist.
+   *
+   * @param fieldDefinition Ausgangsfeld
+   * @return abhängige Felddefinition oder leer
+   */
+  Optional<BibtexFieldDefinition> loadRequiredBibtexType(BibtexFieldDefinition fieldDefinition);
+
+  /**
+   * Liefert alle zusätzlich auswählbaren BibTeX-Felder eines Medientyps.
+   * Bereits vorhandene sowie als {@code forbidden} markierte Felder werden
+   * ausgeschlossen. Die Filterung des Suchtexts erfolgt über Anzeigename und
+   * technischen BibTeX-Namen.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param existingBibtexNames bereits im Formular vorhandene Feldnamen
+   * @param query aktueller Suchtext
+   * @return auswählbare zusätzliche BibTeX-Felder
+   */
+  List<BibtexFieldDefinition> findAvailableAdditionalBibtexTypes(String mediaTypeBibName,
+                                                                 java.util.Set<String> existingBibtexNames,
+                                                                 String query);
+
+  /**
+   * Löst eine manuell eingegebene Zusatzfeld-Auswahl gegen dieselben Regeln auf
+   * wie das Vorschlagsdropdown.
+   * Es werden nur solche Felder zurückgegeben, die für den Medientyp aktuell
+   * tatsächlich zusätzlich auswählbar sind.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param existingBibtexNames bereits im Formular vorhandene Feldnamen
+   * @param rawText manueller Eingabetext
+   * @return passende und erlaubte Felddefinition oder leer
+   */
+  Optional<BibtexFieldDefinition> resolveAvailableAdditionalBibtexType(String mediaTypeBibName,
+                                                                       java.util.Set<String> existingBibtexNames,
+                                                                       String rawText);
 
   /**
    * Sucht generische Vorschläge für ein Identify-Feld eines Medientyps.

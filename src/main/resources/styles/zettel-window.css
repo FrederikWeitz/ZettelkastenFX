@@ -35,6 +35,68 @@
 
 .biblio-form-host {
     -fx-padding: 4 0 0 0;
+    -fx-fit-to-width: true;
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+    -fx-border-insets: 0;
+}
+
+.biblio-form-pane {
+    -fx-padding: 10;
+    -fx-spacing: 8;
+    -fx-background-color: rgba(0,0,0,0.03);
+    -fx-border-color: rgba(0,0,0,0.14);
+    -fx-border-width: 1;
+    -fx-background-radius: 6;
+    -fx-border-radius: 6;
+}
+
+.biblio-form-pane {
+    -fx-fill-width: true;
+}
+
+.biblio-form-fields {
+    -fx-spacing: 8;
+}
+
+.biblio-dynamic-add-row {
+    -fx-alignment: center-left;
+    -fx-padding: 4 0 0 0;
+}
+
+.biblio-dynamic-form {
+    -fx-spacing: 8;
+}
+
+.biblio-dynamic-add-host {
+    -fx-spacing: 6;
+}
+
+.biblio-dynamic-type-selector-row {
+    -fx-alignment: center-left;
+}
+
+.biblio-dynamic-type-field {
+    -fx-pref-width: 260;
+}
+
+.biblio-dynamic-added-field {
+    -fx-padding: 2 0 0 0;
+}
+
+.biblio-field-row {
+    -fx-alignment: center-left;
+    -fx-spacing: 8;
+}
+
+.biblio-field-label-area {
+    -fx-alignment: center-left;
+    -fx-spacing: 6;
+}
+
+.biblio-field-label {
+    -fx-text-overrun: ellipsis;
+    -fx-wrap-text: false;
 }
 
 /* Keywords-Tabelle (mittleres Fenster): ohne Header */

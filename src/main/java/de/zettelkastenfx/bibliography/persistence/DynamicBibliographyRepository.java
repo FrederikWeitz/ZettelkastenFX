@@ -30,8 +30,8 @@ import java.util.*;
  * <p>
  * Übergangsregel:
  * <ul>
- *   <li>{@code bibliography_entries.type} und {@code bibliography_entries.title}
- *       werden vorerst weiter gepflegt</li>
+ *   <li>{@code bibliography_entries.title} wird als technischer Titelfallback
+ *       weiter gepflegt.</li>
  *   <li>Personenfelder werden über {@code bibliography_entries_integer} auf
  *       Personenlisten in {@code author_mapping} abgebildet.</li>
  *   <li>Altbestände, bei denen {@code author_mapping} noch direkt auf die
@@ -1791,28 +1791,26 @@ public class DynamicBibliographyRepository {
   private int saveBaseEntry(Connection c, DynamicBibliographyEntry entry) throws SQLException {
     Integer existingId = entry.getId();
     String legacyTitle = extractLegacyTitle(entry);
-    String legacyType = mapMediaTypeBibNameToLegacyType(entry.getMediaTypeBibName());
     String now = Instant.now().toString();
 
     if (existingId == null || existingId <= 0) {
       String insertSql = """
-          INSERT INTO bibliography_entries(type, title, citekey, media_types_id, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?)
-          """;
+        INSERT INTO bibliography_entries(title, citekey, media_types_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """;
 
       try (PreparedStatement ps = c.prepareStatement(insertSql, Statement.RETURN_GENERATED_KEYS)) {
-        ps.setString(1, legacyType);
-        ps.setString(2, legacyTitle);
-        ps.setString(3, normalizeNullable(entry.getCitekey()));
+        ps.setString(1, legacyTitle);
+        ps.setString(2, normalizeNullable(entry.getCitekey()));
 
         if (entry.getMediaTypeId() == null) {
-          ps.setNull(4, Types.INTEGER);
+          ps.setNull(3, Types.INTEGER);
         } else {
-          ps.setInt(4, entry.getMediaTypeId());
+          ps.setInt(3, entry.getMediaTypeId());
         }
 
-        ps.setString(5, now);
-        ps.setNull(6, Types.VARCHAR);
+        ps.setString(4, now);
+        ps.setNull(5, Types.VARCHAR);
         ps.executeUpdate();
 
         try (ResultSet keys = ps.getGeneratedKeys()) {
@@ -1828,28 +1826,26 @@ public class DynamicBibliographyRepository {
     }
 
     String updateSql = """
-        UPDATE bibliography_entries
-        SET type = ?,
-            title = ?,
-            citekey = ?,
-            media_types_id = ?,
-            updated_at = ?
-        WHERE id = ?
-        """;
+      UPDATE bibliography_entries
+      SET title = ?,
+          citekey = ?,
+          media_types_id = ?,
+          updated_at = ?
+      WHERE id = ?
+      """;
 
     try (PreparedStatement ps = c.prepareStatement(updateSql)) {
-      ps.setString(1, legacyType);
-      ps.setString(2, legacyTitle);
-      ps.setString(3, normalizeNullable(entry.getCitekey()));
+      ps.setString(1, legacyTitle);
+      ps.setString(2, normalizeNullable(entry.getCitekey()));
 
       if (entry.getMediaTypeId() == null) {
-        ps.setNull(4, Types.INTEGER);
+        ps.setNull(3, Types.INTEGER);
       } else {
-        ps.setInt(4, entry.getMediaTypeId());
+        ps.setInt(3, entry.getMediaTypeId());
       }
 
-      ps.setString(5, now);
-      ps.setInt(6, existingId);
+      ps.setString(4, now);
+      ps.setInt(5, existingId);
       ps.executeUpdate();
     }
 
@@ -2466,26 +2462,6 @@ public class DynamicBibliographyRepository {
                .map(StringBibValue::value)
                .map(this::sanitize)
                .orElse("");
-  }
-
-  /**
-   * Ordnet den technischen neuen Medientypnamen dem bisherigen Legacy-Typ zu.
-   *
-   * @param mediaTypeBibName technischer Medientypname
-   * @return alter Typname oder {@code null}, wenn es noch keine Altzuordnung gibt
-   */
-  private String mapMediaTypeBibNameToLegacyType(String mediaTypeBibName) {
-    return switch (sanitize(mediaTypeBibName)) {
-      case "book" -> "BOOK";
-      case "journal" -> "JOURNAL";
-      case "article" -> "JOURNAL_ARTICLE";
-      case "collection" -> "COLLECTION";
-      case "incollection" -> "ARTICLE_IN_COLLECTION";
-      case "website" -> "INTERNET";
-      case "aitext" -> "AI";
-      case "thesis" -> "THESIS";
-      default -> null;
-    };
   }
 
   /**

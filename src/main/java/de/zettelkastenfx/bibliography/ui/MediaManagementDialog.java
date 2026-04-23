@@ -2,9 +2,7 @@ package de.zettelkastenfx.bibliography.ui;
 
 import de.zettelkastenfx.base.BaseIcon;
 import de.zettelkastenfx.bibliography.api.BibliographyService;
-import de.zettelkastenfx.bibliography.model.BibliographyReference;
-import de.zettelkastenfx.bibliography.model.DynamicBibliographyEntry;
-import de.zettelkastenfx.bibliography.model.MediaTypeDefinition;
+import de.zettelkastenfx.bibliography.model.*;
 import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.SimpleObjectProperty;
 import javafx.geometry.Insets;
@@ -15,9 +13,14 @@ import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontPosture;
+import javafx.scene.text.Text;
+import javafx.scene.text.TextFlow;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -45,9 +48,10 @@ public class MediaManagementDialog {
 
   private final BorderPane root = new BorderPane();
   private final ToolBar modeToolbar = new ToolBar();
-  private final Button btnAdd = BaseIcon.BOOK_ADD.button("Medium hinzufügen");
-  private final Button btnEdit = BaseIcon.BOOK_EDIT.button("Medium ändern");
+  private final ToggleButton btnAdd = createModeToggleButton(BaseIcon.BOOK_ADD, "zufügen");
+  private final ToggleButton btnEdit = createModeToggleButton(BaseIcon.BOOK_EDIT, "ändern");
   private final Button btnDelete = BaseIcon.BOOK_DELETE.button("Medium löschen");
+  private final ToggleGroup modeToggleGroup = new ToggleGroup();
 
   private final TextField leftMediaTypeField = new TextField();
   private final TextField rightMediaTypeField = new TextField();
@@ -55,6 +59,7 @@ public class MediaManagementDialog {
   private final ContextMenu rightMediaTypeMenu = new ContextMenu();
 
   private final TextField searchField = new TextField();
+  private final CheckBox showPersonCheckBox = new CheckBox("mit Person");
   private final ListView<BibliographyReference> resultList = new ListView<>();
 
   private final BorderPane shellHost = new BorderPane();
@@ -132,6 +137,9 @@ public class MediaManagementDialog {
         btnEdit
     );
 
+    btnAdd.setToggleGroup(modeToggleGroup);
+    btnEdit.setToggleGroup(modeToggleGroup);
+
     allMediaTypes = bibliographyService.listMediaTypes();
 
     leftMediaTypeField.setPromptText("Alle Medien");
@@ -144,15 +152,29 @@ public class MediaManagementDialog {
       @Override
       protected void updateItem(BibliographyReference item, boolean empty) {
         super.updateItem(item, empty);
-        setText(empty || item == null ? null : item.displayText() + " [" + item.mediaTypeName() + "]");
+        setContentDisplay(ContentDisplay.GRAPHIC_ONLY);
+
+        if (empty || item == null) {
+          setText(null);
+          setGraphic(null);
+          return;
+        }
+
+        setText(null);
+        setGraphic(buildReferenceCellGraphic(item));
       }
     });
+
+    HBox searchRow = new HBox(8, searchField, showPersonCheckBox);
+    HBox.setHgrow(searchField, Priority.ALWAYS);
+    showPersonCheckBox.setFocusTraversable(false);
+    showPersonCheckBox.setSelected(true);
 
     VBox leftPane = new VBox(8,
         new Label("Medientyp"),
         leftMediaTypeField,
         new Label("Suche"),
-        searchField,
+        searchRow,
         resultList
     );
     leftPane.setPadding(new Insets(10));
@@ -182,7 +204,10 @@ public class MediaManagementDialog {
     root.setCenter(splitPane);
     root.setBottom(bottomBar);
 
+    btnAdd.setDisable(false);
     btnEdit.setDisable(true);
+    btnAdd.setSelected(false);
+    btnEdit.setSelected(false);
 
     switchMode(Mode.BROWSE);
     updateEditorStateLabel();
@@ -193,10 +218,15 @@ public class MediaManagementDialog {
    */
   private void initializeBehavior() {
     btnAdd.setOnAction(e -> {
+      if (!btnAdd.isSelected()) {
+        btnAdd.setSelected(true);
+      }
+
       clearLoadedEntryState();
 
       if (rightSelectedMediaType == null) {
         shellHost.setCenter(null);
+        btnEdit.setDisable(true);
         updateEditorStateLabel();
         return;
       }
@@ -204,15 +234,17 @@ public class MediaManagementDialog {
       shellHost.setCenter(shellBundle.shell().getRoot());
       shellBundle.shell().showNewEditor(rightSelectedMediaType.bibName());
       shellBundle.shell().setEditMode(true);
-      mode.set(Mode.CREATE);
-      btnEdit.setDisable(true);
-      updateEditorStateLabel();
+      switchMode(Mode.CREATE);
     });
 
     btnEdit.setOnAction(e -> {
-      if (currentEntryId != null && currentEntryId > 0) {
-        switchMode(Mode.EDIT);
+      if (currentEntryId == null || currentEntryId <= 0) {
+        btnEdit.setSelected(false);
+        return;
       }
+
+      btnEdit.setSelected(true);
+      switchMode(Mode.EDIT);
     });
 
     btnDelete.setOnAction(e -> deleteCurrentEntry());
@@ -220,6 +252,10 @@ public class MediaManagementDialog {
     btnClose.setOnAction(e -> dialogStage.close());
 
     searchField.textProperty().addListener((obs, oldValue, newValue) -> runSearch());
+
+    showPersonCheckBox.selectedProperty().addListener((obs, oldValue, newValue) -> {
+      resultList.refresh();
+    });
 
     leftMediaTypeField.textProperty().addListener((obs, oldValue, newValue) -> {
       MediaTypeDefinition resolvedType = resolveMediaType(newValue);
@@ -303,12 +339,43 @@ public class MediaManagementDialog {
   }
 
   /**
+   * Erzeugt einen Toggle-Button für die Modusleiste des Medien-Popups.
+   *
+   * @param icon anzuzeigendes Icon
+   * @param text sichtbarer Buttontext
+   * @return konfigurierter Toggle-Button
+   */
+  private ToggleButton createModeToggleButton(BaseIcon icon, String text) {
+    ToggleButton button = icon.toggleButton(text);
+    button.setFocusTraversable(false);
+    button.setContentDisplay(ContentDisplay.LEFT);
+    button.getStyleClass().add("toggle-button");
+    button.setMinHeight(28);
+    return button;
+  }
+
+  /**
    * Schaltet den Dialogmodus um.
    *
    * @param newMode neuer Modus
    */
   private void switchMode(Mode newMode) {
     mode.set(newMode);
+
+    switch (newMode) {
+      case BROWSE -> {
+        btnAdd.setSelected(false);
+        btnEdit.setSelected(false);
+      }
+      case CREATE -> {
+        btnAdd.setSelected(true);
+        btnEdit.setSelected(false);
+      }
+      case EDIT -> {
+        btnAdd.setSelected(false);
+        btnEdit.setSelected(true);
+      }
+    }
 
     switch (newMode) {
       case BROWSE -> {
@@ -336,6 +403,7 @@ public class MediaManagementDialog {
       }
     }
 
+    btnAdd.setDisable(rightSelectedMediaType == null);
     btnEdit.setDisable(currentEntryId == null || currentEntryId <= 0);
     updateEditorStateLabel();
   }
@@ -354,6 +422,291 @@ public class MediaManagementDialog {
     );
 
     resultList.getItems().setAll(hits);
+  }
+
+  /**
+   * Baut die grafische Darstellung eines Listentreffers im linken Fenster.
+   * Die Zeile besteht aus bis zu zwei Labels in einer vertikalen Box:
+   * oben optional die Person, unten der Titel in kursiver Schrift.
+   *
+   * @param reference anzuzeigende Referenz
+   * @return grafische Darstellung für die Trefferliste
+   */
+  private TextFlow buildReferenceCellGraphic(BibliographyReference reference) {
+    String personText = showPersonCheckBox.isSelected()
+                            ? safeLoadPrimaryPersonDisplay(reference)
+                            : "";
+
+    String titleText = resolveListTitle(reference, personText);
+
+    TextFlow flow = new TextFlow();
+    flow.setMaxWidth(Double.MAX_VALUE);
+
+    if (!personText.isBlank()) {
+      Text person = new Text(personText + ": ");
+      flow.getChildren().add(person);
+    }
+
+    Text title = new Text(titleText);
+    title.setFont(Font.font(title.getFont().getFamily(), FontPosture.ITALIC, title.getFont().getSize()));
+
+    flow.getChildren().add(title);
+
+    return flow;
+  }
+
+  /**
+   * Ermittelt den anzuzeigenden Titel für die Trefferliste.
+   * Vorrang hat das echte Titelfeld des geladenen Eintrags. Erst wenn dieses
+   * fehlt, wird auf den kompakten Referenztext zurückgegriffen.
+   * Ist die Personenanzeige aktiv und beginnt der Fallback-Text bereits mit
+   * derselben Person, wird dieses Präfix entfernt.
+   *
+   * @param reference Trefferreferenz
+   * @param personText bereits aufgelöste Person oder leerer String
+   * @return anzuzeigender Titeltext
+   */
+  private String resolveListTitle(BibliographyReference reference, String personText) {
+    if (reference == null) {
+      return "";
+    }
+
+    String entryTitle = safeLoadEntryTitle(reference.entryId());
+    if (!entryTitle.isBlank()) {
+      return entryTitle;
+    }
+
+    String fallbackText = safeTrim(reference.displayText());
+    if (fallbackText.isBlank()) {
+      return "";
+    }
+
+    if (!personText.isBlank()) {
+      String prefix = personText + ": ";
+      if (fallbackText.startsWith(prefix)) {
+        String stripped = safeTrim(fallbackText.substring(prefix.length()));
+        if (!stripped.isBlank()) {
+          return stripped;
+        }
+      }
+    }
+
+    return fallbackText;
+  }
+
+  /**
+   * Baut einen kompakten Anzeigetext für einen bereits geladenen Treffer.
+   * Die Darstellung folgt derselben Logik wie die Trefferliste:
+   * optional Person, danach Titel.
+   *
+   * @param reference Trefferreferenz
+   * @return kompakter Anzeigetext
+   */
+  private String buildReferenceDisplayText(BibliographyReference reference) {
+    if (reference == null) {
+      return "";
+    }
+
+    String personText = safeLoadPrimaryPersonDisplay(reference);
+    String titleText = resolveListTitle(reference, personText);
+
+    if (!personText.isBlank() && !titleText.isBlank()) {
+      return personText + ": " + titleText;
+    }
+    if (!titleText.isBlank()) {
+      return titleText;
+    }
+    if (!personText.isBlank()) {
+      return personText;
+    }
+
+    return safeTrim(reference.displayText());
+  }
+
+  /**
+   * Lädt das echte Titelfeld eines bibliographischen Eintrags fehlertolerant.
+   *
+   * @param entryId Datenbank-ID des Eintrags
+   * @return Titel oder leerer String
+   */
+  private String safeLoadEntryTitle(int entryId) {
+    if (entryId <= 0) {
+      return "";
+    }
+
+    try {
+      return bibliographyService.loadEntry(entryId)
+        .flatMap(entry -> entry.findValue("title"))
+        .filter(StringBibValue.class::isInstance)
+        .map(StringBibValue.class::cast)
+        .map(StringBibValue::value)
+        .map(this::safeTrim)
+        .orElse("");
+    } catch (Exception ex) {
+      return "";
+    }
+  }
+
+  /**
+   * Lädt die Personenanzeige fehlertolerant. Probleme in Altbeständen oder
+   * inkonsistente Metadaten dürfen nicht dazu führen, dass eine Trefferzeile
+   * unsichtbar wird.
+   *
+   * @param reference Trefferreferenz
+   * @return formatierte Person oder leerer String
+   */
+  private String safeLoadPrimaryPersonDisplay(BibliographyReference reference) {
+    if (reference == null || reference.entryId() <= 0) {
+      return "";
+    }
+
+    try {
+      return safeTrim(loadPrimaryPersonDisplay(reference.entryId(), reference.mediaTypeId()));
+    } catch (Exception ex) {
+      return "";
+    }
+  }
+
+  /**
+   * Lädt die erste Person des wichtigsten Personenfeldes eines Eintrags.
+   * Bevorzugt werden Personenfelder mit Modus {@code identify}, danach
+   * {@code necessary}. Bei Gleichstand gewinnt das Feld mit der kleineren
+   * BibTeX-Feld-ID.
+   *
+   * @param entryId Datenbank-ID des Eintrags
+   * @param fallbackMediaTypeId Medientyp-ID aus der Referenz als Fallback
+   * @return formatierte Person oder leerer String
+   */
+  private String loadPrimaryPersonDisplay(int entryId, Integer fallbackMediaTypeId) {
+    Optional<DynamicBibliographyEntry> loadedEntry = bibliographyService.loadEntry(entryId);
+    if (loadedEntry.isEmpty()) {
+      return "";
+    }
+
+    DynamicBibliographyEntry entry = loadedEntry.get();
+    Integer mediaTypeId = entry.getMediaTypeId() != null ? entry.getMediaTypeId() : fallbackMediaTypeId;
+
+    if (mediaTypeId == null || mediaTypeId <= 0) {
+      return "";
+    }
+
+    return extractPrimaryPersonDisplay(entry, mediaTypeId);
+  }
+
+  /**
+   * Ermittelt für einen dynamischen Eintrag das wichtigste Personenfeld und
+   * liefert daraus die erste Person in Listenform.
+   *
+   * @param entry geladener Eintrag
+   * @param mediaTypeId aufgelöste Medientyp-ID
+   * @return formatierte Person oder leerer String
+   */
+  private String extractPrimaryPersonDisplay(DynamicBibliographyEntry entry, int mediaTypeId) {
+    if (entry == null || mediaTypeId <= 0) {
+      return "";
+    }
+
+    List<MediaAttributeDefinition> attributes = bibliographyService.listAttributesForMediaType(mediaTypeId);
+    if (attributes == null || attributes.isEmpty()) {
+      return "";
+    }
+
+    MediaAttributeDefinition primaryPersonAttribute = attributes.stream()
+      .filter(attribute -> attribute != null && attribute.fieldDefinition() != null)
+      .filter(attribute -> isPersonDatatype(attribute.fieldDefinition().datatype()))
+      .filter(attribute -> attribute.isIdentify() || attribute.isNecessary())
+      .sorted(
+        Comparator
+          .comparingInt(this::personFieldPriority)
+          .thenComparingInt(attribute -> attribute.fieldDefinition().id())
+        )
+      .findFirst()
+      .orElse(null);
+
+    if (primaryPersonAttribute == null) {
+      return "";
+    }
+
+    String bibtexName = safeTrim(primaryPersonAttribute.fieldDefinition().bibtexName());
+    if (bibtexName.isBlank()) {
+      return "";
+    }
+
+    return entry.findValue(bibtexName)
+               .filter(PersonBibValue.class::isInstance)
+               .map(PersonBibValue.class::cast)
+               .map(PersonBibValue::value)
+               .filter(persons -> persons != null && !persons.isEmpty())
+               .map(persons -> persons.getFirst())
+               .map(this::formatPersonRef)
+               .orElse("");
+  }
+
+  /**
+   * Liefert die Priorität eines Personenfeldes für die Listenanzeige.
+   * {@code identify} ist stärker als {@code necessary}.
+   *
+   * @param attribute Attributdefinition
+   * @return Sortierpriorität
+   */
+  private int personFieldPriority(MediaAttributeDefinition attribute) {
+    if (attribute == null) {
+      return Integer.MAX_VALUE;
+    }
+    if (attribute.isIdentify()) {
+      return 0;
+    }
+    if (attribute.isNecessary()) {
+      return 1;
+    }
+    return Integer.MAX_VALUE;
+  }
+
+  /**
+   * Prüft, ob ein Metadaten-Datentyp als Personenfeld behandelt werden soll.
+   *
+   * @param datatype Datentyp aus den Metadaten
+   * @return {@code true}, wenn es sich um ein Personenfeld handelt
+   */
+  private boolean isPersonDatatype(String datatype) {
+    return "person".equalsIgnoreCase(safeTrim(datatype));
+  }
+
+  /**
+   * Formatiert eine Personenreferenz in der Form "Nachname, Vorname".
+   *
+   * @param person Personenreferenz
+   * @return formatierter Personenname oder leerer String
+   */
+  private String formatPersonRef(PersonRef person) {
+    if (person == null) {
+      return "";
+    }
+
+    String lastName = safeTrim(person.lastName());
+    String firstName = safeTrim(person.firstName());
+
+    if (lastName.isBlank() && firstName.isBlank()) {
+      return "";
+    }
+    if (lastName.isBlank()) {
+      return firstName;
+    }
+    if (firstName.isBlank()) {
+      return lastName;
+    }
+
+    return lastName + ", " + firstName;
+  }
+
+  /**
+   * Trimmt einen Text defensiv.
+   *
+   * @param value Eingabetext
+   * @return getrimmter Text oder leerer String
+   */
+  private String safeTrim(String value) {
+    return value == null ? "" : value.trim();
   }
 
   /**
@@ -384,7 +737,7 @@ public class MediaManagementDialog {
 
     currentEntryId = entryId;
     currentDisplayText = bibliographyService.loadReference(entryId)
-                             .map(BibliographyReference::displayText)
+                             .map(this::buildReferenceDisplayText)
                              .orElse(null);
 
     btnEdit.setDisable(false);
@@ -425,7 +778,8 @@ public class MediaManagementDialog {
 
     currentEntryId = entryId;
     currentDisplayText = bibliographyService.loadReference(entryId)
-                             .map(BibliographyReference::displayText)
+                             .map(this::buildReferenceDisplayText)
+                             .filter(text -> text != null && !text.isBlank())
                              .orElse("Medium #" + entryId);
 
     DynamicBibliographyEntry reloaded = bibliographyService.loadEntry(entryId).orElse(null);
@@ -443,24 +797,6 @@ public class MediaManagementDialog {
     btnEdit.setDisable(false);
     switchMode(Mode.EDIT);
     runSearch();
-  }
-
-  /**
-   * Leert die aktuelle Auswahl und zeigt rechts wieder einen leeren Editor
-   * für den aktuell gesetzten rechten Medientyp, falls vorhanden.
-   */
-  private void clearCurrentSelection() {
-    clearLoadedEntryState();
-
-    if (rightSelectedMediaType != null) {
-      shellHost.setCenter(shellBundle.shell().getRoot());
-      shellBundle.shell().showNewEditor(rightSelectedMediaType.bibName());
-      shellBundle.shell().setEditMode(true);
-      mode.set(Mode.CREATE);
-    } else {
-      shellHost.setCenter(null);
-      mode.set(Mode.BROWSE);
-    }
   }
 
   /**
@@ -494,9 +830,19 @@ public class MediaManagementDialog {
 
     try {
       bibliographyService.deleteEntry(currentEntryId);
-      clearCurrentSelection();
-      runSearch();
+      clearLoadedEntryState();
+      resultList.getSelectionModel().clearSelection();
+      shellBundle.shell().clearEditorView();
+      shellHost.setCenter(null);
+
+      btnAdd.setSelected(false);
+      btnEdit.setSelected(false);
+      btnAdd.setDisable(true);
+      btnEdit.setDisable(true);
+
       switchMode(Mode.BROWSE);
+      runSearch();
+      updateEditorStateLabel();
     } catch (Exception ex) {
       showError(
           "Löschen fehlgeschlagen",
@@ -628,7 +974,9 @@ public class MediaManagementDialog {
 
     shellHost.setCenter(shellBundle.shell().getRoot());
 
+    btnAdd.setDisable(false);
     if (currentEntryId == null || currentEntryId <= 0) {
+      btnEdit.setDisable(true);
       shellBundle.shell().showNewEditor(type.bibName());
       shellBundle.shell().setEditMode(true);
     }

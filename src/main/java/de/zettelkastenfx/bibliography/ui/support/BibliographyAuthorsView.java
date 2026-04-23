@@ -55,7 +55,8 @@ public class BibliographyAuthorsView extends StackPane {
       Consumer<String> authorsEditedHandler,
       Runnable refreshSelectionHandler,
       Supplier<Boolean> suppressLookupCallbackSupplier,
-      BiConsumer<String, Integer> selectedEntryUpdater
+      BiConsumer<String, Integer> selectedEntryUpdater,
+      int visibleRowCount
   ) {
     this.ownerMediaTypeBibName = normalizeMediaTypeBibName(ownerMediaTypeBibName);
     this.suggestionProvider = suggestionProvider;
@@ -69,9 +70,13 @@ public class BibliographyAuthorsView extends StackPane {
     scrollPane.setFitToWidth(true);
     scrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
     scrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
-    scrollPane.setPrefViewportHeight(4 * 30.0 + 12);
-    scrollPane.setMinHeight(4 * 30.0 + 12);
-    scrollPane.setMaxHeight(4 * 30.0 + 12);
+    int effectiveVisibleRowCount = Math.max(1, visibleRowCount);
+    double rowHeight = 30.0;
+    double viewportHeight = effectiveVisibleRowCount * rowHeight + 12;
+
+    scrollPane.setPrefViewportHeight(viewportHeight);
+    scrollPane.setMinHeight(viewportHeight);
+    scrollPane.setMaxHeight(viewportHeight);
 
     editorRoot.getChildren().addAll(header, scrollPane);
 
