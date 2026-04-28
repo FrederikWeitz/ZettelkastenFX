@@ -117,7 +117,13 @@ public class MediaManagementDialog {
     shellBundle.shell().clearEditorView();
     initializeBehavior();
 
-    dialogStage.setScene(new Scene(root, 1100, 760));
+    Scene scene = new Scene(root, 1100, 760);
+
+    if (owner != null && owner.getScene() != null) {
+      scene.getStylesheets().addAll(owner.getScene().getStylesheets());
+    }
+
+    dialogStage.setScene(scene);
   }
 
   /**
@@ -336,6 +342,39 @@ public class MediaManagementDialog {
 
       loadExistingEntry(value.entryId());
     });
+  }
+
+  /**
+   * Öffnet ein ContextMenu defensiv nur dann direkt, wenn der Anchor bereits
+   * an einer Scene und einem Window hängt.
+   * Andernfalls wird der Öffnungsversuch auf den nächsten UI-Zyklus verschoben.
+   *
+   * @param menu anzuzeigendes Menü
+   * @param anchor Verankerungsknoten
+   */
+  private void showContextMenuSafely(ContextMenu menu, Control anchor) {
+    if (menu == null || anchor == null) {
+      return;
+    }
+
+    if (anchor.getScene() == null || anchor.getScene().getWindow() == null) {
+      javafx.application.Platform.runLater(() -> {
+        if (anchor.getScene() == null || anchor.getScene().getWindow() == null) {
+          return;
+        }
+        if (!anchor.isVisible()) {
+          return;
+        }
+        if (!menu.isShowing()) {
+          menu.show(anchor, Side.BOTTOM, 0, 0);
+        }
+      });
+      return;
+    }
+
+    if (!menu.isShowing()) {
+      menu.show(anchor, Side.BOTTOM, 0, 0);
+    }
   }
 
   /**
@@ -1019,26 +1058,7 @@ public class MediaManagementDialog {
                                      .toList();
 
     menu.getItems().setAll(items);
-
-    if (!menu.isShowing()) {
-      menu.show(field, Side.BOTTOM, 0, 0);
-    }
-  }
-
-  /**
-   * Prüft, ob der aktuell eingegebene Text bereits exakt dem selektierten
-   * Medientyp entspricht.
-   *
-   * @param text aktueller Feldtext
-   * @param selectedType aktuell selektierter Typ
-   * @return {@code true}, wenn Text und Typ zusammenpassen
-   */
-  private boolean isResolvedMediaTypeText(String text, MediaTypeDefinition selectedType) {
-    if (selectedType == null || text == null) {
-      return false;
-    }
-    return text.trim().equalsIgnoreCase(selectedType.name())
-               || text.trim().equalsIgnoreCase(selectedType.bibName());
+    showContextMenuSafely(menu, field);
   }
 
   /**

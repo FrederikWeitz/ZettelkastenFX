@@ -8,11 +8,11 @@ import de.zettelkastenfx.bibliography.ui.lookup.IdentifySuggestion;
 import de.zettelkastenfx.bibliography.ui.lookup.TitleSuggestion;
 
 import javax.sql.DataSource;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
 import java.util.stream.Collectors;
+
+import static de.zettelkastenfx.bibliography.util.BibtexDatatypeUtil.isPersonDatatype;
+import static de.zettelkastenfx.bibliography.util.BibtexDatatypeUtil.isRelatedDatatype;
 
 /**
  * Standardimplementierung der Bibliographie-Fassade.
@@ -34,20 +34,6 @@ public class BibliographyServiceImpl implements BibliographyService {
     Objects.requireNonNull(ds, "ds");
     this.metadataRepository = new BibliographyMetadataRepository(ds);
     this.dynamicRepository = new DynamicBibliographyRepository(ds);
-  }
-
-  /**
-   * Erzeugt den Service auf Basis bereits vorhandener Repository-Instanzen.
-   *
-   * @param metadataRepository Repository für Bibliographie-Metadaten
-   * @param dynamicRepository Repository für dynamische Bibliographie-Einträge
-   */
-  public BibliographyServiceImpl(
-      BibliographyMetadataRepository metadataRepository,
-      DynamicBibliographyRepository dynamicRepository
-  ) {
-    this.metadataRepository = Objects.requireNonNull(metadataRepository, "metadataRepository");
-    this.dynamicRepository = Objects.requireNonNull(dynamicRepository, "dynamicRepository");
   }
 
   /**
@@ -345,21 +331,20 @@ public class BibliographyServiceImpl implements BibliographyService {
   }
 
   /**
-   * Prüft einen lokalen Editorzustand auf Erfüllung aller fachlich
-   * erforderlichen Pflichtattribute eines Medientyps.
-   * Berücksichtigt werden alle Felder mit {@code identify} oder
-   * {@code necessary}.
+   * Prüft einen lokalen Editorzustand mit konkreten Personenwerten.
+   * Personenfelder gelten nur dann als erfüllt, wenn mindestens eine Person
+   * mit Vor- oder Nachnamen vorhanden ist.
    *
    * @param mediaTypeBibName technischer Medientypname
-   * @param fieldValues aktuelle Feldwerte nach technischem BibTeX-Namen
-   * @param personFieldNames technische Feldnamen belegter Personenfelder
+   * @param fieldValues aktuelle String-/Integerwerte nach BibTeX-Namen
+   * @param personValues aktuelle Personenwerte nach BibTeX-Namen
    * @param relatedFieldNames technische Feldnamen belegter Related-Felder
    * @return {@code true}, wenn alle Pflichtattribute lokal erfüllt sind
    */
   @Override
   public boolean isLocallyValidForSave(String mediaTypeBibName,
                                        java.util.Map<String, String> fieldValues,
-                                       java.util.Set<String> personFieldNames,
+                                       java.util.Map<String, java.util.List<Author>> personValues,
                                        java.util.Set<String> relatedFieldNames) {
     if (resolveMediaTypeId(mediaTypeBibName) == null) {
       return false;
@@ -369,13 +354,9 @@ public class BibliographyServiceImpl implements BibliographyService {
                                                         ? java.util.Map.of()
                                                         : fieldValues;
 
-    java.util.Set<String> safePersonFieldNames = personFieldNames == null
-                                                     ? java.util.Set.of()
-                                                     : personFieldNames.stream()
-                                                       .filter(java.util.Objects::nonNull)
-                                                       .map(this::normalizeTechnicalName)
-                                                       .filter(value -> !value.isBlank())
-                                                       .collect(java.util.stream.Collectors.toSet());
+    java.util.Map<String, java.util.List<Author>> safePersonValues = personValues == null
+                                                                         ? java.util.Map.of()
+                                                                         : personValues;
 
     java.util.Set<String> safeRelatedFieldNames = relatedFieldNames == null
                                                       ? java.util.Set.of()
@@ -398,7 +379,7 @@ public class BibliographyServiceImpl implements BibliographyService {
       }
 
       if (isPersonDatatype(datatype)) {
-        if (!safePersonFieldNames.contains(bibtexName)) {
+        if (!hasMeaningfulAuthors(safePersonValues.get(bibtexName))) {
           return false;
         }
         continue;
@@ -421,23 +402,29 @@ public class BibliographyServiceImpl implements BibliographyService {
   }
 
   /**
-   * Prüft, ob ein Datentyp als Personenfeld behandelt wird.
+   * Prüft, ob eine Autoren-/Personenliste mindestens eine fachlich befüllte
+   * Person enthält.
    *
-   * @param datatype technischer Datentyp
-   * @return {@code true}, wenn Personensemantik vorliegt
+   * @param authors Personenliste
+   * @return {@code true}, wenn mindestens Vor- oder Nachname gesetzt ist
    */
-  private boolean isPersonDatatype(String datatype) {
-    return "person".equals(normalizeTechnicalName(datatype));
-  }
+  private boolean hasMeaningfulAuthors(java.util.List<Author> authors) {
+    if (authors == null || authors.isEmpty()) {
+      return false;
+    }
 
-  /**
-   * Prüft, ob ein Datentyp als Related-Feld behandelt wird.
-   *
-   * @param datatype technischer Datentyp
-   * @return {@code true}, wenn Related-Semantik vorliegt
-   */
-  private boolean isRelatedDatatype(String datatype) {
-    return "anderer eintrag/integer".equals(normalizeTechnicalName(datatype));
+    for (Author author : authors) {
+      if (author == null) {
+        continue;
+      }
+
+      if (!sanitize(author.getFirstName()).isBlank()
+              || !sanitize(author.getLastName()).isBlank()) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
@@ -961,7 +948,14 @@ public class BibliographyServiceImpl implements BibliographyService {
       case PERSON -> {
         if (value instanceof PersonBibValue personBibValue) {
           yield personBibValue.value().stream()
-                    .sorted((a, b) -> Integer.compare(a.position(), b.position()))
+                    .filter(Objects::nonNull)
+                    .filter(person -> !sanitize(person.firstName()).isBlank()
+                                          || !sanitize(person.lastName()).isBlank())
+                    .sorted(Comparator.comparingInt(person ->
+                                                        person.position() == null || person.position() <= 0
+                                                            ? Integer.MAX_VALUE
+                                                            : person.position()
+                    ))
                     .map(PersonRef::displayName)
                     .map(this::sanitize)
                     .filter(text -> !text.isBlank())

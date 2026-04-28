@@ -14,11 +14,14 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.*;
 
+import static de.zettelkastenfx.bibliography.util.BibtexDatatypeUtil.isIntegerDatatype;
+import static de.zettelkastenfx.bibliography.util.BibtexDatatypeUtil.isPersonDatatype;
+
 /**
- * Lädt und speichert bibliographische Einträge über das neue dynamische Modell.
+ * Lädt und speichert bibliografische Einträge über das neue dynamische Modell.
  * <p>
- * Dieses Repository arbeitet parallel zur alten typgebundenen Bibliographie-
- * Logik und verwendet die neuen Tabellen:
+ * Dieses Repository bildet den alleinigen Laufzeitpfad der dynamischen
+ * Bibliografie-Logik ab und verwendet die Tabellen:
  * <ul>
  *   <li>{@code bibliography_entries}</li>
  *   <li>{@code bibliography_entries_string}</li>
@@ -28,15 +31,13 @@ import java.util.*;
  * Zusätzlich werden Metadaten über {@link BibliographyMetadataRepository}
  * aufgelöst.
  * <p>
- * Übergangsregel:
+ * Aktueller Laufzeitpfad:
  * <ul>
  *   <li>{@code bibliography_entries.title} wird als technischer Titelfallback
  *       weiter gepflegt.</li>
- *   <li>Personenfelder werden über {@code bibliography_entries_integer} auf
- *       Personenlisten in {@code author_mapping} abgebildet.</li>
- *   <li>Altbestände, bei denen {@code author_mapping} noch direkt auf die
- *       Bibliographie-ID zeigt, werden defensiv als {@code author}-Fallback
- *       weiter unterstützt.</li>
+ *   <li>Personenfelder werden ausschließlich über
+ *       {@code bibliography_entries_integer} auf Personenlisten in
+ *       {@code author_mapping} abgebildet.</li>
  * </ul>
  */
 public class DynamicBibliographyRepository {
@@ -58,7 +59,7 @@ public class DynamicBibliographyRepository {
   }
 
   /**
-   * Lädt einen bibliographischen Eintrag vollständig in das dynamische Modell.
+   * Lädt einen bibliografischen Eintrag vollständig in das dynamische Modell.
    *
    * @param entryId Datenbank-ID des Eintrags
    * @return optionaler Eintrag
@@ -85,7 +86,7 @@ public class DynamicBibliographyRepository {
    * Erzeugt ein leeres Laufzeitobjekt für einen vorhandenen Medientyp.
    *
    * @param mediaTypeId Datenbank-ID des Medientyps
-   * @return leeres bibliographisches Laufzeitobjekt
+   * @return leeres bibliografisches Laufzeitobjekt
    */
   public DynamicBibliographyEntry createEmptyEntry(int mediaTypeId) {
     MediaTypeDefinition mediaType = metadataRepository.loadMediaTypeById(mediaTypeId)
@@ -99,7 +100,7 @@ public class DynamicBibliographyRepository {
   }
 
   /**
-   * Speichert einen dynamischen Bibliographie-Eintrag.
+   * Speichert einen dynamischen Bibliografie-Eintrag.
    * <p>
    * Bei fehlender ID wird ein neuer Eintrag angelegt, andernfalls aktualisiert.
    *
@@ -142,7 +143,7 @@ public class DynamicBibliographyRepository {
   }
 
   /**
-   * Sucht bestehende bibliographische Einträge desselben Medientyps, die anhand
+   * Sucht bestehende bibliografische Einträge desselben Medientyps, die anhand
    * der fachlichen Identifikationsfelder zum gegebenen Eintrag passen.
    * <p>
    * Zuerst werden nur befüllte {@code identify}-Felder berücksichtigt.
@@ -283,7 +284,7 @@ public class DynamicBibliographyRepository {
       return searchEntryIdsByPersonField(mediaTypeId, fieldDefinition.get().id(), query, limit);
     }
 
-    if (isIntegerLikeDatatype(datatype)) {
+    if (isIntegerDatatype(datatype)) {
       return List.of();
     }
 
@@ -406,7 +407,7 @@ public class DynamicBibliographyRepository {
   /**
    * Sucht Autorenvorschläge direkt aus der Autorentabelle.
    * Die Vorschläge hängen damit nicht mehr von author_mapping oder von
-   * vorhandenen Bibliographie-Verknüpfungen ab.
+   * vorhandenen Bibliografie-Verknüpfungen ab.
    *
    * @param mediaTypeId optionaler Medientyp; wird hier bewusst nicht verwendet
    * @param lastNamePrefix Präfix des Nachnamens
@@ -756,7 +757,7 @@ public class DynamicBibliographyRepository {
     }
 
     String datatype = sanitize(fieldDefinition.get().datatype());
-    if (isPersonDatatype(datatype) || isIntegerLikeDatatype(datatype)) {
+    if (isPersonDatatype(datatype) || isIntegerDatatype(datatype)) {
       return List.of();
     }
 
@@ -996,11 +997,12 @@ public class DynamicBibliographyRepository {
   }
 
   /**
-   * Prüft, ob ein Eintrag alle geforderten Autoren enthält.
+   * Prüft, ob ein Eintrag alle geforderten Autoren bzw. Personen enthält.
+   * Es werden nur fachlich befüllte Personen berücksichtigt.
    *
    * @param entry zu prüfender Eintrag
-   * @param requiredAuthors geforderte Autoren
-   * @return {@code true}, wenn alle geforderten Autoren enthalten sind
+   * @param requiredAuthors geforderte Personen
+   * @return {@code true}, wenn alle geforderten Personen enthalten sind
    */
   private boolean matchesRequiredAuthors(DynamicBibliographyEntry entry,
                                          List<Author> requiredAuthors) {
@@ -1008,30 +1010,7 @@ public class DynamicBibliographyRepository {
       return true;
     }
 
-    List<PersonRef> candidatePersons = extractAllPersons(entry);
-    if (candidatePersons.isEmpty()) {
-      return false;
-    }
-
-    for (Author requiredAuthor : requiredAuthors) {
-      if (requiredAuthor == null) {
-        continue;
-      }
-
-      String requiredFirstName = normalize(requiredAuthor.getFirstName());
-      String requiredLastName = normalize(requiredAuthor.getLastName());
-
-      boolean matched = candidatePersons.stream().anyMatch(candidate ->
-                                                               normalize(candidate.firstName()).equals(requiredFirstName)
-                                                                   && normalize(candidate.lastName()).equals(requiredLastName)
-      );
-
-      if (!matched) {
-        return false;
-      }
-    }
-
-    return true;
+    return matchesRequiredPersons(extractAllPersons(entry), requiredAuthors);
   }
 
   /**
@@ -1071,6 +1050,7 @@ public class DynamicBibliographyRepository {
 
   /**
    * Prüft weitere Person-Identify-Filter eines Kandidaten.
+   * Es werden nur fachlich befüllte Personen berücksichtigt.
    *
    * @param entry Kandidat
    * @param personFilters weitere gefüllte Personenfilter
@@ -1104,19 +1084,26 @@ public class DynamicBibliographyRepository {
   }
 
   /**
-   * Prüft, ob eine Personenliste alle geforderten Autoren enthält.
+   * Prüft, ob eine Personenliste alle geforderten Personen enthält.
+   * Leere Personenobjekte werden dabei ignoriert.
    *
    * @param persons Kandidatenpersonen
-   * @param requiredAuthors geforderte Autoren
+   * @param requiredAuthors geforderte Personen
    * @return {@code true}, wenn alle geforderten Personen vorhanden sind
    */
   private boolean matchesRequiredPersons(List<PersonRef> persons, List<Author> requiredAuthors) {
     if (requiredAuthors == null || requiredAuthors.isEmpty()) {
       return true;
     }
-    if (persons == null || persons.isEmpty()) {
+    if (!hasMeaningfulPersons(persons)) {
       return false;
     }
+
+    List<PersonRef> meaningfulPersons = persons.stream()
+                                            .filter(Objects::nonNull)
+                                            .filter(person -> !sanitize(person.firstName()).isBlank()
+                                                                  || !sanitize(person.lastName()).isBlank())
+                                            .toList();
 
     for (Author requiredAuthor : requiredAuthors) {
       if (requiredAuthor == null) {
@@ -1126,9 +1113,13 @@ public class DynamicBibliographyRepository {
       String requiredFirstName = normalize(requiredAuthor.getFirstName());
       String requiredLastName = normalize(requiredAuthor.getLastName());
 
-      boolean matched = persons.stream().anyMatch(candidate ->
-                                                      normalize(candidate.firstName()).equals(requiredFirstName)
-                                                          && normalize(candidate.lastName()).equals(requiredLastName)
+      if (requiredFirstName.isBlank() && requiredLastName.isBlank()) {
+        continue;
+      }
+
+      boolean matched = meaningfulPersons.stream().anyMatch(candidate ->
+                                                                normalize(candidate.firstName()).equals(requiredFirstName)
+                                                                    && normalize(candidate.lastName()).equals(requiredLastName)
       );
 
       if (!matched) {
@@ -1172,16 +1163,15 @@ public class DynamicBibliographyRepository {
           stringValue.value() == null ? "" : stringValue.value().trim();
 
       case PersonBibValue personValue -> {
-        if (personValue.value() == null || personValue.value().isEmpty()) {
+        List<PersonRef> persons = normalizePersonList(personValue.value());
+        if (persons.isEmpty()) {
           yield "";
         }
-        PersonRef first = personValue.value().getFirst();
-        String firstName = first.firstName() == null ? "" : first.firstName().trim();
-        String lastName = first.lastName() == null ? "" : first.lastName().trim();
 
-        if (lastName.isBlank() && firstName.isBlank()) {
-          yield "";
-        }
+        PersonRef first = persons.getFirst();
+        String firstName = sanitize(first.firstName());
+        String lastName = sanitize(first.lastName());
+
         if (lastName.isBlank()) {
           yield firstName;
         }
@@ -1196,7 +1186,9 @@ public class DynamicBibliographyRepository {
   }
 
   /**
-   * Extrahiert alle Personenfelder eines Eintrags zu einer flachen Liste.
+   * Extrahiert alle fachlich befüllten Personenfelder eines Eintrags zu einer
+   * flachen Liste.
+   * Leere Personenobjekte werden ignoriert.
    *
    * @param entry Eintrag
    * @return enthaltene Personen
@@ -1208,11 +1200,14 @@ public class DynamicBibliographyRepository {
 
     List<PersonRef> result = new ArrayList<>();
     for (BibValue value : entry.getOrderedValues()) {
-      if (value instanceof PersonBibValue personBibValue) {
-        result.addAll(personBibValue.value());
+      if (!(value instanceof PersonBibValue personBibValue)) {
+        continue;
       }
+
+      result.addAll(normalizePersonList(personBibValue.value()));
     }
-    return result;
+
+    return List.copyOf(result);
   }
 
   /**
@@ -1235,8 +1230,8 @@ public class DynamicBibliographyRepository {
   }
 
   /**
-   * Wandelt die Personen eines Eintrags in Autorenmodelle für einen
-   * Titelvorschlag um.
+   * Wandelt die fachlich befüllten Personen eines Eintrags in Autorenmodelle
+   * für einen Titel- oder Identify-Vorschlag um.
    *
    * @param entry Eintrag
    * @return Autorenliste des Vorschlags
@@ -1248,22 +1243,29 @@ public class DynamicBibliographyRepository {
     }
 
     List<Author> result = new ArrayList<>();
-    int pos = 1;
+    int fallbackPosition = 1;
 
     for (PersonRef person : persons) {
-      if (person == null) {
+      String firstName = sanitize(person.firstName());
+      String lastName = sanitize(person.lastName());
+
+      if (firstName.isBlank() && lastName.isBlank()) {
         continue;
       }
 
       Author author = new Author();
       author.setId(person.id());
-      author.setFirstName(person.firstName());
-      author.setLastName(person.lastName());
-      author.setPosition(person.position() != null && person.position() > 0 ? person.position() : pos++);
+      author.setFirstName(firstName);
+      author.setLastName(lastName);
+      author.setPosition(person.position() != null && person.position() > 0
+                             ? person.position()
+                             : fallbackPosition);
+
       result.add(author);
+      fallbackPosition++;
     }
 
-    return result;
+    return List.copyOf(result);
   }
 
   /**
@@ -1285,7 +1287,7 @@ public class DynamicBibliographyRepository {
   }
 
   /**
-   * Löscht einen bibliographischen Eintrag vollständig einschließlich seiner
+   * Löscht einen bibliografischen Eintrag vollständig, einschließlich seiner
    * String-, Integer-, Related- und Personenwerte.
    *
    * @param entryId Datenbank-ID des Eintrags
@@ -1303,19 +1305,6 @@ public class DynamicBibliographyRepository {
         deleteStringValues(c, entryId);
         deleteNonPersonIntegerValues(c, entryId);
         deleteExistingPersonValues(c, entryId);
-
-        try (PreparedStatement delRefs = c.prepareStatement("""
-            DELETE FROM bibliography_entries_integer
-            WHERE entries_id = ?
-              AND bibtex_type_id IN (
-                  SELECT id
-                  FROM bibtex_type
-                  WHERE LOWER(TRIM(datatype)) = 'person'
-              )
-            """)) {
-          delRefs.setInt(1, entryId);
-          delRefs.executeUpdate();
-        }
 
         try (PreparedStatement delBase = c.prepareStatement(
             "DELETE FROM bibliography_entries WHERE id = ?")) {
@@ -1435,7 +1424,7 @@ public class DynamicBibliographyRepository {
   }
 
   /**
-   * Prüft, ob ein bibliographischer Wert fachlich befüllt ist.
+   * Prüft, ob ein bibliografischer Wert fachlich befüllt ist.
    *
    * @param value zu prüfender Wert
    * @return {@code true}, wenn der Wert inhaltlich gesetzt ist
@@ -1454,8 +1443,7 @@ public class DynamicBibliographyRepository {
                           && integerValue.value() != null;
 
       case PERSON -> value instanceof PersonBibValue personValue
-                         && personValue.value() != null
-                         && !personValue.value().isEmpty();
+                         && hasMeaningfulPersons(personValue.value());
 
       case RELATED -> value instanceof RelatedBibValue relatedValue
                           && relatedValue.relatedEntryId() != null;
@@ -1463,7 +1451,7 @@ public class DynamicBibliographyRepository {
   }
 
   /**
-   * Vergleicht zwei bibliographische Werte feldspezifisch.
+   * Vergleicht zwei bibliografische Werte feldspezifisch.
    *
    * @param left linker Wert
    * @param right rechter Wert
@@ -1500,9 +1488,17 @@ public class DynamicBibliographyRepository {
     return Objects.equals(lv, rv);
   }
 
+  /**
+   * Vergleicht zwei Personenwerte nach bereinigten, fachlich befüllten
+   * Personenlisten.
+   *
+   * @param left linker Wert
+   * @param right rechter Wert
+   * @return {@code true}, wenn beide Personenlisten fachlich gleich sind
+   */
   private boolean samePersonValue(BibValue left, BibValue right) {
-    List<PersonRef> lp = left instanceof PersonBibValue l ? l.value() : List.of();
-    List<PersonRef> rp = right instanceof PersonBibValue r ? r.value() : List.of();
+    List<PersonRef> lp = normalizePersonList(left instanceof PersonBibValue l ? l.value() : List.of());
+    List<PersonRef> rp = normalizePersonList(right instanceof PersonBibValue r ? r.value() : List.of());
 
     if (lp.size() != rp.size()) {
       return false;
@@ -1519,6 +1515,25 @@ public class DynamicBibliographyRepository {
     }
 
     return true;
+  }
+
+  /**
+   * Entfernt leere Personen aus einer Personenliste und gibt eine stabile
+   * Vergleichsliste zurück.
+   *
+   * @param persons ursprüngliche Personenliste
+   * @return bereinigte Personenliste
+   */
+  private List<PersonRef> normalizePersonList(List<PersonRef> persons) {
+    if (persons == null || persons.isEmpty()) {
+      return List.of();
+    }
+
+    return persons.stream()
+               .filter(Objects::nonNull)
+               .filter(person -> !sanitize(person.firstName()).isBlank()
+                                     || !sanitize(person.lastName()).isBlank())
+               .toList();
   }
 
   private boolean sameRelatedValue(BibValue left, BibValue right) {
@@ -1614,8 +1629,8 @@ public class DynamicBibliographyRepository {
 
   /**
    * Lädt alle Integer- und Related-Werte eines Eintrags.
-   * Für Related-Felder wird der Anzeigetext über die in {@code related_media_type}
-   * hinterlegte Display-Felddefinition des Zielmediums ermittelt.
+   * Personenfelder werden hier bewusst ausgeschlossen und ausschließlich über
+   * {@link #loadPersonValues(Connection, DynamicBibliographyEntry)} geladen.
    *
    * @param c aktive Datenbankverbindung
    * @param entry Zielobjekt
@@ -1623,15 +1638,16 @@ public class DynamicBibliographyRepository {
    */
   private void loadIntegerAndRelatedValues(Connection c, DynamicBibliographyEntry entry) throws SQLException {
     String sql = """
-        SELECT bei.bibtex_type_id,
-               bei.entry,
-               bt.bibtex_name
-        FROM bibliography_entries_integer bei
-        JOIN bibtex_type bt
-          ON bt.id = bei.bibtex_type_id
-        WHERE bei.entries_id = ?
-        ORDER BY bt.id
-        """;
+    SELECT bei.bibtex_type_id,
+           bei.entry,
+           bt.bibtex_name
+    FROM bibliography_entries_integer bei
+    JOIN bibtex_type bt
+      ON bt.id = bei.bibtex_type_id
+    WHERE bei.entries_id = ?
+      AND LOWER(TRIM(bt.datatype)) <> 'person'
+    ORDER BY bt.id
+    """;
 
     try (PreparedStatement ps = c.prepareStatement(sql)) {
       ps.setInt(1, entry.getId());
@@ -1647,14 +1663,13 @@ public class DynamicBibliographyRepository {
 
           if (relatedDefinition.isPresent()) {
             RelatedMediaDefinition definition = relatedDefinition.get();
-            Integer relatedEntryId = value;
             Integer relatedMediaTypeId = definition.targetMediaTypeDefinition().id();
             Integer displayBibtexTypeId = definition.displayFieldDefinition().id();
-            String displayValue = loadRelatedDisplayValue(c, relatedEntryId, displayBibtexTypeId);
+            String displayValue = loadRelatedDisplayValue(c, value, displayBibtexTypeId);
 
             entry.putValue(new RelatedBibValue(
                 bibtexName,
-                relatedEntryId,
+                value,
                 relatedMediaTypeId,
                 displayValue
             ));
@@ -1667,12 +1682,9 @@ public class DynamicBibliographyRepository {
   }
 
   /**
-   * Lädt alle Personenfelder eines Eintrags über die neue Indirektion
+   * Lädt alle Personenfelder eines Eintrags ausschließlich über die neue
+   * feldspezifische Indirektion
    * {@code bibliography_entries_integer -> author_mapping}.
-   * <p>
-   * Für Altbestände ohne diese Indirektion bleibt ein Fallback auf die frühere
-   * Direktzuordnung {@code author_mapping(person_group_id = bibliography_entry_id)}
-   * als Feld {@code author} erhalten.
    *
    * @param c aktive Datenbankverbindung
    * @param entry Zielobjekt
@@ -1722,60 +1734,14 @@ public class DynamicBibliographyRepository {
       }
     }
 
-    if (personsByBibtexName.isEmpty()) {
-      loadLegacyAuthorFallback(c, entry, personsByBibtexName);
-    }
+    /*
+     * Personen werden ausschließlich über den feldspezifischen
+     * person_group-Pfad des neuen dynamischen Modells geladen.
+     */
 
     for (Map.Entry<String, List<PersonRef>> group : personsByBibtexName.entrySet()) {
       if (!group.getValue().isEmpty()) {
         entry.putValue(new PersonBibValue(group.getKey(), group.getValue()));
-      }
-    }
-  }
-
-  /**
-   * Lädt Altbestände aus {@code author_mapping}, sofern noch keine
-   * feldspezifische Zuordnung über {@code bibliography_entries_integer}
-   * vorhanden ist.
-   *
-   * @param c aktive Datenbankverbindung
-   * @param entry Zielobjekt
-   * @param personsByBibtexName Zielstruktur für geladene Personen
-   * @throws SQLException bei Datenbankfehlern
-   */
-  private void loadLegacyAuthorFallback(Connection c,
-                                        DynamicBibliographyEntry entry,
-                                        Map<String, List<PersonRef>> personsByBibtexName) throws SQLException {
-    String sql = """
-        SELECT a.id,
-               a.first_name,
-               a.last_name,
-               am.author_pos
-        FROM authors a
-        JOIN author_mapping am
-          ON am.author_id = a.id
-        WHERE am.person_group_id = ?
-        ORDER BY am.author_pos ASC
-        """;
-
-    try (PreparedStatement ps = c.prepareStatement(sql)) {
-      ps.setInt(1, entry.getId());
-
-      try (ResultSet rs = ps.executeQuery()) {
-        List<PersonRef> authors = new ArrayList<>();
-
-        while (rs.next()) {
-          authors.add(new PersonRef(
-              rs.getInt("id"),
-              rs.getString("first_name"),
-              rs.getString("last_name"),
-              rs.getInt("author_pos")
-          ));
-        }
-
-        if (!authors.isEmpty()) {
-          personsByBibtexName.put("author", authors);
-        }
       }
     }
   }
@@ -1907,18 +1873,23 @@ public class DynamicBibliographyRepository {
 
     try (PreparedStatement ps = c.prepareStatement(sql)) {
       for (BibValue value : entry.getOrderedValues()) {
-        if (!(value instanceof StringBibValue stringValue)) {
+        if (!(value instanceof StringBibValue(String bibtexName, String value1))) {
           continue;
         }
 
-        Integer bibtexTypeId = loadBibtexTypeIdByName(c, stringValue.bibtexName());
+        Integer bibtexTypeId = loadBibtexTypeIdByName(c, bibtexName);
         if (bibtexTypeId == null) {
+          continue;
+        }
+
+        String normalizedValue = normalizeNullable(value1);
+        if (normalizedValue == null || normalizedValue.isBlank()) {
           continue;
         }
 
         ps.setInt(1, entry.getId());
         ps.setInt(2, bibtexTypeId);
-        ps.setString(3, normalizeNullable(stringValue.value()));
+        ps.setString(3, normalizedValue);
         ps.addBatch();
       }
 
@@ -1956,15 +1927,13 @@ public class DynamicBibliographyRepository {
         if (bibtexTypeId == null) {
           continue;
         }
+        if (integerValue == null) {
+          continue;
+        }
 
         ps.setInt(1, entry.getId());
         ps.setInt(2, bibtexTypeId);
-
-        if (integerValue == null) {
-          ps.setNull(3, Types.INTEGER);
-        } else {
-          ps.setInt(3, integerValue);
-        }
+        ps.setInt(3, integerValue);
 
         ps.addBatch();
       }
@@ -2007,6 +1976,11 @@ public class DynamicBibliographyRepository {
 
       handledBibtexTypeIds.add(bibtexTypeId);
 
+      if (!hasMeaningfulPersons(personValue.value())) {
+        deletePersonGroupReference(c, entry.getId(), bibtexTypeId);
+        continue;
+      }
+
       Integer existingGroupId = existingGroupsByBibtexTypeId.get(bibtexTypeId);
       if (existingGroupId != null && existingGroupId > 0) {
         int insertedCount = replacePersonGroupContents(c, existingGroupId, personValue.value());
@@ -2027,7 +2001,37 @@ public class DynamicBibliographyRepository {
     }
 
     removeObsoletePersonValues(c, entry.getId(), existingGroupsByBibtexTypeId, handledBibtexTypeIds);
-    deleteLegacyAuthorFallback(c, entry.getId());
+
+    /*
+     * Legacy-Direktbestände werden nicht mehr im Repository bereinigt.
+     * Eine eventuelle Altbereinigung erfolgt ausschließlich über
+     * kontrollierte Datenmigrationen.
+     */
+  }
+
+  /**
+   * Prüft, ob eine Personenliste mindestens eine fachlich befüllte Person enthält.
+   *
+   * @param persons Personenliste
+   * @return {@code true}, wenn mindestens Vor- oder Nachname gesetzt ist
+   */
+  private boolean hasMeaningfulPersons(List<PersonRef> persons) {
+    if (persons == null || persons.isEmpty()) {
+      return false;
+    }
+
+    for (PersonRef person : persons) {
+      if (person == null) {
+        continue;
+      }
+
+      if (!sanitize(person.firstName()).isBlank()
+              || !sanitize(person.lastName()).isBlank()) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
@@ -2191,35 +2195,41 @@ public class DynamicBibliographyRepository {
       }
     }
 
-    deleteLegacyAuthorFallback(c, entryId);
-  }
-
-  /**
-   * Löscht vorsorglich einen eventuell noch vorhandenen Altbestand, bei dem
-   * {@code author_mapping.person_group_id} direkt der Bibliographie-ID entspricht.
-   *
-   * @param c aktive Datenbankverbindung
-   * @param entryId Bibliographie-ID
-   * @throws SQLException bei Datenbankfehlern
-   */
-  private void deleteLegacyAuthorFallback(Connection c, int entryId) throws SQLException {
-    try (PreparedStatement del = c.prepareStatement(
-        "DELETE FROM author_mapping WHERE person_group_id = ?")) {
-      del.setInt(1, entryId);
-      del.executeUpdate();
-    }
+    /*
+     * Legacy-Direktbestände werden nicht im Repository gelöscht.
+     * Eine eventuelle Altbereinigung erfolgt ausschließlich über
+     * kontrollierte Datenmigrationen.
+     */
   }
 
   /**
    * Ermittelt die nächste freie Personenlisten-ID.
+   * Berücksichtigt sowohl vorhandene Gruppen in author_mapping als auch
+   * bereits referenzierte Personengruppen in bibliography_entries_integer.
    *
    * @param c aktive Datenbankverbindung
    * @return nächste freie Personenlisten-ID
    * @throws SQLException bei Datenbankfehlern
    */
   private int allocateNextPersonGroupId(Connection c) throws SQLException {
-    try (PreparedStatement ps = c.prepareStatement(
-        "SELECT COALESCE(MAX(person_group_id), 0) + 1 AS next_id FROM author_mapping");
+    String sql = """
+        SELECT COALESCE(MAX(id_value), 0) + 1 AS next_id
+        FROM (
+            SELECT person_group_id AS id_value
+            FROM author_mapping
+
+            UNION
+
+            SELECT bei.entry AS id_value
+            FROM bibliography_entries_integer bei
+            JOIN bibtex_type bt
+              ON bt.id = bei.bibtex_type_id
+            WHERE LOWER(TRIM(bt.datatype)) = 'person'
+              AND bei.entry IS NOT NULL
+        )
+        """;
+
+    try (PreparedStatement ps = c.prepareStatement(sql);
          ResultSet rs = ps.executeQuery()) {
       if (!rs.next()) {
         return 1;
@@ -2271,7 +2281,7 @@ public class DynamicBibliographyRepository {
   }
 
   /**
-   * Verknüpft ein Personenfeld eines Bibliographie-Eintrags mit einer
+   * Verknüpft ein Personenfeld eines Bibliografie-Eintrags mit einer
    * Personenlisten-ID in {@code bibliography_entries_integer}.
    *
    * @param c aktive Datenbankverbindung
@@ -2390,55 +2400,58 @@ public class DynamicBibliographyRepository {
 
   /**
    * Lädt den Anzeigetext eines verknüpften Related-Zielmediums über die in
-   * {@code related_media_type} konfigurierte Display-Felddefinition.
-   * Zuerst wird in den String-Werten gesucht, danach in den Integer-Werten.
+   * {@code related_media_type} konfigurierte Anzeige-Spalte.
+   * Fällt bei leerem dynamischem Wert auf {@code bibliography_entries.title}
+   * zurück.
    *
    * @param c aktive Datenbankverbindung
-   * @param relatedEntryId Ziel-ID des verknüpften Mediums
-   * @param displayBibtexTypeId BibTeX-Feld-ID des anzuzeigenden Zielattributs
+   * @param relatedEntryId ID des Zielmediums
+   * @param displayBibtexTypeId BibTeX-Feld-ID des Anzeigeattributs
    * @return Anzeigetext oder leerer String
    * @throws SQLException bei Datenbankfehlern
    */
   private String loadRelatedDisplayValue(Connection c,
                                          Integer relatedEntryId,
                                          Integer displayBibtexTypeId) throws SQLException {
-    if (relatedEntryId == null || relatedEntryId <= 0 || displayBibtexTypeId == null || displayBibtexTypeId <= 0) {
+    if (relatedEntryId == null || relatedEntryId <= 0) {
       return "";
     }
 
-    String stringSql = """
-        SELECT entry
-        FROM bibliography_entries_string
-        WHERE entries_id = ?
-          AND bibtex_type_id = ?
-        """;
+    if (displayBibtexTypeId != null && displayBibtexTypeId > 0) {
+      String sql = """
+          SELECT entry
+          FROM bibliography_entries_string
+          WHERE entries_id = ?
+            AND bibtex_type_id = ?
+          """;
 
-    try (PreparedStatement ps = c.prepareStatement(stringSql)) {
-      ps.setInt(1, relatedEntryId);
-      ps.setInt(2, displayBibtexTypeId);
+      try (PreparedStatement ps = c.prepareStatement(sql)) {
+        ps.setInt(1, relatedEntryId);
+        ps.setInt(2, displayBibtexTypeId);
 
-      try (ResultSet rs = ps.executeQuery()) {
-        if (rs.next()) {
-          return sanitize(rs.getString("entry"));
+        try (ResultSet rs = ps.executeQuery()) {
+          if (rs.next()) {
+            String value = sanitize(rs.getString("entry"));
+            if (!value.isBlank()) {
+              return value;
+            }
+          }
         }
       }
     }
 
-    String integerSql = """
-        SELECT entry
-        FROM bibliography_entries_integer
-        WHERE entries_id = ?
-          AND bibtex_type_id = ?
+    String fallbackSql = """
+        SELECT title
+        FROM bibliography_entries
+        WHERE id = ?
         """;
 
-    try (PreparedStatement ps = c.prepareStatement(integerSql)) {
+    try (PreparedStatement ps = c.prepareStatement(fallbackSql)) {
       ps.setInt(1, relatedEntryId);
-      ps.setInt(2, displayBibtexTypeId);
 
       try (ResultSet rs = ps.executeQuery()) {
         if (rs.next()) {
-          Object value = rs.getObject("entry");
-          return value == null ? "" : String.valueOf(value).trim();
+          return sanitize(rs.getString("title"));
         }
       }
     }
@@ -2452,7 +2465,7 @@ public class DynamicBibliographyRepository {
    * Vorrang hat das neue Feld {@code title}; fehlt dieses, wird der leere String
    * verwendet.
    *
-   * @param entry bibliographischer Eintrag
+   * @param entry bibliografischer Eintrag
    * @return Alt-kompatibler Titelwert
    */
   private String extractLegacyTitle(DynamicBibliographyEntry entry) {
@@ -2525,30 +2538,6 @@ public class DynamicBibliographyRepository {
     } catch (SQLException ex) {
       throw new IllegalStateException("Feldbasierte Bibliographie-Suche konnte nicht ausgeführt werden.", ex);
     }
-  }
-
-  /**
-   * Prüft, ob ein Datentyp als Personenfeld behandelt wird.
-   *
-   * @param datatype Metadaten-Datentyp
-   * @return {@code true}, wenn Personensemantik vorliegt
-   */
-  private boolean isPersonDatatype(String datatype) {
-    return "person".equalsIgnoreCase(sanitize(datatype));
-  }
-
-  /**
-   * Prüft, ob ein Datentyp über die Integer-Tabelle gespeichert wird.
-   *
-   * @param datatype Metadaten-Datentyp
-   * @return {@code true}, wenn Integer-Semantik vorliegt
-   */
-  private boolean isIntegerLikeDatatype(String datatype) {
-    String normalized = sanitize(datatype).toLowerCase(Locale.ROOT);
-    return normalized.equals("integer")
-               || normalized.equals("year")
-               || normalized.equals("month")
-               || normalized.equals("anderer eintrag/integer");
   }
 
   /**

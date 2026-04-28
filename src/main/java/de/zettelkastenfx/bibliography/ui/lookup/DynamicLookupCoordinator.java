@@ -8,6 +8,8 @@ import javafx.scene.control.Label;
 
 import java.util.*;
 
+import static de.zettelkastenfx.bibliography.util.BibtexDatatypeUtil.isRelatedDatatype;
+
 /**
  * Zentrale, metadatengetriebene Lookup-Orchestrierung für dynamische
  * Bibliographie-Formulare.
@@ -48,15 +50,6 @@ public class DynamicLookupCoordinator {
      * @return aktueller Feldtext oder leerer String
      */
     String getCurrentFieldValue(String mediaTypeBibName, String bibtexName);
-
-    /**
-     * Liest die aktuell gesetzte Related-ID eines technischen Feldes.
-     *
-     * @param mediaTypeBibName technischer Medientypname
-     * @param bibtexName technischer Feldname
-     * @return aktuelle Related-ID oder {@code null}
-     */
-    Integer getCurrentRelatedEntryId(String mediaTypeBibName, String bibtexName);
 
     /**
      * Setzt die Related-ID samt sichtbarem Anzeige­text eines technischen Feldes.
@@ -110,15 +103,6 @@ public class DynamicLookupCoordinator {
      * @param locked neuer Sperrzustand
      */
     void setAutoFillLocked(String mediaTypeBibName, boolean locked);
-
-    /**
-     * Liefert die derzeit eingetragenen Autoren des Formulars.
-     * Für diesen ersten Ausbau wird bewusst das klassische Autorenfeld genutzt.
-     *
-     * @param mediaTypeBibName technischer Medientypname
-     * @return eingetragene Autoren
-     */
-    List<Author> getCurrentAuthors(String mediaTypeBibName);
 
     /**
      * Liefert die derzeit eingetragenen Personen eines konkreten Personenfeldes.
@@ -217,8 +201,8 @@ public class DynamicLookupCoordinator {
       return;
     }
 
-    String datatype = normalize(attribute.fieldDefinition().datatype());
-    boolean isRelatedDatatype = "anderer eintrag/integer".equalsIgnoreCase(datatype);
+    String datatype = attribute.fieldDefinition().datatype();
+    boolean relatedDatatype = isRelatedDatatype(datatype);;
 
     Optional<MediaAttributeLookupDefinition> lookupDefinition =
         bibliographyService.loadLookupDefinition(ownerMediaTypeBibName, bibtexName);
@@ -270,7 +254,7 @@ public class DynamicLookupCoordinator {
       return;
     }
 
-    if (isRelatedDatatype) {
+    if (relatedDatatype) {
       bindRelatedField(
           fieldView,
           ownerMediaTypeBibName,

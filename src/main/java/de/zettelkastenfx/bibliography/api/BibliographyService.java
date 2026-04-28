@@ -126,18 +126,18 @@ public interface BibliographyService {
   /**
    * Prüft einen lokalen Editorzustand auf Erfüllung aller fachlich
    * erforderlichen Pflichtattribute eines Medientyps.
-   * Berücksichtigt werden alle Felder mit {@code identify} oder
-   * {@code necessary}.
+   * Personenfelder gelten nur dann als erfüllt, wenn mindestens eine Person
+   * mit Vor- oder Nachnamen vorhanden ist.
    *
    * @param mediaTypeBibName technischer Medientypname
-   * @param fieldValues aktuelle Feldwerte nach technischem BibTeX-Namen
-   * @param personFieldNames technische Feldnamen belegter Personenfelder
+   * @param fieldValues aktuelle String-/Integerwerte nach BibTeX-Namen
+   * @param personValues aktuelle Personenwerte nach BibTeX-Namen
    * @param relatedFieldNames technische Feldnamen belegter Related-Felder
    * @return {@code true}, wenn alle Pflichtattribute lokal erfüllt sind
    */
   boolean isLocallyValidForSave(String mediaTypeBibName,
                                 java.util.Map<String, String> fieldValues,
-                                java.util.Set<String> personFieldNames,
+                                java.util.Map<String, java.util.List<Author>> personValues,
                                 java.util.Set<String> relatedFieldNames);
 
   /**

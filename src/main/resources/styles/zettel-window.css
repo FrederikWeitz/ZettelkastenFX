@@ -99,6 +99,18 @@
     -fx-wrap-text: false;
 }
 
+.biblio-field-row.biblio-identify-field {
+    -fx-background-color: #dbdbdb;
+    -fx-background-radius: 6;
+    -fx-padding: 4 6 4 6;
+}
+
+.biblio-field-row.biblio-necessary-field {
+    -fx-background-color: #e3e3e3;
+    -fx-background-radius: 6;
+    -fx-padding: 4 6 4 6;
+}
+
 /* Keywords-Tabelle (mittleres Fenster): ohne Header */
 .keywords-table .column-header-background,
 .keywords-table .column-header,
@@ -357,6 +369,94 @@
     -fx-padding: 12;
     -fx-border-color: #666;
     -fx-border-width: 1;
+}
+
+/* BOOK */
+.zettel-book-pane {
+    -fx-padding: 0;
+}
+
+.zettel-book-toolbar {
+    -fx-padding: 0 0 6 0;
+}
+
+.zettel-book-media-type-field {
+    -fx-pref-width: 170;
+}
+
+.zettel-book-title-field {
+    -fx-pref-width: 240;
+}
+
+.zettel-book-author-host {
+    -fx-padding: 0;
+}
+
+.zettel-book-author-scroll {
+    -fx-fit-to-width: true;
+}
+
+.zettel-book-author-rows {
+    -fx-spacing: 6;
+    -fx-padding: 0;
+}
+
+.zettel-book-author-row {
+    -fx-alignment: center-left;
+}
+
+.zettel-book-status {
+    -fx-font-size: 12px;
+    -fx-text-fill: -fx-text-inner-color;
+}
+
+.zettel-book-main-box {
+    -fx-padding: 0;
+    -fx-spacing: 8;
+}
+
+.zettel-book-media-table,
+.zettel-book-notes-table {
+    -fx-background-insets: 0;
+}
+
+.zettel-book-split-pane {
+    -fx-padding: 0;
+}
+
+.zettel-book-media-table .column-header,
+.zettel-book-notes-table .column-header {
+    -fx-cursor: hand;
+}
+
+.zettel-book-author-last-name-field,
+.zettel-book-author-first-name-field {
+    -fx-pref-width: 180;
+}
+
+.zettel-book-notes-pane {
+    -fx-padding: 0;
+}
+
+.zettel-book-author-rows {
+    -fx-fill-width: true;
+}
+
+.zettel-book-author-host {
+    -fx-padding: 0;
+    -fx-spacing: 0;
+}
+
+.zettel-book-author-scroll {
+    -fx-padding: 0;
+    -fx-background-color: transparent;
+    -fx-background-insets: 0;
+    -fx-border-color: transparent;
+    -fx-border-insets: 0;
+}
+
+.zettel-book-author-scroll > .viewport {
+    -fx-background-color: transparent;
 }
 
 /* KEY */

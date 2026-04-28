@@ -17,9 +17,11 @@ import de.zettelkastenfx.notes.model.NoteLink;
 import de.zettelkastenfx.notes.model.NoteReferenceInfo;
 import de.zettelkastenfx.persistence.InlineCssRtfxBlobCodec;
 import de.zettelkastenfx.persistence.NoteRepository;
+import javafx.animation.PauseTransition;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.geometry.Side;
 import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.control.Button;
@@ -32,6 +34,7 @@ import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.*;
 import javafx.stage.Popup;
 import javafx.stage.Stage;
+import javafx.util.Duration;
 import org.fxmisc.richtext.InlineCssTextArea;
 
 import java.awt.*;
@@ -115,6 +118,11 @@ public class ZettelWindowController {
   private final Set<String> collapsedMagnifyIncomingBranches = new HashSet<>();
   private final Set<String> collapsedMagnifyOutgoingBranches = new HashSet<>();
   private Integer lastMagnifyRenderedSourceNoteId;
+  private final Map<String, MediaTypeDefinition> bookMediaTypesByNormalizedText = new LinkedHashMap<>();
+  private boolean suppressBookMediaTypeCallbacks;
+  private boolean suppressBookAuthorCallbacks;
+  private Integer selectedBookEntryId;
+  private final PauseTransition bookRefreshDebounce = new PauseTransition(Duration.millis(140));
   private record MagnifyBranchReference(NoteReferenceInfo reference, boolean incoming) {}
 
   private static final class ListNoteData {
@@ -149,6 +157,9 @@ public class ZettelWindowController {
         bibliographyService,
         PersistenceUtil.getDataSource()
     );
+
+    bookRefreshDebounce.setOnFinished(event -> refreshBookWindow());
+    rebuildBookMediaTypeCache();
 
     openInitialNote();
     wireEvents();
@@ -191,6 +202,7 @@ public class ZettelWindowController {
     wireMagnifyLinkEvents();
     wireKeyEvents();
     wireListEvents();
+    wireBookEvents();
 
     // Dropdown für Folgezettel
     view.getMiFollowing().setOnAction(e -> createTypedFollowUpNote(LinkType.SERIE));
@@ -301,6 +313,982 @@ public class ZettelWindowController {
       });
       return row;
     });
+  }
+
+  /**
+   * Verdrahtet die Bedienelemente des BOOK-Fensters.
+   * Schritt 3 ergänzt:
+   * - Autorenfilter mit Vorschlagsdropdown
+   * - Zetteltabelle
+   * - Medienauswahl per Zeilenklick
+   * - Zettelsprung aus der unteren Tabelle
+   */
+  private void wireBookEvents() {
+    view.getBookShowNotesToggleButton().selectedProperty().addListener((obs, oldValue, selected) -> {
+      view.setBookNotesVisible(selected);
+      refreshBookWindow();
+    });
+
+    view.getBookShowMediaColumnToggleButton().setOnAction(e -> refreshBookWindow());
+
+    view.getBookAuthorModeButton().setOnAction(e -> {
+      cycleBookAuthorMode();
+      wireBookAuthorRowEvents();
+      refreshBookWindow();
+    });
+
+    view.getBookMediaTypeField().textProperty().addListener((obs, oldValue, newValue) -> {
+      if (suppressBookMediaTypeCallbacks) {
+        return;
+      }
+      handleBookMediaTypeTextChanged(newValue);
+    });
+
+    view.getBookMediaTypeField().focusedProperty().addListener((obs, oldValue, focused) -> {
+      if (focused) {
+        if (!safeTrim(view.getBookMediaTypeField().getText()).isBlank()) {
+          showBookMediaTypeSuggestions(view.getBookMediaTypeField().getText());
+        }
+        return;
+      }
+
+      view.getBookMediaTypeMenu().hide();
+      commitBookMediaTypeSelection();
+    });
+
+    view.getBookMediaTypeField().setOnMouseClicked(e -> {
+      if (!view.getBookMediaTypeField().isFocused()) {
+        view.getBookMediaTypeField().requestFocus();
+      }
+      if (!safeTrim(view.getBookMediaTypeField().getText()).isBlank()) {
+        showBookMediaTypeSuggestions(view.getBookMediaTypeField().getText());
+      }
+    });
+
+    view.getBookMediaTypeField().setOnKeyPressed(event -> {
+      switch (event.getCode()) {
+        case DOWN, ENTER -> {
+          showBookMediaTypeSuggestions(view.getBookMediaTypeField().getText());
+          if (event.getCode() == KeyCode.ENTER) {
+            commitBookMediaTypeSelection();
+          }
+        }
+        case ESCAPE -> view.getBookMediaTypeMenu().hide();
+        default -> {
+        }
+      }
+    });
+
+    view.getBookTitleField().textProperty().addListener((obs, oldValue, newValue) -> requestBookRefresh());
+
+    view.getBookMediaTable().setPlaceholder(new Label("Keine Medien gefunden"));
+    view.getBookNotesTable().setPlaceholder(new Label("Keine Zettel gefunden"));
+
+    view.getBookMediaTable().setRowFactory(table -> {
+      TableRow<ZettelWindowView.BookMediaRow> row = new TableRow<>();
+
+      row.setOnMouseClicked(event -> {
+        if (event.getButton() != MouseButton.PRIMARY || row.isEmpty()) {
+          return;
+        }
+
+        ZettelWindowView.BookMediaRow clicked = row.getItem();
+        if (clicked == null) {
+          return;
+        }
+
+        if (Objects.equals(selectedBookEntryId, clicked.getEntryId())) {
+          selectedBookEntryId = null;
+          view.selectBookMediaRow(null);
+        } else {
+          selectedBookEntryId = clicked.getEntryId();
+          view.selectBookMediaRow(selectedBookEntryId);
+        }
+
+        refreshBookWindow();
+      });
+
+      return row;
+    });
+
+    view.getBookNotesTable().setRowFactory(table -> {
+      TableRow<ZettelWindowView.BookNoteRow> row = new TableRow<>();
+      row.setOnMouseClicked(event -> {
+        if (event.getButton() == MouseButton.PRIMARY && !row.isEmpty()) {
+          openNoteViaToolbar(row.getItem().getNoteId());
+        }
+      });
+      return row;
+    });
+
+    wireBookAuthorRowEvents();
+  }
+
+  /**
+   * Schaltet zyklisch durch die Autorenmodi des BOOK-Fensters.
+   * OFF -> SINGLE -> MULTI -> OFF
+   */
+  private void cycleBookAuthorMode() {
+    ZettelWindowView.BookAuthorMode nextMode = switch (view.getActiveBookAuthorMode()) {
+      case OFF -> ZettelWindowView.BookAuthorMode.SINGLE;
+      case SINGLE -> ZettelWindowView.BookAuthorMode.MULTI;
+      case MULTI -> ZettelWindowView.BookAuthorMode.OFF;
+    };
+
+    view.setBookAuthorMode(nextMode);
+
+    if (nextMode == ZettelWindowView.BookAuthorMode.OFF) {
+      view.setBookAuthorRows(List.of(new ZettelWindowView.BookAuthorRow("", "")));
+      return;
+    }
+
+    if (nextMode == ZettelWindowView.BookAuthorMode.SINGLE) {
+      view.setBookAuthorRows(List.of(new ZettelWindowView.BookAuthorRow("", "")));
+      return;
+    }
+
+    view.setBookAuthorRows(List.of(
+        new ZettelWindowView.BookAuthorRow("", ""),
+        new ZettelWindowView.BookAuthorRow("", "")
+    ));
+    ensureBookMultiAuthorTrailingBlankRow();
+  }
+
+  /**
+   * Verdrahtet die aktuell sichtbaren Autorenzeilen des BOOK-Fensters.
+   * Vorschläge erscheinen ausschließlich am Nachnamen-Feld.
+   * Im Mehrfachmodus erweitert sich die letzte belegte Zeile automatisch
+   * um eine neue leere Folgezeile.
+   */
+  private void wireBookAuthorRowEvents() {
+    for (ZettelWindowView.BookAuthorRow row : view.getBookAuthorRowModels()) {
+      if (row == null || row.getLastNameField() == null || row.getFirstNameField() == null) {
+        continue;
+      }
+
+      row.getLastNameField().textProperty().addListener((obs, oldValue, newValue) -> {
+        if (suppressBookAuthorCallbacks) {
+          return;
+        }
+
+        row.setLastName(newValue == null ? "" : newValue);
+        ensureBookMultiAuthorTrailingBlankRow();
+        showBookAuthorSuggestions(row);
+        requestBookRefresh();
+      });
+
+      row.getFirstNameField().textProperty().addListener((obs, oldValue, newValue) -> {
+        if (suppressBookAuthorCallbacks) {
+          return;
+        }
+
+        row.setFirstName(newValue == null ? "" : newValue);
+        ensureBookMultiAuthorTrailingBlankRow();
+        requestBookRefresh();
+      });
+
+      row.getLastNameField().focusedProperty().addListener((obs, oldValue, focused) -> {
+        if (focused) {
+          if (!safeTrim(row.getLastNameField().getText()).isBlank()) {
+            showBookAuthorSuggestions(row);
+          }
+          return;
+        }
+
+        if (row.getLastNameSuggestionMenu() != null) {
+          row.getLastNameSuggestionMenu().hide();
+        }
+      });
+
+      row.getLastNameField().setOnMouseClicked(event -> {
+        if (!row.getLastNameField().isFocused()) {
+          row.getLastNameField().requestFocus();
+        }
+        showBookAuthorSuggestions(row);
+      });
+
+      row.getLastNameField().setOnKeyPressed(event -> {
+        switch (event.getCode()) {
+          case DOWN, ENTER -> showBookAuthorSuggestions(row);
+          case ESCAPE -> {
+            if (row.getLastNameSuggestionMenu() != null) {
+              row.getLastNameSuggestionMenu().hide();
+            }
+          }
+          default -> {
+          }
+        }
+      });
+    }
+  }
+
+  /**
+   * Stellt im Mehrfach-Autorenmodus sicher, dass am Ende immer genau eine
+   * leere Folgezeile vorhanden ist.
+   * Der Bereich startet mit zwei Zeilen und wächst danach nur bei Bedarf.
+   */
+  private void ensureBookMultiAuthorTrailingBlankRow() {
+    if (view.getActiveBookAuthorMode() != ZettelWindowView.BookAuthorMode.MULTI) {
+      return;
+    }
+
+    List<ZettelWindowView.BookAuthorRow> snapshot = new ArrayList<>(view.snapshotBookAuthorRows());
+    if (snapshot.isEmpty()) {
+      snapshot = new ArrayList<>(List.of(
+          new ZettelWindowView.BookAuthorRow("", ""),
+          new ZettelWindowView.BookAuthorRow("", "")
+      ));
+    }
+
+    while (snapshot.size() < 2) {
+      snapshot.add(new ZettelWindowView.BookAuthorRow("", ""));
+    }
+
+    int lastFilledIndex = -1;
+    for (int i = 0; i < snapshot.size(); i++) {
+      ZettelWindowView.BookAuthorRow row = snapshot.get(i);
+      if (row == null) {
+        continue;
+      }
+
+      if (!safeTrim(row.getLastName()).isBlank() || !safeTrim(row.getFirstName()).isBlank()) {
+        lastFilledIndex = i;
+      }
+    }
+
+    int targetSize = Math.max(2, lastFilledIndex + 2);
+
+    if (snapshot.size() == targetSize) {
+      return;
+    }
+
+    List<ZettelWindowView.BookAuthorRow> resizedRows = new ArrayList<>();
+    for (int i = 0; i < targetSize; i++) {
+      if (i < snapshot.size()) {
+        ZettelWindowView.BookAuthorRow row = snapshot.get(i);
+        resizedRows.add(new ZettelWindowView.BookAuthorRow(
+            row == null ? "" : row.getLastName(),
+            row == null ? "" : row.getFirstName()
+        ));
+      } else {
+        resizedRows.add(new ZettelWindowView.BookAuthorRow("", ""));
+      }
+    }
+
+    suppressBookAuthorCallbacks = true;
+    try {
+      view.setBookAuthorRows(resizedRows);
+    } finally {
+      suppressBookAuthorCallbacks = false;
+    }
+
+    wireBookAuthorRowEvents();
+  }
+
+  /**
+   * Zeigt Autorenvorschläge für das Nachnamen-Feld einer BOOK-Autorenzeile.
+   * Vorschläge werden lokal dedupliziert und nach Präfixtreffern bevorzugt sortiert.
+   *
+   * @param row betroffene Autorenzeile
+   */
+  private void showBookAuthorSuggestions(ZettelWindowView.BookAuthorRow row) {
+    if (row == null || row.getLastNameField() == null || row.getLastNameSuggestionMenu() == null) {
+      return;
+    }
+
+    String prefix = safeTrim(row.getLastNameField().getText());
+    if (prefix.isBlank()) {
+      row.getLastNameSuggestionMenu().hide();
+      return;
+    }
+
+    String mediaTypeBibName = view.hasBookResolvedMediaTypeSelection()
+                                  ? view.getBookResolvedMediaTypeBibName()
+                                  : "";
+
+    List<de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion> suggestions =
+        bibliographyService.findAuthorSuggestions(
+            mediaTypeBibName,
+            prefix,
+            selectedBookEntryId
+        );
+
+    String firstNameFilter = row.getFirstNameField() == null
+                                 ? safeTrim(row.getFirstName())
+                                 : safeTrim(row.getFirstNameField().getText());
+
+    List<de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion> preparedSuggestions =
+        prepareBookAuthorSuggestions(suggestions, prefix, firstNameFilter);
+
+    if (preparedSuggestions.isEmpty()) {
+      row.getLastNameSuggestionMenu().hide();
+      return;
+    }
+
+    List<CustomMenuItem> items = new ArrayList<>();
+    for (de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion suggestion : preparedSuggestions) {
+      if (suggestion == null) {
+        continue;
+      }
+
+      String labelText = buildAuthorSuggestionLabel(suggestion);
+      Label label = new Label(labelText);
+
+      CustomMenuItem item = new CustomMenuItem(label, true);
+      item.setOnAction(e -> applyBookAuthorSuggestion(row, suggestion));
+      items.add(item);
+    }
+
+    if (items.isEmpty()) {
+      row.getLastNameSuggestionMenu().hide();
+      return;
+    }
+
+    row.getLastNameSuggestionMenu().getItems().setAll(items);
+    showContextMenuSafely(row.getLastNameSuggestionMenu(), row.getLastNameField());
+  }
+
+  /**
+   * Bereitet BOOK-Autorenvorschläge für die Anzeige auf.
+   * Dabei werden Dubletten über Nachname/Vorname entfernt, optional über den
+   * aktuellen Vornamen-Teilstring verfeinert und Präfixtreffer bevorzugt sortiert.
+   *
+   * @param rawSuggestions rohe Service-Vorschläge
+   * @param lastNamePrefix aktueller Nachnamen-Text
+   * @param firstNameFilter aktueller Vornamen-Text derselben Zeile
+   * @return sortierte und deduplizierte Vorschläge
+   */
+  private List<de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion> prepareBookAuthorSuggestions(
+      List<de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion> rawSuggestions,
+      String lastNamePrefix,
+      String firstNameFilter
+  ) {
+    if (rawSuggestions == null || rawSuggestions.isEmpty()) {
+      return List.of();
+    }
+
+    String normalizedLastNamePrefix = safeTrim(lastNamePrefix).toLowerCase(Locale.ROOT);
+    String normalizedFirstNameFilter = safeTrim(firstNameFilter).toLowerCase(Locale.ROOT);
+
+    Map<String, de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion> deduplicated =
+        new LinkedHashMap<>();
+
+    for (de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion suggestion : rawSuggestions) {
+      if (suggestion == null) {
+        continue;
+      }
+
+      String lastName = safeTrim(suggestion.lastName());
+      String firstName = safeTrim(suggestion.firstName());
+
+      if (lastName.isBlank() && firstName.isBlank()) {
+        continue;
+      }
+
+      if (!normalizedFirstNameFilter.isBlank()
+              && !firstName.toLowerCase(Locale.ROOT).contains(normalizedFirstNameFilter)) {
+        continue;
+      }
+
+      String key = (lastName + "\u0000" + firstName).toLowerCase(Locale.ROOT);
+      deduplicated.putIfAbsent(key, suggestion);
+    }
+
+    List<de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion> prepared =
+        new ArrayList<>(deduplicated.values());
+
+    prepared.sort(
+        Comparator
+            .comparingInt((de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion suggestion) ->
+                              authorSuggestionRank(suggestion, normalizedLastNamePrefix, normalizedFirstNameFilter))
+            .thenComparing(suggestion -> safeTrim(suggestion.lastName()).toLowerCase(Locale.ROOT))
+            .thenComparing(suggestion -> safeTrim(suggestion.firstName()).toLowerCase(Locale.ROOT))
+    );
+
+    return prepared;
+  }
+
+  /**
+   * Bewertet einen Autorenvorschlag für die BOOK-Sortierung.
+   * Zuerst wird der Nachname gewichtet, danach optional der Vorname.
+   *
+   * Nachname:
+   * 0 = beginnt mit Präfix
+   * 1 = enthält Präfix
+   * 2 = sonstiger Fallback
+   *
+   * Vorname:
+   * +0 = kein Vornamenfilter oder beginnt mit Filter
+   * +1 = enthält Filter
+   * +2 = sonstiger Fallback
+   *
+   * @param suggestion Autorenvorschlag
+   * @param normalizedLastNamePrefix normalisiertes Nachnamen-Präfix
+   * @param normalizedFirstNameFilter normalisierter Vornamen-Filter
+   * @return Sortierrang
+   */
+  private int authorSuggestionRank(de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion suggestion,
+                                   String normalizedLastNamePrefix,
+                                   String normalizedFirstNameFilter) {
+    String lastName = safeTrim(suggestion == null ? "" : suggestion.lastName()).toLowerCase(Locale.ROOT);
+    String firstName = safeTrim(suggestion == null ? "" : suggestion.firstName()).toLowerCase(Locale.ROOT);
+
+    int lastNameRank;
+    if (normalizedLastNamePrefix == null || normalizedLastNamePrefix.isBlank()) {
+      lastNameRank = 2;
+    } else if (lastName.startsWith(normalizedLastNamePrefix)) {
+      lastNameRank = 0;
+    } else if (lastName.contains(normalizedLastNamePrefix)) {
+      lastNameRank = 1;
+    } else {
+      lastNameRank = 2;
+    }
+
+    int firstNameRank;
+    if (normalizedFirstNameFilter == null || normalizedFirstNameFilter.isBlank()) {
+      firstNameRank = 0;
+    } else if (firstName.startsWith(normalizedFirstNameFilter)) {
+      firstNameRank = 0;
+    } else if (firstName.contains(normalizedFirstNameFilter)) {
+      firstNameRank = 1;
+    } else {
+      firstNameRank = 2;
+    }
+
+    return lastNameRank * 10 + firstNameRank;
+  }
+
+  /**
+   * Übernimmt einen Autorenvorschlag in Nachname und Vorname einer Zeile.
+   *
+   * @param row betroffene Autorenzeile
+   * @param suggestion gewählter Vorschlag
+   */
+  private void applyBookAuthorSuggestion(ZettelWindowView.BookAuthorRow row,
+                                         de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion suggestion) {
+    if (row == null || suggestion == null || row.getLastNameField() == null || row.getFirstNameField() == null) {
+      return;
+    }
+
+    suppressBookAuthorCallbacks = true;
+    try {
+      row.getLastNameField().setText(safeTrim(suggestion.lastName()));
+      row.getFirstNameField().setText(safeTrim(suggestion.firstName()));
+      row.setLastName(safeTrim(suggestion.lastName()));
+      row.setFirstName(safeTrim(suggestion.firstName()));
+    } finally {
+      suppressBookAuthorCallbacks = false;
+    }
+
+    if (row.getLastNameSuggestionMenu() != null) {
+      row.getLastNameSuggestionMenu().hide();
+    }
+
+    ensureBookMultiAuthorTrailingBlankRow();
+    refreshBookWindow();
+  }
+
+  /**
+   * Baut den Anzeigetext eines Autorenvorschlags.
+   *
+   * @param suggestion Autorenvorschlag
+   * @return Anzeigename
+   */
+  private String buildAuthorSuggestionLabel(de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion suggestion) {
+    String lastName = safeTrim(suggestion.lastName());
+    String firstName = safeTrim(suggestion.firstName());
+
+    if (!lastName.isBlank() && !firstName.isBlank()) {
+      return lastName + ", " + firstName;
+    }
+    if (!lastName.isBlank()) {
+      return lastName;
+    }
+    return firstName;
+  }
+
+  /**
+   * Öffnet ein ContextMenu defensiv nur dann direkt, wenn der Anchor bereits
+   * an einer Scene und einem Window hängt.
+   * Andernfalls wird der Öffnungsversuch auf den nächsten UI-Zyklus verschoben.
+   *
+   * @param menu anzuzeigendes Menü
+   * @param anchor Verankerungsknoten
+   */
+  private void showContextMenuSafely(ContextMenu menu, Node anchor) {
+    if (menu == null || anchor == null) {
+      return;
+    }
+
+    if (anchor.getScene() == null || anchor.getScene().getWindow() == null) {
+      Platform.runLater(() -> {
+        if (anchor.getScene() == null || anchor.getScene().getWindow() == null) {
+          return;
+        }
+        if (!anchor.isVisible()) {
+          return;
+        }
+        if (!menu.isShowing()) {
+          menu.show(anchor, Side.BOTTOM, 0, 0);
+        }
+      });
+      return;
+    }
+
+    if (!menu.isShowing()) {
+      menu.show(anchor, Side.BOTTOM, 0, 0);
+    }
+  }
+
+  /**
+   * Fordert eine verzögerte Aktualisierung des BOOK-Fensters an.
+   * Mehrere schnelle Texteingaben werden dadurch zu einem Refresh gebündelt.
+   */
+  private void requestBookRefresh() {
+    if (view.getActiveServiceAreaMode() != ZettelWindowView.ServiceAreaMode.BOOK) {
+      return;
+    }
+
+    bookRefreshDebounce.stop();
+    bookRefreshDebounce.playFromStart();
+  }
+
+  /**
+   * Baut den normalisierten BOOK-Medientyp-Cache aus der Bibliographie-Fassade auf.
+   * Gespeichert werden Anzeigename und technischer Medientypname.
+   */
+  private void rebuildBookMediaTypeCache() {
+    bookMediaTypesByNormalizedText.clear();
+
+    for (MediaTypeDefinition type : bibliographyService.listMediaTypes()) {
+      if (type == null) {
+        continue;
+      }
+
+      String normalizedName = safeTrim(type.name()).toLowerCase(Locale.ROOT);
+      String normalizedBibName = safeTrim(type.bibName()).toLowerCase(Locale.ROOT);
+
+      if (!normalizedName.isBlank()) {
+        bookMediaTypesByNormalizedText.putIfAbsent(normalizedName, type);
+      }
+      if (!normalizedBibName.isBlank()) {
+        bookMediaTypesByNormalizedText.putIfAbsent(normalizedBibName, type);
+      }
+    }
+  }
+
+  /**
+   * Prüft, ob ein bibliographischer Eintrag zu allen aktuell sichtbaren
+   * BOOK-Autorenfiltern passt.
+   *
+   * @param entry bibliographischer Eintrag
+   * @return {@code true}, wenn alle belegten Autorenzeilen passen
+   */
+  private boolean matchesBookAuthorFilters(DynamicBibliographyEntry entry) {
+    List<ZettelWindowView.BookAuthorRow> rows = view.getBookAuthorRowModels();
+    if (rows.isEmpty() || view.getActiveBookAuthorMode() == ZettelWindowView.BookAuthorMode.OFF) {
+      return true;
+    }
+
+    List<PersonRef> persons = extractPreviewPersons(entry);
+    if (persons.isEmpty()) {
+      return rows.stream().noneMatch(this::isBookAuthorRowFilled);
+    }
+
+    for (ZettelWindowView.BookAuthorRow row : rows) {
+      if (!isBookAuthorRowFilled(row)) {
+        continue;
+      }
+
+      boolean rowMatched = persons.stream().anyMatch(person -> matchesBookAuthorRow(person, row));
+      if (!rowMatched) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Prüft, ob eine BOOK-Autorenzeile überhaupt Filterinhalt enthält.
+   *
+   * @param row Autorenzeile
+   * @return {@code true}, wenn Vor- oder Nachname befüllt ist
+   */
+  private boolean isBookAuthorRowFilled(ZettelWindowView.BookAuthorRow row) {
+    if (row == null) {
+      return false;
+    }
+
+    String lastName = row.getLastNameField() == null ? row.getLastName() : row.getLastNameField().getText();
+    String firstName = row.getFirstNameField() == null ? row.getFirstName() : row.getFirstNameField().getText();
+
+    return !safeTrim(lastName).isBlank() || !safeTrim(firstName).isBlank();
+  }
+
+  /**
+   * Zählt die aktuell tatsächlich belegten BOOK-Autorenfilterzeilen.
+   *
+   * @return Anzahl aktiver Autorenfilter
+   */
+  private int countActiveBookAuthorFilters() {
+    int count = 0;
+
+    for (ZettelWindowView.BookAuthorRow row : view.getBookAuthorRowModels()) {
+      if (isBookAuthorRowFilled(row)) {
+        count++;
+      }
+    }
+
+    return count;
+  }
+
+  /**
+   * Prüft, ob aktuell ein Titelfilter im BOOK-Fenster aktiv ist.
+   *
+   * @return {@code true}, wenn das Titelfeld befüllt ist
+   */
+  private boolean hasActiveBookTitleFilter() {
+    return !safeTrim(view.getBookTitleField().getText()).isBlank();
+  }
+
+  /**
+   * Prüft, ob eine Person zu einer BOOK-Autorenzeile passt.
+   * Nachname und Vorname werden jeweils per Teilstring und gemeinsam per UND geprüft.
+   *
+   * @param person Person des Eintrags
+   * @param row Autorenzeile
+   * @return {@code true}, wenn die Person passt
+   */
+  private boolean matchesBookAuthorRow(PersonRef person, ZettelWindowView.BookAuthorRow row) {
+    if (person == null || row == null) {
+      return false;
+    }
+
+    String personLastName = safeTrim(person.lastName()).toLowerCase(Locale.ROOT);
+    String personFirstName = safeTrim(person.firstName()).toLowerCase(Locale.ROOT);
+
+    String filterLastName = safeTrim(
+        row.getLastNameField() == null ? row.getLastName() : row.getLastNameField().getText()
+    ).toLowerCase(Locale.ROOT);
+
+    String filterFirstName = safeTrim(
+        row.getFirstNameField() == null ? row.getFirstName() : row.getFirstNameField().getText()
+    ).toLowerCase(Locale.ROOT);
+
+    if (!filterLastName.isBlank() && !personLastName.contains(filterLastName)) {
+      return false;
+    }
+
+    if (!filterFirstName.isBlank() && !personFirstName.contains(filterFirstName)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Extrahiert alle Personen des wichtigsten Personenfeldes für BOOK-Filterung.
+   *
+   * @param entry bibliographischer Eintrag
+   * @return Personenliste des führenden Personenfeldes
+   */
+  private List<PersonRef> extractPreviewPersons(DynamicBibliographyEntry entry) {
+    if (entry == null || entry.getMediaTypeId() == null || entry.getMediaTypeId() <= 0) {
+      return List.of();
+    }
+
+    MediaAttributeDefinition personAttribute = bibliographyService
+                                                   .listAttributesForMediaType(entry.getMediaTypeId())
+                                                   .stream()
+                                                   .filter(attribute -> attribute != null && attribute.fieldDefinition() != null)
+                                                   .filter(attribute -> isPersonDatatype(attribute.fieldDefinition().datatype()))
+                                                   .filter(attribute -> attribute.isIdentify() || attribute.isNecessary())
+                                                   .sorted(
+                                                       Comparator
+                                                           .comparingInt(this::personPreviewPriority)
+                                                           .thenComparingInt(attribute -> attribute.fieldDefinition().id())
+                                                   )
+                                                   .findFirst()
+                                                   .orElse(null);
+
+    if (personAttribute == null || personAttribute.fieldDefinition() == null) {
+      return List.of();
+    }
+
+    String bibtexName = safeTrim(personAttribute.fieldDefinition().bibtexName());
+    if (bibtexName.isBlank()) {
+      return List.of();
+    }
+
+    return entry.findValue(bibtexName)
+               .filter(PersonBibValue.class::isInstance)
+               .map(PersonBibValue.class::cast)
+               .map(PersonBibValue::value)
+               .orElse(List.of());
+  }
+
+  /**
+   * Baut die BOOK-Zetteltabelle aus den aktuell sichtbaren Medien oder
+   * aus der explizit selektierten Medienzeile auf.
+   *
+   * @param visibleMediaRows aktuell sichtbare Medienzeilen
+   * @param usageRows bereits geladene Bibliographie-Nutzungszeilen
+   * @return Zettelzeilen für die untere Tabelle
+   */
+  private List<ZettelWindowView.BookNoteRow> buildBookNoteRows(
+      List<ZettelWindowView.BookMediaRow> visibleMediaRows,
+      List<NoteRepository.BibliographyUsageRow> usageRows
+  ) {
+    Set<Integer> relevantEntryIds = new LinkedHashSet<>();
+
+    if (selectedBookEntryId != null && selectedBookEntryId > 0) {
+      relevantEntryIds.add(selectedBookEntryId);
+    } else {
+      for (ZettelWindowView.BookMediaRow row : visibleMediaRows) {
+        if (row != null && row.getEntryId() > 0) {
+          relevantEntryIds.add(row.getEntryId());
+        }
+      }
+    }
+
+    if (relevantEntryIds.isEmpty()) {
+      return List.of();
+    }
+
+    List<ZettelWindowView.BookNoteRow> rows = new ArrayList<>();
+    for (NoteRepository.BibliographyUsageRow usageRow : usageRows) {
+      if (usageRow == null) {
+        continue;
+      }
+
+      if (!relevantEntryIds.contains(usageRow.bibliographyEntryId())) {
+        continue;
+      }
+
+      rows.add(new ZettelWindowView.BookNoteRow(
+          usageRow.noteId(),
+          safeTrim(usageRow.title())
+      ));
+    }
+
+    rows.sort(Comparator.comparingInt(ZettelWindowView.BookNoteRow::getNoteId));
+    return rows;
+  }
+
+  /**
+   * Reagiert auf Änderungen im BOOK-Medientypfeld.
+   * Bei exakter Auflösung wird der Typ direkt übernommen, sonst nur das
+   * Vorschlagsmenü aktualisiert.
+   *
+   * @param rawText aktueller Feldtext
+   */
+  private void handleBookMediaTypeTextChanged(String rawText) {
+    MediaTypeDefinition resolved = resolveBookMediaType(rawText);
+    if (resolved != null) {
+      applyBookMediaTypeSelection(resolved);
+      return;
+    }
+
+    String normalized = rawText == null ? "" : rawText.trim();
+    if (normalized.isBlank()) {
+      view.setBookResolvedMediaTypeSelection(false, "");
+      requestBookRefresh();
+      view.getBookMediaTypeMenu().hide();
+      return;
+    }
+
+    view.setBookResolvedMediaTypeSelection(false, "");
+    showBookMediaTypeSuggestions(rawText);
+    requestBookRefresh();
+  }
+
+  /**
+   * Zeigt gefilterte Medientyp-Vorschläge für das BOOK-Feld an.
+   * Bei leerem Suchtext bleibt das Menü geschlossen.
+   * Treffer mit Präfixpassung werden vor reinen Enthält-Treffern bevorzugt.
+   *
+   * @param query aktueller Suchtext
+   */
+  private void showBookMediaTypeSuggestions(String query) {
+    String normalized = safeTrim(query).toLowerCase(Locale.ROOT);
+    if (normalized.isBlank()) {
+      view.getBookMediaTypeMenu().hide();
+      return;
+    }
+
+    if (bookMediaTypesByNormalizedText.isEmpty()) {
+      rebuildBookMediaTypeCache();
+    }
+
+    LinkedHashSet<MediaTypeDefinition> prefixHits = new LinkedHashSet<>();
+    LinkedHashSet<MediaTypeDefinition> containsHits = new LinkedHashSet<>();
+
+    for (MediaTypeDefinition type : bookMediaTypesByNormalizedText.values()) {
+      if (type == null) {
+        continue;
+      }
+
+      String displayName = safeTrim(type.name()).toLowerCase(Locale.ROOT);
+      String bibName = safeTrim(type.bibName()).toLowerCase(Locale.ROOT);
+
+      boolean starts = displayName.startsWith(normalized) || bibName.startsWith(normalized);
+      boolean contains = displayName.contains(normalized) || bibName.contains(normalized);
+
+      if (starts) {
+        prefixHits.add(type);
+      } else if (contains) {
+        containsHits.add(type);
+      }
+    }
+
+    List<MediaTypeDefinition> hits = new ArrayList<>(prefixHits);
+    hits.addAll(containsHits);
+
+    if (hits.isEmpty()) {
+      view.getBookMediaTypeMenu().hide();
+      return;
+    }
+
+    List<CustomMenuItem> items = new ArrayList<>();
+    for (MediaTypeDefinition type : hits) {
+      if (type == null) {
+        continue;
+      }
+
+      String labelText = safeTrim(type.name());
+      if (!safeTrim(type.bibName()).isBlank()
+              && !safeTrim(type.bibName()).equalsIgnoreCase(labelText)) {
+        labelText = labelText + " (" + safeTrim(type.bibName()) + ")";
+      }
+
+      Label label = new Label(labelText);
+      CustomMenuItem item = new CustomMenuItem(label, true);
+      item.setOnAction(e -> applyBookMediaTypeSelection(type));
+      items.add(item);
+    }
+
+    if (items.isEmpty()) {
+      view.getBookMediaTypeMenu().hide();
+      return;
+    }
+
+    view.getBookMediaTypeMenu().getItems().setAll(items);
+    showContextMenuSafely(view.getBookMediaTypeMenu(), view.getBookMediaTypeField());
+  }
+
+  /**
+   * Übernimmt einen ausgewählten BOOK-Medientyp in das Eingabefeld und
+   * aktualisiert die BOOK-Ansicht.
+   *
+   * @param mediaType ausgewählter Medientyp
+   */
+  private void applyBookMediaTypeSelection(MediaTypeDefinition mediaType) {
+    suppressBookMediaTypeCallbacks = true;
+    try {
+      view.getBookMediaTypeField().setText(mediaType == null ? "" : safeTrim(mediaType.name()));
+    } finally {
+      suppressBookMediaTypeCallbacks = false;
+    }
+
+    if (mediaType == null) {
+      view.setBookResolvedMediaTypeSelection(false, "");
+    } else {
+      view.setBookResolvedMediaTypeSelection(true, mediaType.bibName());
+    }
+
+    view.getBookMediaTypeMenu().hide();
+    refreshBookWindow();
+  }
+
+  /**
+   * Schließt die Texteingabe des BOOK-Medientypfeldes ab.
+   * Nur exakte Treffer werden als Auswahl übernommen.
+   */
+  private void commitBookMediaTypeSelection() {
+    MediaTypeDefinition resolved = resolveBookMediaType(view.getBookMediaTypeField().getText());
+    if (resolved != null) {
+      applyBookMediaTypeSelection(resolved);
+      return;
+    }
+
+    String currentText = safeTrim(view.getBookMediaTypeField().getText());
+    if (currentText.isBlank()) {
+      view.setBookResolvedMediaTypeSelection(false, "");
+      refreshBookWindow();
+    }
+  }
+
+  /**
+   * Löst den aktuellen BOOK-Feldtext gegen einen Medientyp auf.
+   *
+   * @param rawText Eingabetext
+   * @return passender Medientyp oder {@code null}
+   */
+  private MediaTypeDefinition resolveBookMediaType(String rawText) {
+    String normalized = safeTrim(rawText).toLowerCase(Locale.ROOT);
+    if (normalized.isBlank()) {
+      return null;
+    }
+
+    if (bookMediaTypesByNormalizedText.isEmpty()) {
+      rebuildBookMediaTypeCache();
+    }
+
+    return bookMediaTypesByNormalizedText.get(normalized);
+  }
+
+  /**
+   * Baut den Statustext des BOOK-Fensters passend zur aktuellen Filtersituation.
+   *
+   * @param mediaRows sichtbare Medien
+   * @param noteRows sichtbare Zettel
+   * @return Statustext für die BOOK-Zeile
+   */
+  private String buildBookStatusText(List<ZettelWindowView.BookMediaRow> mediaRows,
+                                     List<ZettelWindowView.BookNoteRow> noteRows) {
+    int mediaCount = mediaRows == null ? 0 : mediaRows.size();
+    int noteCount = noteRows == null ? 0 : noteRows.size();
+
+    String resolvedMediaTypeName = safeTrim(view.getBookMediaTypeField().getText());
+    boolean resolvedMediaType = view.hasBookResolvedMediaTypeSelection();
+    int activeAuthorFilters = countActiveBookAuthorFilters();
+    boolean activeTitleFilter = hasActiveBookTitleFilter();
+
+    List<String> activeFilterParts = new ArrayList<>();
+    if (activeTitleFilter) {
+      activeFilterParts.add("Titelfilter aktiv");
+    }
+    if (activeAuthorFilters > 0) {
+      activeFilterParts.add(activeAuthorFilters + " Autorenfilter aktiv");
+    }
+
+    String filterSuffix = activeFilterParts.isEmpty()
+                              ? ""
+                              : ", " + String.join(", ", activeFilterParts);
+
+    if (mediaCount == 0) {
+      if (resolvedMediaType && !resolvedMediaTypeName.isBlank()) {
+        return "Keine Medien gefunden für Medium „" + resolvedMediaTypeName + "“" + filterSuffix;
+      }
+      return "Keine Medien gefunden" + filterSuffix;
+    }
+
+    if (selectedBookEntryId != null && selectedBookEntryId > 0) {
+      return mediaCount + " Medien gefunden, "
+                 + noteCount + " Zettel zum ausgewählten Medium"
+                 + filterSuffix;
+    }
+
+    if (resolvedMediaType && !resolvedMediaTypeName.isBlank()) {
+      return mediaCount + " Medien gefunden in „" + resolvedMediaTypeName + "“, "
+                 + noteCount + " Zettel sichtbar"
+                 + filterSuffix;
+    }
+
+    return mediaCount + " Medien gefunden, "
+               + noteCount + " Zettel sichtbar"
+               + filterSuffix;
   }
 
   private void wireTitleEditing(NoteEditorPane editor) {
@@ -3117,6 +4105,12 @@ public class ZettelWindowController {
       return;
     }
 
+    if (mode == ZettelWindowView.ServiceAreaMode.BOOK) {
+      view.setServiceAreaContent(view.getBookPane());
+      refreshBookWindow();
+      return;
+    }
+
     if (mode == ZettelWindowView.ServiceAreaMode.LIST) {
       view.setServiceAreaContent(view.getListPane());
       refreshListWindow();
@@ -3124,6 +4118,94 @@ public class ZettelWindowController {
     }
 
     view.setServiceAreaContent(view.createModePlaceholder(mode));
+  }
+
+  /**
+   * Aktualisiert den sichtbaren Zustand des BOOK-Fensters.
+   * Schritt 4 ergänzt:
+   * - stabile Sortierung der Tabellen
+   * - automatische Mehrfach-Autorenfolgezeile
+   */
+  private void refreshBookWindow() {
+    if (view.getActiveServiceAreaMode() != ZettelWindowView.ServiceAreaMode.BOOK) {
+      return;
+    }
+
+    ZettelWindowView.BookMediaTableSortState mediaSortState = view.getBookMediaTableSortState();
+    ZettelWindowView.BookNoteTableSortState noteSortState = view.getBookNoteTableSortState();
+
+    String mediaTypeBibName = view.hasBookResolvedMediaTypeSelection()
+                                  ? view.getBookResolvedMediaTypeBibName()
+                                  : "";
+
+    String titleQuery = safeTrim(view.getBookTitleField().getText());
+
+    List<BibliographyReference> references = bibliographyService.searchMediaReferences(
+        mediaTypeBibName,
+        titleQuery,
+        200
+    );
+
+    List<NoteRepository.BibliographyUsageRow> usageRows = noteRepository.loadBibliographyUsageRows();
+
+    Map<Integer, Integer> noteCountsByEntryId = new LinkedHashMap<>();
+    for (NoteRepository.BibliographyUsageRow usageRow : usageRows) {
+      noteCountsByEntryId.merge(usageRow.bibliographyEntryId(), 1, Integer::sum);
+    }
+
+    List<ZettelWindowView.BookMediaRow> mediaRows = new ArrayList<>();
+    for (BibliographyReference reference : references) {
+      if (reference == null || reference.entryId() <= 0) {
+        continue;
+      }
+
+      DynamicBibliographyEntry entry = bibliographyService.loadEntry(reference.entryId()).orElse(null);
+      if (entry == null) {
+        continue;
+      }
+
+      if (!matchesBookAuthorFilters(entry)) {
+        continue;
+      }
+
+      String authorText = resolvePreviewPerson(entry);
+      String titleText = resolvePreviewTitle(entry);
+
+      if (titleText.isBlank()) {
+        titleText = safeTrim(reference.displayText());
+      }
+
+      mediaRows.add(new ZettelWindowView.BookMediaRow(
+          reference.entryId(),
+          authorText,
+          titleText,
+          safeTrim(reference.mediaTypeName()),
+          noteCountsByEntryId.getOrDefault(reference.entryId(), 0)
+      ));
+    }
+
+    if (selectedBookEntryId != null) {
+      boolean selectedStillVisible = mediaRows.stream()
+                                         .anyMatch(row -> row != null && row.getEntryId() == selectedBookEntryId);
+
+      if (!selectedStillVisible) {
+        selectedBookEntryId = null;
+      }
+    }
+
+    view.setBookMediaRows(mediaRows);
+    view.applyBookMediaTableSortState(mediaSortState);
+    view.selectBookMediaRow(selectedBookEntryId);
+
+    List<ZettelWindowView.BookNoteRow> noteRows = buildBookNoteRows(mediaRows, usageRows);
+    view.setBookNoteRows(noteRows);
+    view.applyBookNoteTableSortState(noteSortState);
+
+    boolean resolvedMediaType = view.hasBookResolvedMediaTypeSelection();
+    view.setBookResolvedMediaTypeSelection(resolvedMediaType, mediaTypeBibName);
+    view.setBookNotesVisible(view.getBookShowNotesToggleButton().isSelected());
+
+    view.setBookStatus(buildBookStatusText(mediaRows, noteRows));
   }
 
   /**

@@ -45,6 +45,12 @@ public class NoteRepository {
       String keyword
   ) {}
 
+  public record BibliographyUsageRow(
+      int noteId,
+      String title,
+      int bibliographyEntryId
+  ) {}
+
   public int countNotes() {
     try (Connection c = ds.getConnection();
          PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM notes");
@@ -638,6 +644,48 @@ public class NoteRepository {
 
     } catch (SQLException e) {
       throw new IllegalStateException("loadListBrowseRows fehlgeschlagen", e);
+    }
+  }
+
+  /**
+   * Lädt alle Zettel, die aktuell mit einem bibliographischen Eintrag
+   * verknüpft sind.
+   * Die Methode dient als BOOK-Datenbasis für:
+   * - Zettelanzahl je Medium
+   * - spätere untere Zetteltabelle
+   *
+   * @return flache Zuordnung Zettel -> Bibliographie-Eintrag
+   */
+  public List<BibliographyUsageRow> loadBibliographyUsageRows() {
+    String sql = """
+        SELECT n.id,
+               n.title,
+               n.bibliography_ref_id
+        FROM notes n
+        WHERE n.bibliography_ref_id IS NOT NULL
+        ORDER BY n.bibliography_ref_id ASC, n.id ASC
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql);
+         ResultSet rs = ps.executeQuery()) {
+
+      List<BibliographyUsageRow> out = new ArrayList<>();
+      while (rs.next()) {
+        Integer bibliographyEntryId = (Integer) rs.getObject("bibliography_ref_id");
+        if (bibliographyEntryId == null || bibliographyEntryId <= 0) {
+          continue;
+        }
+
+        out.add(new BibliographyUsageRow(
+            rs.getInt("id"),
+            rs.getString("title"),
+            bibliographyEntryId
+        ));
+      }
+      return out;
+    } catch (SQLException e) {
+      throw new IllegalStateException("loadBibliographyUsageRows fehlgeschlagen", e);
     }
   }
 

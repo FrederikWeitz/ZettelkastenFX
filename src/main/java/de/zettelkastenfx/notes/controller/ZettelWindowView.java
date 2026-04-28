@@ -22,6 +22,7 @@ import javafx.util.StringConverter;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.util.ArrayList;
 import java.util.List;
 
 public class ZettelWindowView {
@@ -131,6 +132,45 @@ public class ZettelWindowView {
   @Getter private final TableColumn<ListFilterRow, String> listFilterTitleColumn;
   @Getter private final TableColumn<ListFilterRow, Integer> listFilterLinkCountColumn;
 
+  // BOOK-Komponente
+  @Getter private final BorderPane bookPane;
+  @Getter private final ToolBar bookToolBar;
+  @Getter private final ToggleButton bookShowNotesToggleButton;
+  @Getter private final ToggleButton bookShowMediaColumnToggleButton;
+  @Getter private final Button bookAuthorModeButton;
+
+  @Getter private final TextField bookMediaTypeField;
+  @Getter private final ContextMenu bookMediaTypeMenu;
+  @Getter private final TextField bookTitleField;
+
+  @Getter private final VBox bookAuthorHost;
+  @Getter private final ScrollPane bookAuthorScrollPane;
+  @Getter private final VBox bookAuthorRowsBox;
+
+  @Getter private final SplitPane bookSplitPane;
+  @Getter private final TableView<BookMediaRow> bookMediaTable;
+  @Getter private final TableColumn<BookMediaRow, String> bookMediaAuthorColumn;
+  @Getter private final TableColumn<BookMediaRow, String> bookMediaTitleColumn;
+  @Getter private final TableColumn<BookMediaRow, String> bookMediaTypeColumn;
+  @Getter private final TableColumn<BookMediaRow, Number> bookMediaNoteCountColumn;
+
+  @Getter private final BorderPane bookNotesPane;
+  @Getter private final TableView<BookNoteRow> bookNotesTable;
+  @Getter private final TableColumn<BookNoteRow, Number> bookNotesIdColumn;
+  @Getter private final TableColumn<BookNoteRow, String> bookNotesTitleColumn;
+  @Getter private final Label bookStatusLabel;
+
+  private final double bookSplitDividerPosition = 0.68;
+  private static final double BOOK_AUTHOR_VIEWPORT_HEIGHT = 78;
+  private boolean bookResolvedMediaTypeSelection;
+  private final List<BookAuthorRow> bookAuthorRowModels = new ArrayList<>();
+
+  /**
+   * -- GETTER --
+   * liefert den technischen Namen des aktuell aufgelösten BOOK-Medientyps.
+   */
+  @Getter private String bookResolvedMediaTypeBibName = "";
+
   public enum ListMode {
     PAGE_KEY,
     FILTER
@@ -158,6 +198,79 @@ public class ZettelWindowView {
       this.title = title == null ? "" : title;
       this.linkCount = linkCount;
       this.bodyMatchOnly = bodyMatchOnly;
+    }
+  }
+
+  public enum BookAuthorMode {
+    OFF,
+    SINGLE,
+    MULTI
+  }
+
+  @Getter @Setter
+  public static final class BookAuthorRow {
+    private String lastName = "";
+    private String firstName = "";
+    private TextField lastNameField;
+    private TextField firstNameField;
+    private ContextMenu lastNameSuggestionMenu;
+
+    /**
+     * Erzeugt eine Autorenzeile für die BOOK-Filtermaske.
+     *
+     * @param lastName Nachname
+     * @param firstName Vorname
+     */
+    public BookAuthorRow(String lastName, String firstName) {
+      this.lastName = lastName == null ? "" : lastName;
+      this.firstName = firstName == null ? "" : firstName;
+    }
+  }
+
+  @Getter
+  public static final class BookMediaRow {
+    private final int entryId;
+    private final String authorDisplay;
+    private final String title;
+    private final String mediaTypeName;
+    private final int noteCount;
+
+    /**
+     * Erzeugt eine Tabellenzeile für die BOOK-Medientabelle.
+     *
+     * @param entryId Eintrags-ID
+     * @param authorDisplay Autorendarstellung
+     * @param title Titel
+     * @param mediaTypeName Anzeigename des Medientyps
+     * @param noteCount Anzahl referenzierender Zettel
+     */
+    public BookMediaRow(int entryId,
+                        String authorDisplay,
+                        String title,
+                        String mediaTypeName,
+                        int noteCount) {
+      this.entryId = entryId;
+      this.authorDisplay = authorDisplay == null ? "" : authorDisplay;
+      this.title = title == null ? "" : title;
+      this.mediaTypeName = mediaTypeName == null ? "" : mediaTypeName;
+      this.noteCount = noteCount;
+    }
+  }
+
+  @Getter
+  public static final class BookNoteRow {
+    private final int noteId;
+    private final String title;
+
+    /**
+     * Erzeugt eine Tabellenzeile für die BOOK-Zetteltabelle.
+     *
+     * @param noteId Zettel-ID
+     * @param title Zettelüberschrift
+     */
+    public BookNoteRow(int noteId, String title) {
+      this.noteId = noteId;
+      this.title = title == null ? "" : title;
     }
   }
 
@@ -229,6 +342,24 @@ public class ZettelWindowView {
   }
 
   /**
+   * Gespeicherter primärer Sortierzustand der BOOK-Medientabelle.
+   *
+   * @param columnId ID der sortierten Spalte
+   * @param sortType Sortierrichtung
+   */
+  public record BookMediaTableSortState(String columnId, TableColumn.SortType sortType) {
+  }
+
+  /**
+   * Gespeicherter primärer Sortierzustand der BOOK-Zetteltabelle.
+   *
+   * @param columnId ID der sortierten Spalte
+   * @param sortType Sortierrichtung
+   */
+  public record BookNoteTableSortState(String columnId, TableColumn.SortType sortType) {
+  }
+
+  /**
    * -- SETTER --
    *  Setzt den Commit-Handler für Inline-Änderungen in der Schlagwortspalte.
    */
@@ -252,6 +383,8 @@ public class ZettelWindowView {
    */
   @Getter private ServiceAreaMode activeServiceAreaMode;
   private double[] expandedDividerPositions = new double[] {0.33, 0.66};
+
+  @Getter private BookAuthorMode activeBookAuthorMode = BookAuthorMode.OFF;
 
   public ZettelWindowView() {
     root = new BorderPane();
@@ -618,6 +751,139 @@ public class ZettelWindowView {
     keyPane.setTop(keyToolBar);
     keyPane.setCenter(keyCenter);
 
+    // Media-Bereich
+    bookPane = new BorderPane();
+    bookPane.getStyleClass().add("zettel-book-pane");
+
+    bookToolBar = new ToolBar();
+    bookToolBar.getStyleClass().add("zettel-book-toolbar");
+
+    bookShowNotesToggleButton = BaseIcon.PAGE_MAGNIFY.toggleButton("Zetteltabelle ein-/ausblenden");
+    bookShowMediaColumnToggleButton = BaseIcon.COLUMN_MEDIA.toggleButton("Medienspalte ein-/ausblenden");
+    bookShowMediaColumnToggleButton.setSelected(true);
+    bookAuthorModeButton = BaseIcon.AUTHOR.button("Personenfilter umschalten");
+
+    bookMediaTypeField = new TextField();
+    bookMediaTypeField.getStyleClass().add("zettel-book-media-type-field");
+    bookMediaTypeField.setPromptText("Medium");
+
+    bookMediaTypeMenu = new ContextMenu();
+    bookMediaTypeMenu.setAutoHide(true);
+
+    Region bookToolbarSpacer = new Region();
+    HBox.setHgrow(bookToolbarSpacer, Priority.ALWAYS);
+
+    bookToolBar.getItems().addAll(
+        bookShowNotesToggleButton,
+        bookShowMediaColumnToggleButton,
+        bookAuthorModeButton,
+        new Separator(Orientation.VERTICAL),
+        bookMediaTypeField,
+        bookToolbarSpacer
+    );
+
+    bookTitleField = new TextField();
+    bookTitleField.getStyleClass().add("zettel-book-title-field");
+    bookTitleField.setPromptText("Titel");
+
+    bookAuthorRowsBox = new VBox(6);
+    bookAuthorRowsBox.getStyleClass().add("zettel-book-author-rows");
+
+    bookAuthorScrollPane = new ScrollPane(bookAuthorRowsBox);
+    bookAuthorScrollPane.getStyleClass().add("zettel-book-author-scroll");
+    bookAuthorScrollPane.setFitToWidth(true);
+    bookAuthorScrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+    bookAuthorScrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+    bookAuthorScrollPane.setPrefViewportHeight(BOOK_AUTHOR_VIEWPORT_HEIGHT);
+    bookAuthorScrollPane.setMinViewportHeight(BOOK_AUTHOR_VIEWPORT_HEIGHT);
+    bookAuthorScrollPane.setMaxHeight(BOOK_AUTHOR_VIEWPORT_HEIGHT + 2);
+
+    bookAuthorHost = new VBox(6, bookAuthorScrollPane);
+    bookAuthorHost.getStyleClass().add("zettel-book-author-host");
+    bookAuthorHost.setVisible(false);
+    bookAuthorHost.setManaged(false);
+
+    bookStatusLabel = new Label("");
+    bookStatusLabel.getStyleClass().add("zettel-book-status");
+
+    bookMediaTable = new TableView<>();
+    bookMediaTable.getStyleClass().add("zettel-book-media-table");
+    bookMediaTable.getSelectionModel().setSelectionMode(SelectionMode.SINGLE);
+    bookMediaTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+
+    bookMediaAuthorColumn = new TableColumn<>("Autor");
+    bookMediaAuthorColumn.setId("bookMediaAuthorColumn");
+    bookMediaAuthorColumn.setCellValueFactory(cell ->
+                                                  new ReadOnlyStringWrapper(cell.getValue().getAuthorDisplay())
+    );
+
+    bookMediaTitleColumn = new TableColumn<>("Titel");
+    bookMediaTitleColumn.setId("bookMediaTitleColumn");
+    bookMediaTitleColumn.setCellValueFactory(cell ->
+                                                 new ReadOnlyStringWrapper(cell.getValue().getTitle())
+    );
+
+    bookMediaTypeColumn = new TableColumn<>("Medium");
+    bookMediaTypeColumn.setId("bookMediaTypeColumn");
+    bookMediaTypeColumn.setCellValueFactory(cell ->
+                                                new ReadOnlyStringWrapper(cell.getValue().getMediaTypeName())
+    );
+
+    bookMediaNoteCountColumn = new TableColumn<>("Zettel");
+    bookMediaNoteCountColumn.setId("bookMediaNoteCountColumn");
+    bookMediaNoteCountColumn.setCellValueFactory(cell ->
+                                                     new ReadOnlyIntegerWrapper(cell.getValue().getNoteCount())
+    );
+
+    bookMediaTable.getColumns().addAll(
+        bookMediaAuthorColumn,
+        bookMediaTitleColumn,
+        bookMediaTypeColumn,
+        bookMediaNoteCountColumn
+    );
+
+    bookMediaAuthorColumn.setSortType(TableColumn.SortType.ASCENDING);
+    bookMediaTable.getSortOrder().setAll(bookMediaAuthorColumn);
+
+    bookNotesPane = new BorderPane();
+    bookNotesPane.getStyleClass().add("zettel-book-notes-pane");
+
+    bookNotesTable = new TableView<>();
+    bookNotesTable.getStyleClass().add("zettel-book-notes-table");
+    bookNotesTable.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
+
+    bookNotesIdColumn = new TableColumn<>("Zettel");
+    bookNotesIdColumn.setId("bookNotesIdColumn");
+    bookNotesIdColumn.setCellValueFactory(cell ->
+                                              new ReadOnlyIntegerWrapper(cell.getValue().getNoteId())
+    );
+
+    bookNotesTitleColumn = new TableColumn<>("Titel");
+    bookNotesTitleColumn.setId("bookNotesTitleColumn");
+    bookNotesTitleColumn.setCellValueFactory(cell ->
+                                                 new ReadOnlyStringWrapper(cell.getValue().getTitle())
+    );
+
+    bookNotesTable.getColumns().addAll(bookNotesIdColumn, bookNotesTitleColumn);
+    bookNotesIdColumn.setSortType(TableColumn.SortType.ASCENDING);
+    bookNotesTable.getSortOrder().setAll(bookNotesIdColumn);
+    bookNotesPane.setCenter(bookNotesTable);
+
+    VBox bookMainBox = new VBox(8, bookTitleField, bookAuthorHost, bookStatusLabel, bookMediaTable);
+    bookMainBox.getStyleClass().add("zettel-book-main-box");
+    VBox.setVgrow(bookMediaTable, Priority.ALWAYS);
+
+    bookSplitPane = new SplitPane(bookMainBox, bookNotesPane);
+    bookSplitPane.setOrientation(Orientation.VERTICAL);
+    bookSplitPane.getStyleClass().add("zettel-book-split-pane");
+    bookSplitPane.setDividerPositions(bookSplitDividerPosition);
+
+    bookPane.setTop(bookToolBar);
+    bookPane.setCenter(bookSplitPane);
+
+    setBookNotesVisible(false);
+    setBookAuthorMode(BookAuthorMode.OFF);
+
     // List-Bereich (Überschriften)
     listPane = new BorderPane();
     listPane.getStyleClass().add("zettel-list-pane");
@@ -787,6 +1053,386 @@ public class ZettelWindowView {
    */
   public void setServiceAreaContent(javafx.scene.Node content) {
     serviceAreaContentHost.getChildren().setAll(content);
+  }
+
+  /**
+   * Schaltet die Sichtbarkeit der unteren BOOK-Zetteltabelle.
+   *
+   * @param visible {@code true}, wenn die Zetteltabelle sichtbar sein soll
+   */
+  public void setBookNotesVisible(boolean visible) {
+    bookNotesPane.setVisible(visible);
+    bookNotesPane.setManaged(visible);
+
+    if (!visible) {
+      if (bookSplitPane.getItems().contains(bookNotesPane)) {
+        bookSplitPane.getItems().remove(bookNotesPane);
+      }
+      return;
+    }
+
+    if (!bookSplitPane.getItems().contains(bookNotesPane)) {
+      bookSplitPane.getItems().add(bookNotesPane);
+      final double divider = bookSplitDividerPosition;
+      Platform.runLater(() -> bookSplitPane.setDividerPositions(divider));
+    }
+  }
+
+  /**
+   * Setzt den aktuellen Autorenmodus der BOOK-Maske und synchronisiert
+   * Icon, Tooltip und Layout des Autorenbereichs.
+   *
+   * @param mode neuer Autorenmodus
+   */
+  public void setBookAuthorMode(BookAuthorMode mode) {
+    activeBookAuthorMode = mode == null ? BookAuthorMode.OFF : mode;
+
+    switch (activeBookAuthorMode) {
+      case OFF -> {
+        bookAuthorModeButton.setGraphic(BaseIcon.AUTHOR.imageView());
+        bookAuthorModeButton.setTooltip(new Tooltip("Personenfilter aus"));
+      }
+      case SINGLE -> {
+        bookAuthorModeButton.setGraphic(BaseIcon.AUTHOR.imageView());
+        bookAuthorModeButton.setTooltip(new Tooltip("Ein Personenfilter"));
+      }
+      case MULTI -> {
+        bookAuthorModeButton.setGraphic(BaseIcon.AUTHORS.imageView());
+        bookAuthorModeButton.setTooltip(new Tooltip("Mehrere Personenfilter"));
+      }
+    }
+
+    updateBookAuthorLayoutForMode();
+  }
+
+  /**
+   * Synchronisiert die Darstellung des BOOK-Autorenbereichs mit dem aktuellen
+   * Autorenmodus.
+   * Im SINGLE-Modus liegt die einzelne Autorenzeile ohne künstlichen Leerraum
+   * direkt über der Medientabelle.
+   * Im MULTI-Modus bleibt der Bereich auf zwei sichtbare Zeilen begrenzt.
+   */
+  private void updateBookAuthorLayoutForMode() {
+    switch (activeBookAuthorMode) {
+      case OFF -> {
+        bookAuthorHost.setVisible(false);
+        bookAuthorHost.setManaged(false);
+
+        bookAuthorScrollPane.setFitToHeight(false);
+        bookAuthorScrollPane.setPrefViewportHeight(Region.USE_COMPUTED_SIZE);
+        bookAuthorScrollPane.setMinViewportHeight(Region.USE_COMPUTED_SIZE);
+        bookAuthorScrollPane.setMaxHeight(Region.USE_COMPUTED_SIZE);
+      }
+      case SINGLE -> {
+        bookAuthorHost.setVisible(true);
+        bookAuthorHost.setManaged(true);
+
+        bookAuthorScrollPane.setFitToHeight(true);
+        bookAuthorScrollPane.setPrefViewportHeight(Region.USE_COMPUTED_SIZE);
+        bookAuthorScrollPane.setMinViewportHeight(Region.USE_COMPUTED_SIZE);
+        bookAuthorScrollPane.setMaxHeight(Region.USE_COMPUTED_SIZE);
+      }
+      case MULTI -> {
+        bookAuthorHost.setVisible(true);
+        bookAuthorHost.setManaged(true);
+
+        bookAuthorScrollPane.setFitToHeight(false);
+        bookAuthorScrollPane.setPrefViewportHeight(BOOK_AUTHOR_VIEWPORT_HEIGHT);
+        bookAuthorScrollPane.setMinViewportHeight(BOOK_AUTHOR_VIEWPORT_HEIGHT);
+        bookAuthorScrollPane.setMaxHeight(BOOK_AUTHOR_VIEWPORT_HEIGHT + 2);
+      }
+    }
+  }
+
+  /**
+   * Setzt den Text der BOOK-Statuszeile.
+   *
+   * @param text Statustext
+   */
+  public void setBookStatus(String text) {
+    bookStatusLabel.setText(text == null ? "" : text);
+  }
+
+  /**
+   * Schaltet die Sichtbarkeit der Medium-Spalte in der BOOK-Tabelle.
+   *
+   * @param visible {@code true}, wenn die Spalte sichtbar sein soll
+   */
+  public void setBookMediaTypeColumnVisible(boolean visible) {
+    bookMediaTypeColumn.setVisible(visible);
+    bookMediaTypeColumn.setResizable(visible);
+  }
+
+  /**
+   * Setzt die sichtbaren Zeilen der BOOK-Medientabelle.
+   *
+   * @param rows anzuzeigende Medienzeilen
+   */
+  public void setBookMediaRows(List<BookMediaRow> rows) {
+    ObservableList<BookMediaRow> items = FXCollections.observableArrayList(
+        rows == null ? List.of() : rows
+    );
+    bookMediaTable.setItems(items);
+  }
+
+  /**
+   * Setzt die sichtbaren Zeilen der BOOK-Zetteltabelle.
+   *
+   * @param rows anzuzeigende Zettelzeilen
+   */
+  public void setBookNoteRows(List<BookNoteRow> rows) {
+    ObservableList<BookNoteRow> items = FXCollections.observableArrayList(
+        rows == null ? List.of() : rows
+    );
+    bookNotesTable.setItems(items);
+  }
+
+  /**
+   * Setzt den aktuell aufgelösten Medientypzustand des BOOK-Feldes.
+   * Bei konkreter Auswahl wird die Medienspalte ausgeblendet und der
+   * COLUMN_MEDIA-Button deaktiviert.
+   *
+   * @param resolved ob ein konkreter Medientyp aufgelöst ist
+   * @param mediaTypeBibName technischer Medientypname
+   */
+  public void setBookResolvedMediaTypeSelection(boolean resolved, String mediaTypeBibName) {
+    this.bookResolvedMediaTypeSelection = resolved;
+    this.bookResolvedMediaTypeBibName = mediaTypeBibName == null ? "" : mediaTypeBibName.trim();
+
+    bookShowMediaColumnToggleButton.setDisable(resolved);
+
+    if (resolved) {
+      bookShowMediaColumnToggleButton.setSelected(false);
+      setBookMediaTypeColumnVisible(false);
+      return;
+    }
+
+    setBookMediaTypeColumnVisible(bookShowMediaColumnToggleButton.isSelected());
+  }
+
+  /**
+   * Liefert, ob aktuell ein konkreter BOOK-Medientyp gewählt ist.
+   *
+   * @return {@code true}, wenn ein Medientyp aufgelöst ist
+   */
+  public boolean hasBookResolvedMediaTypeSelection() {
+    return bookResolvedMediaTypeSelection;
+  }
+
+  /**
+   * Baut die BOOK-Autorenzeilen neu auf und registriert die zugehörigen
+   * Eingabefelder für den Controller.
+   *
+   * @param rows anzuzeigende Autorenzeilen
+   */
+  public void setBookAuthorRows(List<BookAuthorRow> rows) {
+    bookAuthorRowsBox.getChildren().clear();
+    bookAuthorRowModels.clear();
+
+    List<BookAuthorRow> safeRows = rows == null || rows.isEmpty()
+                                       ? List.of(new BookAuthorRow("", ""))
+                                       : rows;
+
+    for (BookAuthorRow row : safeRows) {
+      TextField lastNameField = new TextField(row.getLastName());
+      lastNameField.getStyleClass().add("zettel-book-author-last-name-field");
+      lastNameField.setPromptText("Nachname");
+
+      TextField firstNameField = new TextField(row.getFirstName());
+      firstNameField.getStyleClass().add("zettel-book-author-first-name-field");
+      firstNameField.setPromptText("Vorname");
+
+      ContextMenu suggestionMenu = new ContextMenu();
+      suggestionMenu.setAutoHide(true);
+
+      row.setLastNameField(lastNameField);
+      row.setFirstNameField(firstNameField);
+      row.setLastNameSuggestionMenu(suggestionMenu);
+
+      HBox line = new HBox(8, lastNameField, firstNameField);
+      line.getStyleClass().add("zettel-book-author-row");
+      HBox.setHgrow(lastNameField, Priority.ALWAYS);
+      HBox.setHgrow(firstNameField, Priority.ALWAYS);
+
+      bookAuthorRowsBox.getChildren().add(line);
+      bookAuthorRowModels.add(row);
+      updateBookAuthorLayoutForMode();
+    }
+  }
+
+  /**
+   * Liefert die aktuell sichtbaren BOOK-Autorenzeilen.
+   *
+   * @return registrierte Autorenzeilen
+   */
+  public List<BookAuthorRow> getBookAuthorRowModels() {
+    return List.copyOf(bookAuthorRowModels);
+  }
+
+  /**
+   * Liest die aktuellen Werte aller sichtbaren BOOK-Autorenzeilen aus.
+   * @return Snapshot der aktuellen Autorenzeilen
+   */
+  public List<BookAuthorRow> snapshotBookAuthorRows() {
+    List<BookAuthorRow> snapshot = new ArrayList<>();
+
+    for (BookAuthorRow row : bookAuthorRowModels) {
+      if (row == null) {
+        continue;
+      }
+
+      String lastName = row.getLastNameField() == null
+                            ? row.getLastName()
+                            : row.getLastNameField().getText();
+
+      String firstName = row.getFirstNameField() == null
+                             ? row.getFirstName()
+                             : row.getFirstNameField().getText();
+
+      snapshot.add(new BookAuthorRow(lastName, firstName));
+    }
+
+    return snapshot;
+  }
+
+  /**
+   * Wählt eine Medienzeile anhand der Eintrags-ID aus oder hebt die Auswahl auf.
+   *
+   * @param entryId Eintrags-ID oder {@code null} zum Deselektieren
+   */
+  public void selectBookMediaRow(Integer entryId) {
+    if (entryId == null || entryId <= 0) {
+      bookMediaTable.getSelectionModel().clearSelection();
+      return;
+    }
+
+    for (BookMediaRow row : bookMediaTable.getItems()) {
+      if (row != null && row.getEntryId() == entryId) {
+        bookMediaTable.getSelectionModel().select(row);
+        bookMediaTable.scrollTo(row);
+        return;
+      }
+    }
+
+    bookMediaTable.getSelectionModel().clearSelection();
+  }
+
+  /**
+   * Liefert den primären Sortierzustand der BOOK-Medientabelle.
+   *
+   * @return aktueller Sortierzustand oder Standardzustand
+   */
+  public BookMediaTableSortState getBookMediaTableSortState() {
+    TableColumn<BookMediaRow, ?> sortedColumn = bookMediaTable.getSortOrder().isEmpty()
+                                                    ? bookMediaAuthorColumn
+                                                    : bookMediaTable.getSortOrder().getFirst();
+
+    TableColumn.SortType sortType = sortedColumn.getSortType() == null
+                                        ? TableColumn.SortType.ASCENDING
+                                        : sortedColumn.getSortType();
+
+    return new BookMediaTableSortState(sortedColumn.getId(), sortType);
+  }
+
+  /**
+   * Wendet einen primären Sortierzustand auf die BOOK-Medientabelle an.
+   *
+   * @param state gewünschter Sortierzustand
+   */
+  public void applyBookMediaTableSortState(BookMediaTableSortState state) {
+    TableColumn<BookMediaRow, ?> target = resolveBookMediaTableColumn(
+        state == null ? "" : state.columnId()
+    );
+
+    if (target == null) {
+      target = bookMediaAuthorColumn;
+    }
+
+    target.setSortType(state == null || state.sortType() == null
+                           ? TableColumn.SortType.ASCENDING
+                           : state.sortType());
+
+    bookMediaTable.getSortOrder().setAll(target);
+    bookMediaTable.sort();
+  }
+
+  /**
+   * Liefert den primären Sortierzustand der BOOK-Zetteltabelle.
+   *
+   * @return aktueller Sortierzustand oder Standardzustand
+   */
+  public BookNoteTableSortState getBookNoteTableSortState() {
+    TableColumn<BookNoteRow, ?> sortedColumn = bookNotesTable.getSortOrder().isEmpty()
+                                                   ? bookNotesIdColumn
+                                                   : bookNotesTable.getSortOrder().getFirst();
+
+    TableColumn.SortType sortType = sortedColumn.getSortType() == null
+                                        ? TableColumn.SortType.ASCENDING
+                                        : sortedColumn.getSortType();
+
+    return new BookNoteTableSortState(sortedColumn.getId(), sortType);
+  }
+
+  /**
+   * Wendet einen primären Sortierzustand auf die BOOK-Zetteltabelle an.
+   *
+   * @param state gewünschter Sortierzustand
+   */
+  public void applyBookNoteTableSortState(BookNoteTableSortState state) {
+    TableColumn<BookNoteRow, ?> target = resolveBookNoteTableColumn(
+        state == null ? "" : state.columnId()
+    );
+
+    if (target == null) {
+      target = bookNotesIdColumn;
+    }
+
+    target.setSortType(state == null || state.sortType() == null
+                           ? TableColumn.SortType.ASCENDING
+                           : state.sortType());
+
+    bookNotesTable.getSortOrder().setAll(target);
+    bookNotesTable.sort();
+  }
+
+  /**
+   * Löst eine BOOK-Medienspalte anhand ihrer ID auf.
+   *
+   * @param columnId Spalten-ID
+   * @return Spalte oder {@code null}
+   */
+  private TableColumn<BookMediaRow, ?> resolveBookMediaTableColumn(String columnId) {
+    if (columnId == null || columnId.isBlank()) {
+      return null;
+    }
+
+    for (TableColumn<BookMediaRow, ?> column : bookMediaTable.getColumns()) {
+      if (columnId.equals(column.getId())) {
+        return column;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Löst eine BOOK-Zettelspalte anhand ihrer ID auf.
+   *
+   * @param columnId Spalten-ID
+   * @return Spalte oder {@code null}
+   */
+  private TableColumn<BookNoteRow, ?> resolveBookNoteTableColumn(String columnId) {
+    if (columnId == null || columnId.isBlank()) {
+      return null;
+    }
+
+    for (TableColumn<BookNoteRow, ?> column : bookNotesTable.getColumns()) {
+      if (columnId.equals(column.getId())) {
+        return column;
+      }
+    }
+
+    return null;
   }
 
   /**

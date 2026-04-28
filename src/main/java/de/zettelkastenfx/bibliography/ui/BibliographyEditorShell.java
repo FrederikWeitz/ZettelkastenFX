@@ -22,6 +22,8 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.*;
 
+import static de.zettelkastenfx.bibliography.util.BibtexDatatypeUtil.*;
+
 /**
  * Orchestriert den Editor für bibliographische Angaben.
  * Die Klasse verwaltet Typauswahl, Formulare, Lookup-Interaktionen und den Transfer
@@ -89,15 +91,20 @@ public class BibliographyEditorShell {
   }
 
   /**
+   * Beschreibt das Setzen von farblichen Markierungen im Label des Media-Editors
+   */
+  private boolean mediaManagementPopupContext;
+
+  /**
    * Beschreibt einen lokal aus dem sichtbaren Editor gelesenen Zustands-Snapshot
    * für die Pflichtfeldvalidierung.
    *
    * @param fieldValues einfache Feldwerte nach technischem BibTeX-Namen
-   * @param personFieldNames belegte Personenfelder
+   * @param personValues belegte Personenfelder
    * @param relatedFieldNames belegte Related-Felder
    */
   private record EditorValidationSnapshot(Map<String, String> fieldValues,
-                                          Set<String> personFieldNames,
+                                          Map<String, List<Author>> personValues,
                                           Set<String> relatedFieldNames) {
   }
 
@@ -328,9 +335,39 @@ public class BibliographyEditorShell {
     }
 
     typeSuggestionMenu.getItems().setAll(items);
+    showContextMenuSafely(typeSuggestionMenu, typeField);
+  }
 
-    if (!typeSuggestionMenu.isShowing()) {
-      typeSuggestionMenu.show(typeField, Side.BOTTOM, 0, 0);
+  /**
+   * Öffnet ein ContextMenu defensiv nur dann direkt, wenn der Anchor bereits
+   * an einer Scene und einem Window hängt.
+   * Andernfalls wird der Öffnungsversuch auf den nächsten UI-Zyklus verschoben.
+   *
+   * @param menu anzuzeigendes Menü
+   * @param anchor Verankerungsknoten
+   */
+  private void showContextMenuSafely(ContextMenu menu, Node anchor) {
+    if (menu == null || anchor == null) {
+      return;
+    }
+
+    if (anchor.getScene() == null || anchor.getScene().getWindow() == null) {
+      javafx.application.Platform.runLater(() -> {
+        if (anchor.getScene() == null || anchor.getScene().getWindow() == null) {
+          return;
+        }
+        if (!anchor.isVisible()) {
+          return;
+        }
+        if (!menu.isShowing()) {
+          menu.show(anchor, Side.BOTTOM, 0, 0);
+        }
+      });
+      return;
+    }
+
+    if (!menu.isShowing()) {
+      menu.show(anchor, Side.BOTTOM, 0, 0);
     }
   }
 
@@ -607,6 +644,7 @@ public class BibliographyEditorShell {
    * BOOK_DELETE-Aktion sichtbar bleibt.
    */
   public void configureForMediaManagementPopup() {
+    mediaManagementPopupContext = true;
     setEditMode(true);
 
     toggleEdit.setVisible(false);
@@ -781,13 +819,12 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Ermittelt für einen KI-Eintrag das tatsächlich vorhandene Datumsfeld
-   * des aktuellen dynamischen Formulars.
-   * Bevorzugt wird {@code ai_used_at}; Altbestände dürfen weiterhin
-   * {@code used_at} oder {@code date} verwenden.
+   * Ermittelt das aktuelle KI-Datumsfeld.
+   * Nach Abschluss der Migration wird ausschließlich {@code ai_used_at}
+   * als fachliches Datumsfeld für KI-Einträge verwendet.
    *
    * @param mediaTypeBibName technischer Medientypname
-   * @return technischer Feldname des vorhandenen Datumsfeldes oder leerer String
+   * @return {@code ai_used_at} oder leerer String
    */
   private String resolveAiDateFieldName(String mediaTypeBibName) {
     String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
@@ -800,17 +837,7 @@ public class BibliographyEditorShell {
       return "";
     }
 
-    if (registry.containsKey("ai_used_at")) {
-      return "ai_used_at";
-    }
-    if (registry.containsKey("used_at")) {
-      return "used_at";
-    }
-    if (registry.containsKey("date")) {
-      return "date";
-    }
-
-    return "";
+    return registry.containsKey("ai_used_at") ? "ai_used_at" : "";
   }
 
   /**
@@ -1019,19 +1046,19 @@ public class BibliographyEditorShell {
         }
       }
     }
-    applyLegacyDateFallbacks(mediaTypeBibName, entry);
+    applyAiDateValue(mediaTypeBibName, entry);
     captureBaseline();
     applyCurrentContextVisibility();
   }
 
   /**
-   * Überträgt Datumswerte defensiv in das tatsächlich vorhandene DatePicker-Feld,
-   * falls dieses nicht bereits über die reguläre Wertschleife gesetzt wurde.
+   * Überträgt das KI-Datum in das vorhandene DatePicker-Feld.
+   * Verwendet ausschließlich das kanonische Feld {@code ai_used_at}.
    *
    * @param mediaTypeBibName technischer Medientypname
    * @param entry geladener Eintrag
    */
-  private void applyLegacyDateFallbacks(String mediaTypeBibName, DynamicBibliographyEntry entry) {
+  private void applyAiDateValue(String mediaTypeBibName, DynamicBibliographyEntry entry) {
     if (entry == null) {
       return;
     }
@@ -1055,25 +1082,13 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Liest das rohe KI-Datum defensiv aus einem dynamischen Eintrag.
-   * Bevorzugt wird {@code ai_used_at}; Altbestände dürfen über
-   * {@code used_at} oder {@code date} kommen.
+   * Liest das KI-Nutzungsdatum aus dem kanonischen Feld {@code ai_used_at}.
    *
    * @param entry bibliographischer Eintrag
    * @return roher Datumswert oder leerer String
    */
   private String extractAiRawDateValue(DynamicBibliographyEntry entry) {
-    String aiUsedAt = extractStringValue(entry, "ai_used_at");
-    if (!aiUsedAt.isBlank()) {
-      return aiUsedAt;
-    }
-
-    String usedAt = extractStringValue(entry, "used_at");
-    if (!usedAt.isBlank()) {
-      return usedAt;
-    }
-
-    return extractStringValue(entry, "date");
+    return extractStringValue(entry, "ai_used_at");
   }
 
   /**
@@ -1232,29 +1247,6 @@ public class BibliographyEditorShell {
     }
 
     return bibliographyService.listEditorAttributesForMediaType(normalizedMediaTypeBibName);
-  }
-
-  /**
-   * Prüft, ob ein Metadaten-Datentyp als Integer behandelt werden soll.
-   *
-   * @param datatype Metadaten-Datentyp
-   * @return {@code true}, wenn Integer-Semantik vorliegt
-   */
-  private boolean isIntegerDatatype(String datatype) {
-    String normalized = normalizeMediaTypeBibName(datatype);
-    return normalized.equalsIgnoreCase("integer")
-               || normalized.equalsIgnoreCase("year")
-               || normalized.equalsIgnoreCase("month");
-  }
-
-  /**
-   * Prüft, ob ein Metadaten-Datentyp als Related-Feld behandelt werden soll.
-   *
-   * @param datatype Metadaten-Datentyp
-   * @return {@code true}, wenn Related-Semantik vorliegt
-   */
-  private boolean isRelatedDatatype(String datatype) {
-    return "anderer eintrag/integer".equalsIgnoreCase(normalizeMediaTypeBibName(datatype));
   }
 
   /**
@@ -1605,7 +1597,7 @@ public class BibliographyEditorShell {
       dynamicBibtexTypeSuggestionMenu.hide();
     }
 
-    dynamicBibtexTypeSuggestionMenu.show(selectorField, Side.BOTTOM, 0, 0);
+    showContextMenuSafely(dynamicBibtexTypeSuggestionMenu, selectorField);
   }
 
   /**
@@ -1967,6 +1959,8 @@ public class BibliographyEditorShell {
       );
 
       Node node = labeledNode(labelText, authorsView, false, null, true);
+      applyImportanceStyle(node, attribute);
+
       form.getChildren().add(node);
       fieldRegistry.put(bibtexName, authorsView);
       fieldNodeRegistry.put(bibtexName, node);
@@ -1985,6 +1979,8 @@ public class BibliographyEditorShell {
       fieldView.getEditor().textProperty().addListener((obs, oldValue, newValue) -> refreshDirtyState());
 
       Node node = labeledNode(labelText, fieldView);
+      applyImportanceStyle(node, attribute);
+
       form.getChildren().add(node);
       fieldRegistry.put(bibtexName, fieldView);
       fieldNodeRegistry.put(bibtexName, node);
@@ -1995,6 +1991,8 @@ public class BibliographyEditorShell {
       DatePicker datePicker = new DatePicker();
       datePicker.valueProperty().addListener((obs, oldValue, newValue) -> refreshDirtyState());
       Node node = labeledNode(labelText, datePicker);
+      applyImportanceStyle(node, attribute);
+
       form.getChildren().add(node);
       fieldRegistry.put(bibtexName, datePicker);
       fieldNodeRegistry.put(bibtexName, node);
@@ -2009,6 +2007,8 @@ public class BibliographyEditorShell {
       fieldView.getEditor().textProperty().addListener((obs, oldValue, newValue) -> refreshDirtyState());
 
       Node node = labeledNode(labelText, fieldView);
+      applyImportanceStyle(node, attribute);
+
       form.getChildren().add(node);
       fieldRegistry.put(bibtexName, fieldView);
       fieldNodeRegistry.put(bibtexName, node);
@@ -2030,9 +2030,35 @@ public class BibliographyEditorShell {
     fieldView.getEditor().textProperty().addListener((obs, oldValue, newValue) -> refreshDirtyState());
 
     Node node = labeledNode(labelText, fieldView);
+    applyImportanceStyle(node, attribute);
+
     form.getChildren().add(node);
     fieldRegistry.put(bibtexName, fieldView);
     fieldNodeRegistry.put(bibtexName, node);
+  }
+
+  /**
+   * Markiert Identify- und Necessary-Feldzeilen nur im Medienverwaltungs-Popup visuell.
+   *
+   * @param node Feldzeile
+   * @param attribute Attributdefinition
+   */
+  private void applyImportanceStyle(Node node, MediaAttributeDefinition attribute) {
+    if (node == null || attribute == null) {
+      return;
+    }
+
+    node.getStyleClass().removeAll("biblio-identify-field", "biblio-necessary-field");
+
+    if (!mediaManagementPopupContext) {
+      return;
+    }
+
+    if (attribute.isIdentify()) {
+      node.getStyleClass().add("biblio-identify-field");
+    } else if (attribute.isNecessary()) {
+      node.getStyleClass().add("biblio-necessary-field");
+    }
   }
 
   /**
@@ -2376,11 +2402,6 @@ public class BibliographyEditorShell {
       }
 
       @Override
-      public Integer getCurrentRelatedEntryId(String mediaTypeBibName, String bibtexName) {
-        return BibliographyEditorShell.this.getCurrentRelatedEntryId(mediaTypeBibName, bibtexName);
-      }
-
-      @Override
       public void setCurrentRelatedEntry(String mediaTypeBibName,
                                          String bibtexName,
                                          Integer entryId,
@@ -2416,14 +2437,6 @@ public class BibliographyEditorShell {
       @Override
       public void setAutoFillLocked(String mediaTypeBibName, boolean locked) {
         BibliographyEditorShell.this.setAutoFillLocked(mediaTypeBibName, locked);
-      }
-
-      @Override
-      public List<Author> getCurrentAuthors(String mediaTypeBibName) {
-        return BibliographyEditorShell.this.getCurrentAuthorsForField(
-            mediaTypeBibName,
-            "author"
-        );
       }
 
       @Override
@@ -2607,10 +2620,6 @@ public class BibliographyEditorShell {
     }
 
     return label;
-  }
-
-  private boolean isPersonDatatype(String datatype) {
-    return "person".equalsIgnoreCase(normalizeBibtexName(datatype));
   }
 
   private boolean isDatePickerDatatype(String datatype, String bibtexName) {
@@ -3318,6 +3327,16 @@ public class BibliographyEditorShell {
   }
 
   /**
+   * Normalisiert einen Metadaten-Datentyp für technische Vergleiche.
+   *
+   * @param datatype Datentyp aus den Metadaten
+   * @return normalisierte Datentypbezeichnung
+   */
+  private String normalizeDatatype(String datatype) {
+    return datatype == null ? "" : datatype.trim().toLowerCase(Locale.ROOT);
+  }
+
+  /**
    * Parst ein Datum tolerant aus ISO-Text.
    *
    * @param value Eingabetext
@@ -3423,7 +3442,7 @@ public class BibliographyEditorShell {
     return bibliographyService.isLocallyValidForSave(
         mediaType.bibName(),
         snapshot.fieldValues(),
-        snapshot.personFieldNames(),
+        snapshot.personValues(),
         snapshot.relatedFieldNames()
     );
   }
@@ -3439,11 +3458,11 @@ public class BibliographyEditorShell {
     String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
 
     Map<String, String> fieldValues = new LinkedHashMap<>();
-    Set<String> personFieldNames = new LinkedHashSet<>();
+    Map<String, List<Author>> personValues = new LinkedHashMap<>();
     Set<String> relatedFieldNames = new LinkedHashSet<>();
 
     if (bibliographyService == null || normalizedMediaTypeBibName.isBlank()) {
-      return new EditorValidationSnapshot(fieldValues, personFieldNames, relatedFieldNames);
+      return new EditorValidationSnapshot(fieldValues, personValues, relatedFieldNames);
     }
 
     for (MediaAttributeDefinition attribute : bibliographyService.listAttributesForMediaType(normalizedMediaTypeBibName)) {
@@ -3456,7 +3475,7 @@ public class BibliographyEditorShell {
           normalizeBibtexName(attribute.fieldDefinition().bibtexName()),
           normalizeBibtexName(attribute.fieldDefinition().datatype()),
           fieldValues,
-          personFieldNames,
+          personValues,
           relatedFieldNames
       );
     }
@@ -3475,13 +3494,13 @@ public class BibliographyEditorShell {
             normalizeBibtexName(fieldDefinition.bibtexName()),
             normalizeBibtexName(fieldDefinition.datatype()),
             fieldValues,
-            personFieldNames,
+            personValues,
             relatedFieldNames
         );
       }
     }
 
-    return new EditorValidationSnapshot(fieldValues, personFieldNames, relatedFieldNames);
+    return new EditorValidationSnapshot(fieldValues, personValues, relatedFieldNames);
   }
 
   /**
@@ -3492,22 +3511,23 @@ public class BibliographyEditorShell {
    * @param bibtexName technischer Feldname
    * @param datatype technischer Datentyp
    * @param fieldValues einfache Feldwerte
-   * @param personFieldNames belegte Personenfelder
+   * @param personValues belegte Personenfelder
    * @param relatedFieldNames belegte Related-Felder
    */
   private void collectValidationStateForField(String mediaTypeBibName,
                                               String bibtexName,
                                               String datatype,
                                               Map<String, String> fieldValues,
-                                              Set<String> personFieldNames,
+                                              Map<String, List<Author>> personValues,
                                               Set<String> relatedFieldNames) {
     if (bibtexName == null || bibtexName.isBlank()) {
       return;
     }
 
     if (isPersonDatatype(datatype)) {
-      if (!getCurrentAuthorsForField(mediaTypeBibName, bibtexName).isEmpty()) {
-        personFieldNames.add(bibtexName);
+      List<Author> authors = getCurrentAuthorsForField(mediaTypeBibName, bibtexName);
+      if (authors != null && !authors.isEmpty()) {
+        personValues.put(bibtexName, authors);
       }
       return;
     }
