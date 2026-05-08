@@ -292,6 +292,71 @@ public class DynamicBibliographyRepository {
   }
 
   /**
+   * Sucht Eintrags-IDs ueber alle Personenfelder.
+   * Mehrere Autoren werden als UND-Filter interpretiert, ohne vollstaendige
+   * Bibliographie-Eintraege zu laden.
+   *
+   * @param mediaTypeId optionale Medientyp-ID
+   * @param requiredAuthors Autorenfilter
+   * @param limit maximale Trefferzahl
+   * @return passende Eintrags-IDs
+   */
+  public List<Integer> searchEntryIdsByAuthors(Integer mediaTypeId,
+                                               List<Author> requiredAuthors,
+                                               int limit) {
+    List<Author> authors = normalizeAuthors(requiredAuthors);
+    if (authors.isEmpty()) {
+      return List.of();
+    }
+
+    LinkedHashSet<Integer> intersection = null;
+    int queryLimit = Math.max(Math.max(1, limit) * 20, 1_000);
+    for (Author author : authors) {
+      LinkedHashSet<Integer> hits = new LinkedHashSet<>(
+          searchEntryIdsByAuthor(mediaTypeId, author, queryLimit)
+      );
+      if (intersection == null) {
+        intersection = hits;
+      } else {
+        intersection.retainAll(hits);
+      }
+      if (intersection.isEmpty()) {
+        return List.of();
+      }
+    }
+
+    return intersection == null
+               ? List.of()
+               : intersection.stream().limit(Math.max(1, limit)).toList();
+  }
+
+  /**
+   * Ermittelt direkt verknuepfbare Medien-IDs zu einer Treffermenge.
+   * Direkte Medientypen werden ueber {@code media_types.direct_link}
+   * beibehalten; nicht direkte Container werden ueber Related-Felder auf ihre
+   * enthaltenen direkten Medien abgebildet.
+   *
+   * @param entryIds Ausgangs-IDs
+   * @return direkt verknuepfbare Medien-IDs
+   */
+  public List<Integer> resolveDirectEntryIds(Collection<Integer> entryIds) {
+    List<Integer> normalized = normalizeIds(entryIds);
+    if (normalized.isEmpty()) {
+      return List.of();
+    }
+
+    LinkedHashSet<Integer> direct = new LinkedHashSet<>();
+    int chunkSize = 800;
+    for (int start = 0; start < normalized.size(); start += chunkSize) {
+      int end = Math.min(start + chunkSize, normalized.size());
+      List<Integer> chunk = normalized.subList(start, end);
+      direct.addAll(loadDirectEntryIds(chunk));
+      direct.addAll(loadDirectEntriesContainedIn(chunk));
+    }
+    return new ArrayList<>(direct);
+  }
+
+  /**
    * Sucht Eintrags-IDs über ein String-artiges Feld.
    *
    * @param mediaTypeId optionale Medientyp-ID
@@ -402,6 +467,85 @@ public class DynamicBibliographyRepository {
     parameters.add(Math.max(1, limit));
 
     return executeEntryIdQuery(sql.toString(), parameters);
+  }
+
+  private List<Integer> searchEntryIdsByAuthor(Integer mediaTypeId, Author author, int limit) {
+    String lastName = sanitize(author.getLastName());
+    String firstName = sanitize(author.getFirstName());
+    if (lastName.isBlank() && firstName.isBlank()) {
+      return List.of();
+    }
+
+    StringBuilder sql = new StringBuilder("""
+        SELECT DISTINCT bei.entries_id
+        FROM bibliography_entries_integer bei
+        JOIN bibliography_entries be
+          ON be.id = bei.entries_id
+        JOIN bibtex_type bt
+          ON bt.id = bei.bibtex_type_id
+        JOIN author_mapping am
+          ON am.person_group_id = bei.entry
+        JOIN authors a
+          ON a.id = am.author_id
+        WHERE LOWER(TRIM(bt.datatype)) = 'person'
+        """);
+
+    List<Object> parameters = new ArrayList<>();
+    if (mediaTypeId != null && mediaTypeId > 0) {
+      sql.append(" AND be.media_types_id = ?");
+      parameters.add(mediaTypeId);
+    }
+    if (!lastName.isBlank()) {
+      sql.append(" AND LOWER(TRIM(COALESCE(a.last_name, ''))) LIKE LOWER(?)");
+      parameters.add("%" + lastName + "%");
+    }
+    if (!firstName.isBlank()) {
+      sql.append(" AND LOWER(TRIM(COALESCE(a.first_name, ''))) LIKE LOWER(?)");
+      parameters.add("%" + firstName + "%");
+    }
+
+    sql.append("""
+         ORDER BY bei.entries_id
+         LIMIT ?
+        """);
+    parameters.add(Math.max(1, limit));
+
+    return executeEntryIdQuery(sql.toString(), parameters);
+  }
+
+  private List<Integer> loadDirectEntryIds(List<Integer> entryIds) {
+    String placeholders = String.join(", ", Collections.nCopies(entryIds.size(), "?"));
+    String sql = """
+        SELECT be.id
+        FROM bibliography_entries be
+        JOIN media_types mt
+          ON mt.id = be.media_types_id
+        WHERE be.id IN (""" + placeholders + """
+        )
+          AND mt.direct_link = 1
+        ORDER BY be.id
+        """;
+    return executeEntryIdQuery(sql, new ArrayList<>(entryIds));
+  }
+
+  private List<Integer> loadDirectEntriesContainedIn(List<Integer> containerEntryIds) {
+    String placeholders = String.join(", ", Collections.nCopies(containerEntryIds.size(), "?"));
+    String sql = """
+        SELECT DISTINCT bei.entries_id
+        FROM bibliography_entries_integer bei
+        JOIN bibtex_type bt
+          ON bt.id = bei.bibtex_type_id
+        JOIN bibliography_entries child
+          ON child.id = bei.entries_id
+        JOIN media_types child_type
+          ON child_type.id = child.media_types_id
+        WHERE bei.entry IN (""" + placeholders + """
+        )
+          AND LOWER(TRIM(bt.datatype)) = 'related'
+          AND child_type.direct_link = 1
+        ORDER BY bei.entries_id
+        """;
+    return executeEntryIdQuery(sql, new ArrayList<>(containerEntryIds));
   }
 
   /**
@@ -2549,6 +2693,40 @@ public class DynamicBibliographyRepository {
   private String normalizeNullable(String value) {
     String sanitized = sanitize(value);
     return sanitized.isBlank() ? null : sanitized;
+  }
+
+  private List<Author> normalizeAuthors(List<Author> authors) {
+    if (authors == null || authors.isEmpty()) {
+      return List.of();
+    }
+
+    List<Author> normalized = new ArrayList<>();
+    for (Author author : authors) {
+      if (author == null) {
+        continue;
+      }
+      String firstName = sanitize(author.getFirstName());
+      String lastName = sanitize(author.getLastName());
+      if (firstName.isBlank() && lastName.isBlank()) {
+        continue;
+      }
+      Author copy = new Author();
+      copy.setFirstName(firstName);
+      copy.setLastName(lastName);
+      normalized.add(copy);
+    }
+    return normalized;
+  }
+
+  private List<Integer> normalizeIds(Collection<Integer> ids) {
+    if (ids == null || ids.isEmpty()) {
+      return List.of();
+    }
+    return ids.stream()
+               .filter(Objects::nonNull)
+               .filter(id -> id > 0)
+               .distinct()
+               .toList();
   }
 
   /**

@@ -151,7 +151,8 @@ public class ManualExportDialog {
     formatBox.setItems(FXCollections.observableArrayList(
         new FormatOption("Word Dokument", ExportDocumentType.DOCX),
         new FormatOption("RTF", ExportDocumentType.RTF),
-        new FormatOption("PDF", ExportDocumentType.PDF)
+        new FormatOption("PDF", ExportDocumentType.PDF),
+        new FormatOption("HTML", ExportDocumentType.HTML)
     ));
     formatBox.getSelectionModel().selectFirst();
 

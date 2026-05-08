@@ -35,7 +35,8 @@ public class DefaultNoteExportService implements NoteExportService {
         Map.of(
             ExportDocumentType.DOCX, new DocxExportWriter(),
             ExportDocumentType.RTF, new RtfExportWriter(),
-            ExportDocumentType.PDF, new PdfExportWriter()
+            ExportDocumentType.PDF, new PdfExportWriter(),
+            ExportDocumentType.HTML, new HtmlExportWriter()
         )
     );
   }
@@ -70,13 +71,25 @@ public class DefaultNoteExportService implements NoteExportService {
     List<Note> sourceNotes = noteRepository.loadForExport(request.noteIds());
     List<List<Note>> chunks = split(sourceNotes, request.splitAfterNotes());
     NoteExportWriter writer = resolveWriter(request.documentType());
+    List<ExportBibliographyEntry> fullEndBibliography = buildEndBibliography(sourceNotes, request.selection());
 
     List<Path> writtenFiles = new ArrayList<>();
     for (int i = 0; i < chunks.size(); i++) {
-      ExportDocument document = buildDocument(chunks.get(i), request.selection());
+      ExportDocument document = buildDocument(
+          chunks.get(i),
+          request.selection(),
+          endBibliographyForChunk(chunks.get(i), request.selection(), fullEndBibliography, i == chunks.size() - 1)
+      );
       Path target = resolveTargetPath(request.outputPath(), request.documentType(), chunks.size(), i + 1);
       writer.write(document, target);
       writtenFiles.add(target);
+    }
+
+    if (request.selection().bibliographyPlacement() == BibliographyPlacement.SEPARATE_FILE
+        && !fullEndBibliography.isEmpty()) {
+      Path bibliographyPath = resolveBibliographyPath(request.outputPath(), request.documentType());
+      writer.write(new ExportDocument(List.of(), fullEndBibliography, request.selection()), bibliographyPath);
+      writtenFiles.add(bibliographyPath);
     }
     return new ExportResult(writtenFiles);
   }
@@ -88,30 +101,69 @@ public class DefaultNoteExportService implements NoteExportService {
    * @param selection Exportauswahl
    * @return neutrales Exportdokument
    */
-  private ExportDocument buildDocument(List<Note> notes, ExportSelection selection) {
+  private ExportDocument buildDocument(List<Note> notes,
+                                       ExportSelection selection,
+                                       List<ExportBibliographyEntry> endBibliography) {
     List<ExportNote> exportNotes = new ArrayList<>();
-    LinkedHashMap<Integer, ExportBibliographyEntry> endBibliography = new LinkedHashMap<>();
 
     for (Note note : notes) {
       ExportBibliographyEntry bibliographyEntry =
           bibliographyFormatter.format(note.getBibliographyRefId(), selection.bibliographyLevel())
               .orElse(null);
 
-      if (selection.bibliographyPlacement() == BibliographyPlacement.END_OF_DOCUMENT
-          && bibliographyEntry != null) {
-        endBibliography.putIfAbsent(bibliographyEntry.entryId(), bibliographyEntry);
-      }
-
       exportNotes.add(new ExportNote(
           note.getId(),
           note.getTitle(),
           bodyTextExtractor.extractPlainText(note),
+          bodyTextExtractor.extractStyledParagraphs(note),
           note.getKeywords(),
           bibliographyEntry
       ));
     }
 
-    return new ExportDocument(exportNotes, new ArrayList<>(endBibliography.values()), selection);
+    return new ExportDocument(exportNotes, endBibliography, selection);
+  }
+
+  /**
+   * Baut die deduplizierte Bibliographie fuer alle ausgewaehlten Zettel.
+   *
+   * @param notes ausgewaehlte Zettel
+   * @param selection Exportauswahl
+   * @return deduplizierte Bibliographie
+   */
+  private List<ExportBibliographyEntry> buildEndBibliography(List<Note> notes, ExportSelection selection) {
+    if (selection.bibliographyLevel() == BibliographyExportLevel.NONE) {
+      return List.of();
+    }
+
+    LinkedHashMap<Integer, ExportBibliographyEntry> entries = new LinkedHashMap<>();
+    for (Note note : notes) {
+      bibliographyFormatter.format(note.getBibliographyRefId(), selection.bibliographyLevel())
+          .ifPresent(entry -> entries.putIfAbsent(entry.entryId(), entry));
+    }
+    return new ArrayList<>(entries.values());
+  }
+
+  /**
+   * Bestimmt die Endbibliographie fuer einen konkreten Exportblock.
+   *
+   * @param chunk Zettelblock
+   * @param selection Exportauswahl
+   * @param fullEndBibliography Bibliographie aller ausgewaehlten Zettel
+   * @param lastChunk ob der Block der letzte Block ist
+   * @return Bibliographie fuer diesen Block
+   */
+  private List<ExportBibliographyEntry> endBibliographyForChunk(List<Note> chunk,
+                                                                ExportSelection selection,
+                                                                List<ExportBibliographyEntry> fullEndBibliography,
+                                                                boolean lastChunk) {
+    if (selection.bibliographyPlacement() == BibliographyPlacement.END_OF_LAST_DOCUMENT) {
+      return lastChunk ? fullEndBibliography : List.of();
+    }
+    if (selection.bibliographyPlacement() == BibliographyPlacement.END_OF_DOCUMENT) {
+      return buildEndBibliography(chunk, selection);
+    }
+    return List.of();
   }
 
   /**
@@ -172,9 +224,26 @@ public class DefaultNoteExportService implements NoteExportService {
     String fileName = normalized.getFileName().toString();
     String extension = type.extension();
     String base = fileName.substring(0, fileName.length() - extension.length());
-    String chunkName = base + "-" + String.format(Locale.ROOT, "%03d", chunkIndex) + extension;
+    String chunkName = base + "_" + chunkIndex + extension;
     Path parent = normalized.getParent();
     return parent == null ? Path.of(chunkName) : parent.resolve(chunkName);
+  }
+
+  /**
+   * Bestimmt den Pfad fuer eine separate Bibliographiedatei.
+   *
+   * @param outputPath angeforderter Zielpfad
+   * @param type Dokumenttyp
+   * @return Zielpfad der Bibliographiedatei
+   */
+  private Path resolveBibliographyPath(Path outputPath, ExportDocumentType type) {
+    Path normalized = ensureExtension(outputPath, type.extension());
+    String fileName = normalized.getFileName().toString();
+    String extension = type.extension();
+    String base = fileName.substring(0, fileName.length() - extension.length());
+    Path parent = normalized.getParent();
+    Path bibliographyName = Path.of(base + "_Bibliographie" + extension);
+    return parent == null ? bibliographyName : parent.resolve(bibliographyName);
   }
 
   /**

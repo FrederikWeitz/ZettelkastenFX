@@ -19,88 +19,89 @@ import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.*;
 import javafx.util.StringConverter;
-import lombok.Getter;
-import lombok.Setter;
 
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * Baut und kapselt die JavaFX-View des Zettelfensters.
+ */
 public class ZettelWindowView {
 
-  @Getter private final BorderPane root;
+  private final BorderPane root;
 
-  @Getter private final VBox topArea;
-  @Getter private final MenuBar menuBar;
-  @Getter private final Menu menuFile;
-  @Getter private final Menu menuEdit;
-  @Getter private final Menu menuView;
+  private final VBox topArea;
+  private final MenuBar menuBar;
+  private final Menu menuFile;
+  private final Menu menuEdit;
+  private final Menu menuView;
 
-  @Getter private final ToolBar topToolBar;
-  @Getter private final Button toolButtonPageAdd;
-  @Getter private final Button toolButtonPageCopy;
-  @Getter private final Button toolButtonPageWithBibliography;
-  @Getter private final Button toolButtonLinkEdit;
-  @Getter private final Button toolButtonBibliography;
+  private final ToolBar topToolBar;
+  private final Button toolButtonPageAdd;
+  private final Button toolButtonPageCopy;
+  private final Button toolButtonPageWithBibliography;
+  private final Button toolButtonLinkEdit;
+  private final Button toolButtonBibliography;
 
   // Button zum Aufklappen der Service-Area
-  @Getter private final Button toolButtonToggleServiceArea;
+  private final Button toolButtonToggleServiceArea;
 
-  @Getter private final MenuButton toolMenuFollowingPages;
-  @Getter private final MenuItem miFollowing;
-  @Getter private final MenuItem miIdea;
-  @Getter private final MenuItem miQuestion;
-  @Getter private final MenuItem miCritique;
-  @Getter private final MenuItem miTask;
+  private final MenuButton toolMenuFollowingPages;
+  private final MenuItem miFollowing;
+  private final MenuItem miIdea;
+  private final MenuItem miQuestion;
+  private final MenuItem miCritique;
+  private final MenuItem miTask;
 
-  @Getter private final BottomToolbar bottomToolbar;
+  private final BottomToolbar bottomToolbar;
 
-  @Getter private final SplitPane workAreaSplitPane;
+  private final SplitPane workAreaSplitPane;
 
-  @Getter private final ToolBar serviceAreaToolBar;
-  @Getter private final StackPane serviceAreaContentHost;
+  private final ToolBar serviceAreaToolBar;
+  private final StackPane serviceAreaContentHost;
 
   // Toolbar der Service-Area
-  @Getter private final ToggleButton serviceAreaMagnifyLinkButton;
-  @Getter private final ToggleButton serviceAreaKeyButton;
-  @Getter private final ToggleButton serviceAreaBookButton;
-  @Getter private final ToggleButton serviceAreaListButton;
-  @Getter private final ToggleButton serviceAreaClusterButton;
+  private final ToggleButton serviceAreaMagnifyLinkButton;
+  private final ToggleButton serviceAreaKeyButton;
+  private final ToggleButton serviceAreaBookButton;
+  private final ToggleButton serviceAreaListButton;
+  private final ToggleButton serviceAreaClusterButton;
 
   // MAGNIFY_LINK-Komponente
-  @Getter private final BorderPane magnifyLinkPane;
-  @Getter private final ToolBar magnifyLinkToolBar;
-  @Getter private final TextField magnifyLinkNoteIdField;
-  @Getter private final Slider magnifyLinkIncomingDepthSlider;
-  @Getter private final Slider magnifyLinkOutgoingDepthSlider;
-  @Getter private final ToggleButton magnifyLinkDirectedTraversalButton;
+  private final BorderPane magnifyLinkPane;
+  private final ToolBar magnifyLinkToolBar;
+  private final TextField magnifyLinkNoteIdField;
+  private final Slider magnifyLinkIncomingDepthSlider;
+  private final Slider magnifyLinkOutgoingDepthSlider;
+  private final ToggleButton magnifyLinkDirectedTraversalButton;
 
-  @Getter private final ToggleButton magnifyLinkSerieButton;
-  @Getter private final ToggleButton magnifyLinkIdeaButton;
-  @Getter private final ToggleButton magnifyLinkQuestionButton;
-  @Getter private final ToggleButton magnifyLinkCritiqueButton;
-  @Getter private final ToggleButton magnifyLinkTaskButton;
+  private final ToggleButton magnifyLinkSerieButton;
+  private final ToggleButton magnifyLinkIdeaButton;
+  private final ToggleButton magnifyLinkQuestionButton;
+  private final ToggleButton magnifyLinkCritiqueButton;
+  private final ToggleButton magnifyLinkTaskButton;
 
-  @Getter private final TextField magnifyLinkFilterField;
-  @Getter private final Label magnifyLinkStatusLabel;
-  @Getter private final VBox magnifyLinkListBox;
+  private final TextField magnifyLinkFilterField;
+  private final Label magnifyLinkStatusLabel;
+  private final VBox magnifyLinkListBox;
 
   // KEY-Komponente
-  @Getter private final BorderPane keyPane;
-  @Getter private final ToolBar keyToolBar;
-  @Getter private final TextField keyFilterField;
-  @Getter private final TextField keyKeepField;
-  @Getter private final ComboBox<String> keyReplaceField;
-  @Getter private final Button keyReplaceButton;
-  @Getter private final Label keyStatusLabel;
-  @Getter private final TableView<KeyTableRow> keyTable;
-  @Getter private final TableColumn<KeyTableRow, String> keyKeywordColumn;
-  @Getter private final TableColumn<KeyTableRow, Number> keyCountColumn;
-  @Getter private final ToggleButton keyShowHeadersToggleButton;
-  @Getter private final SplitPane keySplitPane;
-  @Getter private final BorderPane keyHeaderPane;
-  @Getter private final TableView<KeyHeaderRow> keyHeaderTable;
-  @Getter private final TableColumn<KeyHeaderRow, Number> keyHeaderIdColumn;
-  @Getter private final TableColumn<KeyHeaderRow, String> keyHeaderTitleColumn;
+  private final BorderPane keyPane;
+  private final ToolBar keyToolBar;
+  private final TextField keyFilterField;
+  private final TextField keyKeepField;
+  private final ComboBox<String> keyReplaceField;
+  private final Button keyReplaceButton;
+  private final Label keyStatusLabel;
+  private final TableView<KeyTableRow> keyTable;
+  private final TableColumn<KeyTableRow, String> keyKeywordColumn;
+  private final TableColumn<KeyTableRow, Number> keyCountColumn;
+  private final ToggleButton keyShowHeadersToggleButton;
+  private final SplitPane keySplitPane;
+  private final BorderPane keyHeaderPane;
+  private final TableView<KeyHeaderRow> keyHeaderTable;
+  private final TableColumn<KeyHeaderRow, Number> keyHeaderIdColumn;
+  private final TableColumn<KeyHeaderRow, String> keyHeaderTitleColumn;
 
   private Integer pendingKeyEditRowId;
   private String pendingKeyEditText;
@@ -118,47 +119,47 @@ public class ZettelWindowView {
   private KeyStatusType keyActionStatusType = KeyStatusType.INFO;
 
   // LIST-Komponente
-  @Getter private final BorderPane listPane;
-  @Getter private final ToolBar listToolBar;
-  @Getter private final Button listPageKeyButton;
-  @Getter private final Slider listDepthSlider;
-  @Getter private final TextField listFilterField;
-  @Getter private final ToggleButton listFullTextToggleButton;
-  @Getter private final StackPane listContentHost;
-  @Getter private final ScrollPane listPageKeyScrollPane;
-  @Getter private final VBox listPageKeyBox;
-  @Getter private final TableView<ListFilterRow> listFilterTable;
-  @Getter private final TableColumn<ListFilterRow, Number> listFilterIdColumn;
-  @Getter private final TableColumn<ListFilterRow, String> listFilterTitleColumn;
-  @Getter private final TableColumn<ListFilterRow, Integer> listFilterLinkCountColumn;
+  private final BorderPane listPane;
+  private final ToolBar listToolBar;
+  private final Button listPageKeyButton;
+  private final Slider listDepthSlider;
+  private final TextField listFilterField;
+  private final ToggleButton listFullTextToggleButton;
+  private final StackPane listContentHost;
+  private final ScrollPane listPageKeyScrollPane;
+  private final VBox listPageKeyBox;
+  private final TableView<ListFilterRow> listFilterTable;
+  private final TableColumn<ListFilterRow, Number> listFilterIdColumn;
+  private final TableColumn<ListFilterRow, String> listFilterTitleColumn;
+  private final TableColumn<ListFilterRow, Integer> listFilterLinkCountColumn;
 
   // BOOK-Komponente
-  @Getter private final BorderPane bookPane;
-  @Getter private final ToolBar bookToolBar;
-  @Getter private final ToggleButton bookShowNotesToggleButton;
-  @Getter private final ToggleButton bookShowMediaColumnToggleButton;
-  @Getter private final Button bookAuthorModeButton;
+  private final BorderPane bookPane;
+  private final ToolBar bookToolBar;
+  private final ToggleButton bookShowNotesToggleButton;
+  private final ToggleButton bookShowMediaColumnToggleButton;
+  private final Button bookAuthorModeButton;
 
-  @Getter private final TextField bookMediaTypeField;
-  @Getter private final ContextMenu bookMediaTypeMenu;
-  @Getter private final TextField bookTitleField;
+  private final TextField bookMediaTypeField;
+  private final ContextMenu bookMediaTypeMenu;
+  private final TextField bookTitleField;
 
-  @Getter private final VBox bookAuthorHost;
-  @Getter private final ScrollPane bookAuthorScrollPane;
-  @Getter private final VBox bookAuthorRowsBox;
+  private final VBox bookAuthorHost;
+  private final ScrollPane bookAuthorScrollPane;
+  private final VBox bookAuthorRowsBox;
 
-  @Getter private final SplitPane bookSplitPane;
-  @Getter private final TableView<BookMediaRow> bookMediaTable;
-  @Getter private final TableColumn<BookMediaRow, String> bookMediaAuthorColumn;
-  @Getter private final TableColumn<BookMediaRow, String> bookMediaTitleColumn;
-  @Getter private final TableColumn<BookMediaRow, String> bookMediaTypeColumn;
-  @Getter private final TableColumn<BookMediaRow, Number> bookMediaNoteCountColumn;
+  private final SplitPane bookSplitPane;
+  private final TableView<BookMediaRow> bookMediaTable;
+  private final TableColumn<BookMediaRow, String> bookMediaAuthorColumn;
+  private final TableColumn<BookMediaRow, String> bookMediaTitleColumn;
+  private final TableColumn<BookMediaRow, String> bookMediaTypeColumn;
+  private final TableColumn<BookMediaRow, Number> bookMediaNoteCountColumn;
 
-  @Getter private final BorderPane bookNotesPane;
-  @Getter private final TableView<BookNoteRow> bookNotesTable;
-  @Getter private final TableColumn<BookNoteRow, Number> bookNotesIdColumn;
-  @Getter private final TableColumn<BookNoteRow, String> bookNotesTitleColumn;
-  @Getter private final Label bookStatusLabel;
+  private final BorderPane bookNotesPane;
+  private final TableView<BookNoteRow> bookNotesTable;
+  private final TableColumn<BookNoteRow, Number> bookNotesIdColumn;
+  private final TableColumn<BookNoteRow, String> bookNotesTitleColumn;
+  private final Label bookStatusLabel;
 
   private final double bookSplitDividerPosition = 0.68;
   private static final double BOOK_AUTHOR_VIEWPORT_HEIGHT = 78;
@@ -169,16 +170,18 @@ public class ZettelWindowView {
    * -- GETTER --
    * liefert den technischen Namen des aktuell aufgelösten BOOK-Medientyps.
    */
-  @Getter private String bookResolvedMediaTypeBibName = "";
+  private String bookResolvedMediaTypeBibName = "";
 
   public enum ListMode {
     PAGE_KEY,
     FILTER
   }
 
-  @Getter private ListMode activeListMode = ListMode.PAGE_KEY;
+  private ListMode activeListMode = ListMode.PAGE_KEY;
 
-  @Getter
+  /**
+   * Beschreibt eine Tabellenzeile der LIST-Filteransicht.
+   */
   public static final class ListFilterRow {
     private final int noteId;
     private final String title;
@@ -199,6 +202,42 @@ public class ZettelWindowView {
       this.linkCount = linkCount;
       this.bodyMatchOnly = bodyMatchOnly;
     }
+
+    /**
+     * Liefert die Zettelnummer der Tabellenzeile.
+     *
+     * @return Zettelnummer
+     */
+    public int getNoteId() {
+      return noteId;
+    }
+
+    /**
+     * Liefert die Ueberschrift der Tabellenzeile.
+     *
+     * @return Ueberschrift
+     */
+    public String getTitle() {
+      return title;
+    }
+
+    /**
+     * Liefert die Anzahl verknuepfter Zettel.
+     *
+     * @return Anzahl oder {@code null}
+     */
+    public Integer getLinkCount() {
+      return linkCount;
+    }
+
+    /**
+     * Prueft, ob der Treffer nur im Volltext gefunden wurde.
+     *
+     * @return {@code true}, wenn nur der Volltext getroffen hat
+     */
+    public boolean isBodyMatchOnly() {
+      return bodyMatchOnly;
+    }
   }
 
   public enum BookAuthorMode {
@@ -207,7 +246,9 @@ public class ZettelWindowView {
     MULTI
   }
 
-  @Getter @Setter
+  /**
+   * Beschreibt eine Autorenzeile der BOOK-Filtermaske.
+   */
   public static final class BookAuthorRow {
     private String lastName = "";
     private String firstName = "";
@@ -225,9 +266,101 @@ public class ZettelWindowView {
       this.lastName = lastName == null ? "" : lastName;
       this.firstName = firstName == null ? "" : firstName;
     }
+
+    /**
+     * Liefert den Nachnamen.
+     *
+     * @return Nachname
+     */
+    public String getLastName() {
+      return lastName;
+    }
+
+    /**
+     * Setzt den Nachnamen.
+     *
+     * @param lastName Nachname
+     */
+    public void setLastName(String lastName) {
+      this.lastName = lastName;
+    }
+
+    /**
+     * Liefert den Vornamen.
+     *
+     * @return Vorname
+     */
+    public String getFirstName() {
+      return firstName;
+    }
+
+    /**
+     * Setzt den Vornamen.
+     *
+     * @param firstName Vorname
+     */
+    public void setFirstName(String firstName) {
+      this.firstName = firstName;
+    }
+
+    /**
+     * Liefert das Nachnamen-Eingabefeld.
+     *
+     * @return Nachnamen-Eingabefeld
+     */
+    public TextField getLastNameField() {
+      return lastNameField;
+    }
+
+    /**
+     * Setzt das Nachnamen-Eingabefeld.
+     *
+     * @param lastNameField Nachnamen-Eingabefeld
+     */
+    public void setLastNameField(TextField lastNameField) {
+      this.lastNameField = lastNameField;
+    }
+
+    /**
+     * Liefert das Vornamen-Eingabefeld.
+     *
+     * @return Vornamen-Eingabefeld
+     */
+    public TextField getFirstNameField() {
+      return firstNameField;
+    }
+
+    /**
+     * Setzt das Vornamen-Eingabefeld.
+     *
+     * @param firstNameField Vornamen-Eingabefeld
+     */
+    public void setFirstNameField(TextField firstNameField) {
+      this.firstNameField = firstNameField;
+    }
+
+    /**
+     * Liefert das Vorschlagsmenue fuer Nachnamen.
+     *
+     * @return Vorschlagsmenue
+     */
+    public ContextMenu getLastNameSuggestionMenu() {
+      return lastNameSuggestionMenu;
+    }
+
+    /**
+     * Setzt das Vorschlagsmenue fuer Nachnamen.
+     *
+     * @param lastNameSuggestionMenu Vorschlagsmenue
+     */
+    public void setLastNameSuggestionMenu(ContextMenu lastNameSuggestionMenu) {
+      this.lastNameSuggestionMenu = lastNameSuggestionMenu;
+    }
   }
 
-  @Getter
+  /**
+   * Beschreibt eine Tabellenzeile der BOOK-Medientabelle.
+   */
   public static final class BookMediaRow {
     private final int entryId;
     private final String authorDisplay;
@@ -255,9 +388,56 @@ public class ZettelWindowView {
       this.mediaTypeName = mediaTypeName == null ? "" : mediaTypeName;
       this.noteCount = noteCount;
     }
+
+    /**
+     * Liefert die Eintrags-ID.
+     *
+     * @return Eintrags-ID
+     */
+    public int getEntryId() {
+      return entryId;
+    }
+
+    /**
+     * Liefert die Autorendarstellung.
+     *
+     * @return Autorendarstellung
+     */
+    public String getAuthorDisplay() {
+      return authorDisplay;
+    }
+
+    /**
+     * Liefert den Titel.
+     *
+     * @return Titel
+     */
+    public String getTitle() {
+      return title;
+    }
+
+    /**
+     * Liefert den Medientypnamen.
+     *
+     * @return Medientypname
+     */
+    public String getMediaTypeName() {
+      return mediaTypeName;
+    }
+
+    /**
+     * Liefert die Anzahl referenzierender Zettel.
+     *
+     * @return Anzahl referenzierender Zettel
+     */
+    public int getNoteCount() {
+      return noteCount;
+    }
   }
 
-  @Getter
+  /**
+   * Beschreibt eine Tabellenzeile der BOOK-Zetteltabelle.
+   */
   public static final class BookNoteRow {
     private final int noteId;
     private final String title;
@@ -271,6 +451,24 @@ public class ZettelWindowView {
     public BookNoteRow(int noteId, String title) {
       this.noteId = noteId;
       this.title = title == null ? "" : title;
+    }
+
+    /**
+     * Liefert die Zettel-ID.
+     *
+     * @return Zettel-ID
+     */
+    public int getNoteId() {
+      return noteId;
+    }
+
+    /**
+     * Liefert die Zettelueberschrift.
+     *
+     * @return Zettelueberschrift
+     */
+    public String getTitle() {
+      return title;
     }
   }
 
@@ -295,7 +493,9 @@ public class ZettelWindowView {
     boolean handleCommit(KeyTableRow row, String newKeyword);
   }
 
-  @Getter
+  /**
+   * Beschreibt eine Tabellenzeile der KEY-Schlagworttabelle.
+   */
   public static final class KeyTableRow {
     private final int keywordId;
     private final String keyword;
@@ -313,9 +513,38 @@ public class ZettelWindowView {
       this.keyword = keyword;
       this.count = count;
     }
+
+    /**
+     * Liefert die Schlagwort-ID.
+     *
+     * @return Schlagwort-ID
+     */
+    public int getKeywordId() {
+      return keywordId;
+    }
+
+    /**
+     * Liefert das Schlagwort.
+     *
+     * @return Schlagwort
+     */
+    public String getKeyword() {
+      return keyword;
+    }
+
+    /**
+     * Liefert die Haeufigkeit.
+     *
+     * @return Haeufigkeit
+     */
+    public int getCount() {
+      return count;
+    }
   }
 
-  @Getter
+  /**
+   * Beschreibt eine Tabellenzeile der KEY-Zettelkopftabelle.
+   */
   public static final class KeyHeaderRow {
     private final int noteId;
     private final String title;
@@ -329,6 +558,24 @@ public class ZettelWindowView {
     public KeyHeaderRow(int noteId, String title) {
       this.noteId = noteId;
       this.title = title == null ? "" : title;
+    }
+
+    /**
+     * Liefert die Zettelnummer.
+     *
+     * @return Zettelnummer
+     */
+    public int getNoteId() {
+      return noteId;
+    }
+
+    /**
+     * Liefert die Zettelueberschrift.
+     *
+     * @return Zettelueberschrift
+     */
+    public String getTitle() {
+      return title;
     }
   }
 
@@ -363,28 +610,586 @@ public class ZettelWindowView {
    * -- SETTER --
    *  Setzt den Commit-Handler für Inline-Änderungen in der Schlagwortspalte.
    */
-  @Setter private KeyKeywordEditCommitHandler keyKeywordEditCommitHandler;
+  private KeyKeywordEditCommitHandler keyKeywordEditCommitHandler;
 
-  @Getter private final NoteEditorPane noteEditorPane;
-  @Getter private final KeywordsTablePane keywordsTablePane;
+  private final NoteEditorPane noteEditorPane;
+  private final KeywordsTablePane keywordsTablePane;
 
   // Service-Area und Zustandsvariablen dazu
-  @Getter private final BorderPane serviceArea;
+  private final BorderPane serviceArea;
 
   /**
    * -- GETTER --
    *  Prüft, ob der rechte Arbeitsbereich aktuell eingeklappt ist.
    */
-  @Getter private boolean serviceAreaCollapsed;
+  private boolean serviceAreaCollapsed;
 
   /**
    * -- GETTER --
    *  Liefert den aktuell aktiven Modus der rechten Seitenleiste.
    */
-  @Getter private ServiceAreaMode activeServiceAreaMode;
+  private ServiceAreaMode activeServiceAreaMode;
   private double[] expandedDividerPositions = new double[] {0.33, 0.66};
 
-  @Getter private BookAuthorMode activeBookAuthorMode = BookAuthorMode.OFF;
+  private BookAuthorMode activeBookAuthorMode = BookAuthorMode.OFF;
+
+  /**
+   * Setzt den Commit-Handler fuer Inline-Aenderungen in der Schlagwortspalte.
+   *
+   * @param keyKeywordEditCommitHandler neuer Commit-Handler
+   */
+  public void setKeyKeywordEditCommitHandler(KeyKeywordEditCommitHandler keyKeywordEditCommitHandler) {
+    this.keyKeywordEditCommitHandler = keyKeywordEditCommitHandler;
+  }
+
+  /**
+   * Liefert den Wert von {@code root}.
+   *
+   * @return aktueller Wert von {@code root}
+   */
+  public BorderPane getRoot() {
+    return root;
+  }
+
+  /**
+   * Liefert den Wert von {@code menuFile}.
+   *
+   * @return aktueller Wert von {@code menuFile}
+   */
+  public Menu getMenuFile() {
+    return menuFile;
+  }
+
+  /**
+   * Liefert den Wert von {@code toolButtonPageAdd}.
+   *
+   * @return aktueller Wert von {@code toolButtonPageAdd}
+   */
+  public Button getToolButtonPageAdd() {
+    return toolButtonPageAdd;
+  }
+
+  /**
+   * Liefert den Wert von {@code toolButtonPageCopy}.
+   *
+   * @return aktueller Wert von {@code toolButtonPageCopy}
+   */
+  public Button getToolButtonPageCopy() {
+    return toolButtonPageCopy;
+  }
+
+  /**
+   * Liefert den Wert von {@code toolButtonPageWithBibliography}.
+   *
+   * @return aktueller Wert von {@code toolButtonPageWithBibliography}
+   */
+  public Button getToolButtonPageWithBibliography() {
+    return toolButtonPageWithBibliography;
+  }
+
+  /**
+   * Liefert den Wert von {@code toolButtonLinkEdit}.
+   *
+   * @return aktueller Wert von {@code toolButtonLinkEdit}
+   */
+  public Button getToolButtonLinkEdit() {
+    return toolButtonLinkEdit;
+  }
+
+  /**
+   * Liefert den Wert von {@code toolButtonBibliography}.
+   *
+   * @return aktueller Wert von {@code toolButtonBibliography}
+   */
+  public Button getToolButtonBibliography() {
+    return toolButtonBibliography;
+  }
+
+  /**
+   * Liefert den Wert von {@code toolButtonToggleServiceArea}.
+   *
+   * @return aktueller Wert von {@code toolButtonToggleServiceArea}
+   */
+  public Button getToolButtonToggleServiceArea() {
+    return toolButtonToggleServiceArea;
+  }
+
+  /**
+   * Liefert den Wert von {@code miFollowing}.
+   *
+   * @return aktueller Wert von {@code miFollowing}
+   */
+  public MenuItem getMiFollowing() {
+    return miFollowing;
+  }
+
+  /**
+   * Liefert den Wert von {@code miIdea}.
+   *
+   * @return aktueller Wert von {@code miIdea}
+   */
+  public MenuItem getMiIdea() {
+    return miIdea;
+  }
+
+  /**
+   * Liefert den Wert von {@code miQuestion}.
+   *
+   * @return aktueller Wert von {@code miQuestion}
+   */
+  public MenuItem getMiQuestion() {
+    return miQuestion;
+  }
+
+  /**
+   * Liefert den Wert von {@code miCritique}.
+   *
+   * @return aktueller Wert von {@code miCritique}
+   */
+  public MenuItem getMiCritique() {
+    return miCritique;
+  }
+
+  /**
+   * Liefert den Wert von {@code miTask}.
+   *
+   * @return aktueller Wert von {@code miTask}
+   */
+  public MenuItem getMiTask() {
+    return miTask;
+  }
+
+  /**
+   * Liefert den Wert von {@code bottomToolbar}.
+   *
+   * @return aktueller Wert von {@code bottomToolbar}
+   */
+  public BottomToolbar getBottomToolbar() {
+    return bottomToolbar;
+  }
+
+  /**
+   * Liefert den Wert von {@code workAreaSplitPane}.
+   *
+   * @return aktueller Wert von {@code workAreaSplitPane}
+   */
+  public SplitPane getWorkAreaSplitPane() {
+    return workAreaSplitPane;
+  }
+
+  /**
+   * Liefert den Wert von {@code serviceAreaMagnifyLinkButton}.
+   *
+   * @return aktueller Wert von {@code serviceAreaMagnifyLinkButton}
+   */
+  public ToggleButton getServiceAreaMagnifyLinkButton() {
+    return serviceAreaMagnifyLinkButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code serviceAreaKeyButton}.
+   *
+   * @return aktueller Wert von {@code serviceAreaKeyButton}
+   */
+  public ToggleButton getServiceAreaKeyButton() {
+    return serviceAreaKeyButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code serviceAreaBookButton}.
+   *
+   * @return aktueller Wert von {@code serviceAreaBookButton}
+   */
+  public ToggleButton getServiceAreaBookButton() {
+    return serviceAreaBookButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code serviceAreaListButton}.
+   *
+   * @return aktueller Wert von {@code serviceAreaListButton}
+   */
+  public ToggleButton getServiceAreaListButton() {
+    return serviceAreaListButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code serviceAreaClusterButton}.
+   *
+   * @return aktueller Wert von {@code serviceAreaClusterButton}
+   */
+  public ToggleButton getServiceAreaClusterButton() {
+    return serviceAreaClusterButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code magnifyLinkPane}.
+   *
+   * @return aktueller Wert von {@code magnifyLinkPane}
+   */
+  public BorderPane getMagnifyLinkPane() {
+    return magnifyLinkPane;
+  }
+
+  /**
+   * Liefert den Wert von {@code magnifyLinkNoteIdField}.
+   *
+   * @return aktueller Wert von {@code magnifyLinkNoteIdField}
+   */
+  public TextField getMagnifyLinkNoteIdField() {
+    return magnifyLinkNoteIdField;
+  }
+
+  /**
+   * Liefert den Wert von {@code magnifyLinkIncomingDepthSlider}.
+   *
+   * @return aktueller Wert von {@code magnifyLinkIncomingDepthSlider}
+   */
+  public Slider getMagnifyLinkIncomingDepthSlider() {
+    return magnifyLinkIncomingDepthSlider;
+  }
+
+  /**
+   * Liefert den Wert von {@code magnifyLinkOutgoingDepthSlider}.
+   *
+   * @return aktueller Wert von {@code magnifyLinkOutgoingDepthSlider}
+   */
+  public Slider getMagnifyLinkOutgoingDepthSlider() {
+    return magnifyLinkOutgoingDepthSlider;
+  }
+
+  /**
+   * Liefert den Wert von {@code magnifyLinkDirectedTraversalButton}.
+   *
+   * @return aktueller Wert von {@code magnifyLinkDirectedTraversalButton}
+   */
+  public ToggleButton getMagnifyLinkDirectedTraversalButton() {
+    return magnifyLinkDirectedTraversalButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code magnifyLinkSerieButton}.
+   *
+   * @return aktueller Wert von {@code magnifyLinkSerieButton}
+   */
+  public ToggleButton getMagnifyLinkSerieButton() {
+    return magnifyLinkSerieButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code magnifyLinkIdeaButton}.
+   *
+   * @return aktueller Wert von {@code magnifyLinkIdeaButton}
+   */
+  public ToggleButton getMagnifyLinkIdeaButton() {
+    return magnifyLinkIdeaButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code magnifyLinkQuestionButton}.
+   *
+   * @return aktueller Wert von {@code magnifyLinkQuestionButton}
+   */
+  public ToggleButton getMagnifyLinkQuestionButton() {
+    return magnifyLinkQuestionButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code magnifyLinkCritiqueButton}.
+   *
+   * @return aktueller Wert von {@code magnifyLinkCritiqueButton}
+   */
+  public ToggleButton getMagnifyLinkCritiqueButton() {
+    return magnifyLinkCritiqueButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code magnifyLinkTaskButton}.
+   *
+   * @return aktueller Wert von {@code magnifyLinkTaskButton}
+   */
+  public ToggleButton getMagnifyLinkTaskButton() {
+    return magnifyLinkTaskButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code magnifyLinkFilterField}.
+   *
+   * @return aktueller Wert von {@code magnifyLinkFilterField}
+   */
+  public TextField getMagnifyLinkFilterField() {
+    return magnifyLinkFilterField;
+  }
+
+  /**
+   * Liefert den Wert von {@code keyPane}.
+   *
+   * @return aktueller Wert von {@code keyPane}
+   */
+  public BorderPane getKeyPane() {
+    return keyPane;
+  }
+
+  /**
+   * Liefert den Wert von {@code keyFilterField}.
+   *
+   * @return aktueller Wert von {@code keyFilterField}
+   */
+  public TextField getKeyFilterField() {
+    return keyFilterField;
+  }
+
+  /**
+   * Liefert den Wert von {@code keyKeepField}.
+   *
+   * @return aktueller Wert von {@code keyKeepField}
+   */
+  public TextField getKeyKeepField() {
+    return keyKeepField;
+  }
+
+  /**
+   * Liefert den Wert von {@code keyReplaceField}.
+   *
+   * @return aktueller Wert von {@code keyReplaceField}
+   */
+  public ComboBox<String> getKeyReplaceField() {
+    return keyReplaceField;
+  }
+
+  /**
+   * Liefert den Wert von {@code keyReplaceButton}.
+   *
+   * @return aktueller Wert von {@code keyReplaceButton}
+   */
+  public Button getKeyReplaceButton() {
+    return keyReplaceButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code keyTable}.
+   *
+   * @return aktueller Wert von {@code keyTable}
+   */
+  public TableView<KeyTableRow> getKeyTable() {
+    return keyTable;
+  }
+
+  /**
+   * Liefert den Wert von {@code keyShowHeadersToggleButton}.
+   *
+   * @return aktueller Wert von {@code keyShowHeadersToggleButton}
+   */
+  public ToggleButton getKeyShowHeadersToggleButton() {
+    return keyShowHeadersToggleButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code keyHeaderTable}.
+   *
+   * @return aktueller Wert von {@code keyHeaderTable}
+   */
+  public TableView<KeyHeaderRow> getKeyHeaderTable() {
+    return keyHeaderTable;
+  }
+
+  /**
+   * Liefert den Wert von {@code listPane}.
+   *
+   * @return aktueller Wert von {@code listPane}
+   */
+  public BorderPane getListPane() {
+    return listPane;
+  }
+
+  /**
+   * Liefert den Wert von {@code listPageKeyButton}.
+   *
+   * @return aktueller Wert von {@code listPageKeyButton}
+   */
+  public Button getListPageKeyButton() {
+    return listPageKeyButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code listDepthSlider}.
+   *
+   * @return aktueller Wert von {@code listDepthSlider}
+   */
+  public Slider getListDepthSlider() {
+    return listDepthSlider;
+  }
+
+  /**
+   * Liefert den Wert von {@code listFilterField}.
+   *
+   * @return aktueller Wert von {@code listFilterField}
+   */
+  public TextField getListFilterField() {
+    return listFilterField;
+  }
+
+  /**
+   * Liefert den Wert von {@code listFullTextToggleButton}.
+   *
+   * @return aktueller Wert von {@code listFullTextToggleButton}
+   */
+  public ToggleButton getListFullTextToggleButton() {
+    return listFullTextToggleButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code listFilterTable}.
+   *
+   * @return aktueller Wert von {@code listFilterTable}
+   */
+  public TableView<ListFilterRow> getListFilterTable() {
+    return listFilterTable;
+  }
+
+  /**
+   * Liefert den Wert von {@code bookPane}.
+   *
+   * @return aktueller Wert von {@code bookPane}
+   */
+  public BorderPane getBookPane() {
+    return bookPane;
+  }
+
+  /**
+   * Liefert den Wert von {@code bookShowNotesToggleButton}.
+   *
+   * @return aktueller Wert von {@code bookShowNotesToggleButton}
+   */
+  public ToggleButton getBookShowNotesToggleButton() {
+    return bookShowNotesToggleButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code bookShowMediaColumnToggleButton}.
+   *
+   * @return aktueller Wert von {@code bookShowMediaColumnToggleButton}
+   */
+  public ToggleButton getBookShowMediaColumnToggleButton() {
+    return bookShowMediaColumnToggleButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code bookAuthorModeButton}.
+   *
+   * @return aktueller Wert von {@code bookAuthorModeButton}
+   */
+  public Button getBookAuthorModeButton() {
+    return bookAuthorModeButton;
+  }
+
+  /**
+   * Liefert den Wert von {@code bookMediaTypeField}.
+   *
+   * @return aktueller Wert von {@code bookMediaTypeField}
+   */
+  public TextField getBookMediaTypeField() {
+    return bookMediaTypeField;
+  }
+
+  /**
+   * Liefert den Wert von {@code bookMediaTypeMenu}.
+   *
+   * @return aktueller Wert von {@code bookMediaTypeMenu}
+   */
+  public ContextMenu getBookMediaTypeMenu() {
+    return bookMediaTypeMenu;
+  }
+
+  /**
+   * Liefert den Wert von {@code bookTitleField}.
+   *
+   * @return aktueller Wert von {@code bookTitleField}
+   */
+  public TextField getBookTitleField() {
+    return bookTitleField;
+  }
+
+  /**
+   * Liefert den Wert von {@code bookMediaTable}.
+   *
+   * @return aktueller Wert von {@code bookMediaTable}
+   */
+  public TableView<BookMediaRow> getBookMediaTable() {
+    return bookMediaTable;
+  }
+
+  /**
+   * Liefert den Wert von {@code bookNotesTable}.
+   *
+   * @return aktueller Wert von {@code bookNotesTable}
+   */
+  public TableView<BookNoteRow> getBookNotesTable() {
+    return bookNotesTable;
+  }
+
+  /**
+   * Liefert den Wert von {@code bookResolvedMediaTypeBibName}.
+   *
+   * @return aktueller Wert von {@code bookResolvedMediaTypeBibName}
+   */
+  public String getBookResolvedMediaTypeBibName() {
+    return bookResolvedMediaTypeBibName;
+  }
+
+  /**
+   * Liefert den Wert von {@code activeListMode}.
+   *
+   * @return aktueller Wert von {@code activeListMode}
+   */
+  public ListMode getActiveListMode() {
+    return activeListMode;
+  }
+
+  /**
+   * Liefert den Wert von {@code noteEditorPane}.
+   *
+   * @return aktueller Wert von {@code noteEditorPane}
+   */
+  public NoteEditorPane getNoteEditorPane() {
+    return noteEditorPane;
+  }
+
+  /**
+   * Liefert den Wert von {@code keywordsTablePane}.
+   *
+   * @return aktueller Wert von {@code keywordsTablePane}
+   */
+  public KeywordsTablePane getKeywordsTablePane() {
+    return keywordsTablePane;
+  }
+
+  /**
+   * Liefert den Wert von {@code serviceAreaCollapsed}.
+   *
+   * @return aktueller Wert von {@code serviceAreaCollapsed}
+   */
+  public boolean isServiceAreaCollapsed() {
+    return serviceAreaCollapsed;
+  }
+
+  /**
+   * Liefert den Wert von {@code activeServiceAreaMode}.
+   *
+   * @return aktueller Wert von {@code activeServiceAreaMode}
+   */
+  public ServiceAreaMode getActiveServiceAreaMode() {
+    return activeServiceAreaMode;
+  }
+
+  /**
+   * Liefert den Wert von {@code activeBookAuthorMode}.
+   *
+   * @return aktueller Wert von {@code activeBookAuthorMode}
+   */
+  public BookAuthorMode getActiveBookAuthorMode() {
+    return activeBookAuthorMode;
+  }
 
   public ZettelWindowView() {
     root = new BorderPane();

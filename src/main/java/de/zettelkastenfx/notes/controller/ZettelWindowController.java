@@ -8,6 +8,7 @@ import de.zettelkastenfx.bibliography.model.*;
 import de.zettelkastenfx.bibliography.ui.BibliographyEditorShell;
 import de.zettelkastenfx.bibliography.ui.BibliographyEditorShellFactory;
 import de.zettelkastenfx.bibliography.ui.MediaManagementDialog;
+import de.zettelkastenfx.export.ui.ManualExportDialog;
 import de.zettelkastenfx.notes.controller.ZettelWindowView.KeyTableRow;
 import de.zettelkastenfx.notes.editor.NoteEditorPane;
 import de.zettelkastenfx.notes.editor.format.InlineCssStyleUtil;
@@ -214,8 +215,9 @@ public class ZettelWindowController {
     // Menü (oben): "Datei -> Schließen" schließt nur dieses Fenster
     view.getMenuFile().getItems().getLast().setOnAction(event -> stage.close());
 
-    // Menü (oben): vorerst Dummies
-    view.getMenuFile().getItems().getFirst().setOnAction(event -> System.out.println("Neu (kommt später)"));
+    // Menü (oben): Exportfenster
+    view.getMenuFile().getItems().getFirst().setText("Export");
+    view.getMenuFile().getItems().getFirst().setOnAction(event -> openManualExportDialog());
     view.getMenuFile().getItems().getLast().setOnAction(event -> stage.close());
 
     view.getKeywordsTablePane().setOnKeywordsCommitted(() -> {
@@ -239,6 +241,13 @@ public class ZettelWindowController {
       linkEditPopup.hide();
       saveOrDiscardCurrentNoteBeforeLeave();
     });
+  }
+
+  /**
+   * Oeffnet das Fenster fuer den manuellen Zettelexport.
+   */
+  private void openManualExportDialog() {
+    new ManualExportDialog(stage, noteRepository, bibliographyService).show();
   }
 
   /**
@@ -3891,8 +3900,10 @@ public class ZettelWindowController {
       return;
     }
 
-    Integer sourceEntryId = shell.getCurrentSourceEntryId();
-    if (sourceEntryId == null || sourceEntryId <= 0) {
+    boolean inlineMediaTypeSwitchCreation = shell.isCurrentInlineMediaTypeSwitchCreation();
+
+    Integer sourceEntryId = inlineMediaTypeSwitchCreation ? null : shell.getCurrentSourceEntryId();
+    if (!inlineMediaTypeSwitchCreation && (sourceEntryId == null || sourceEntryId <= 0)) {
       sourceEntryId = shell.getCurrentSelectedEntryId();
     }
 
@@ -3903,7 +3914,7 @@ public class ZettelWindowController {
     Integer baseEntryId = null;
     if (sourceEntryId != null && sourceEntryId > 0) {
       baseEntryId = sourceEntryId;
-    } else if (hasLinkedBibliography) {
+    } else if (!inlineMediaTypeSwitchCreation && hasLinkedBibliography) {
       baseEntryId = linkedEntryId;
     }
 

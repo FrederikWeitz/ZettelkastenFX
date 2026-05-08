@@ -6,7 +6,8 @@ package de.zettelkastenfx.export;
 public enum ExportDocumentType {
   DOCX(".docx"),
   RTF(".rtf"),
-  PDF(".pdf");
+  PDF(".pdf"),
+  HTML(".html");
 
   private final String extension;
 

@@ -3,19 +3,18 @@ package de.zettelkastenfx.bibliography.ui;
 import de.zettelkastenfx.base.BaseIcon;
 import de.zettelkastenfx.bibliography.api.BibliographyService;
 import de.zettelkastenfx.bibliography.model.*;
+import de.zettelkastenfx.bibliography.ui.field.*;
 import de.zettelkastenfx.bibliography.ui.lookup.AiChoiceProvider;
 import de.zettelkastenfx.bibliography.ui.lookup.AuthorSuggestion;
 import de.zettelkastenfx.bibliography.ui.lookup.DynamicLookupCoordinator;
 import de.zettelkastenfx.bibliography.ui.support.BibliographyAuthorsView;
 import de.zettelkastenfx.bibliography.ui.support.BibliographyFieldView;
-import javafx.beans.property.BooleanProperty;
 import javafx.geometry.Pos;
 import javafx.geometry.Side;
 import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.input.KeyCode;
 import javafx.scene.layout.*;
-import lombok.Setter;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -45,10 +44,12 @@ public class BibliographyEditorShell {
   private final VBox dynamicAddHost = new VBox(6);
   private final ContextMenu dynamicBibtexTypeSuggestionMenu = new ContextMenu();
 
-  @Setter private BibliographyService bibliographyService = null;
+  private BibliographyService bibliographyService = null;
   private final Map<String, VBox> dynamicFormsByMediaType = new LinkedHashMap<>();
   private final Map<String, Map<String, Object>> dynamicFieldRegistryByMediaType = new LinkedHashMap<>();
-
+  private final Map<String, Map<String, BibliographyFieldComponent>> dynamicFieldComponentsByMediaType =
+      new LinkedHashMap<>();
+  private final BibliographyFieldFactory bibliographyFieldFactory = new BibliographyFieldFactory();
 
   private final Map<String, MediaTypeOption> mediaTypeOptionsByBibName = new LinkedHashMap<>();
   private final Button btnDelete = BaseIcon.DELETE.button("Angabe löschen");
@@ -64,6 +65,10 @@ public class BibliographyEditorShell {
   private List<MediaTypeOption> allMediaTypeOptions = List.of();
   private String activeMediaTypeBibName = "";
 
+  private Integer inlineOriginalEntryId;
+  private String inlineOriginalMediaTypeBibName = "";
+  private boolean inlineMediaTypeSwitchInProgress;
+
   private final Map<String, Map<String, Node>> dynamicFieldNodesByMediaType = new LinkedHashMap<>();
   private final Map<String, Map<String, BibtexFieldDefinition>> additionalFieldDefinitionsByMediaType =
       new LinkedHashMap<>();
@@ -78,9 +83,6 @@ public class BibliographyEditorShell {
 
   private static final DateTimeFormatter GERMAN_PREVIEW_DATE_FORMAT =
       DateTimeFormatter.ofPattern("d MMM yyyy", Locale.GERMAN);
-  private static final double FIELD_LABEL_AREA_WIDTH = 170;
-  private static final double FIELD_DELETE_BUTTON_WIDTH = 22;
-  private static final double FIELD_DELETE_LABEL_GAP = 6;
 
   /**
    * Beschreibt den Verwendungszusammenhang der Shell.
@@ -91,9 +93,30 @@ public class BibliographyEditorShell {
   }
 
   /**
+   * Beschreibt den logischen Bearbeitungsmodus eines bibliographischen Eintrags.
+   * Der Modus trennt neue Einträge, bewusst geladene Bestandseinträge und
+   * automatisch vorgeschlagene Autofill-Einträge.
+   */
+  private enum EntryMode {
+    NEW,
+    EXISTING,
+    AUTOFILLED
+  }
+
+  /**
    * Beschreibt das Setzen von farblichen Markierungen im Label des Media-Editors
    */
   private boolean mediaManagementPopupContext;
+
+  /**
+   * Bündelt eine neue Feldkomponente und ihren Legacy-Registry-Anker.
+   *
+   * @param component neue Feldkomponente
+   * @param legacyComponent alter Registry-Wert für Übergangscode
+   */
+  private record FieldComponentBuildResult(BibliographyFieldComponent component,
+                                           Object legacyComponent) {
+  }
 
   /**
    * Beschreibt einen lokal aus dem sichtbaren Editor gelesenen Zustands-Snapshot
@@ -124,8 +147,8 @@ public class BibliographyEditorShell {
 
   private RelatedCreationHandler onRequestCreateRelated = (relatedBibtexName,
                                                            targetMediaTypeBibName,
-                                                           displayText) -> {
-  };
+                                                           displayText) -> {};
+
   private Runnable onNoneSelected = () -> {};
 
   /**
@@ -135,7 +158,6 @@ public class BibliographyEditorShell {
    * @param dynamicLookupCoordinator Koordinator; {@code null} deaktiviert die
    *                                 aus der Shell ausgelagerte Lookup-Logik
    */
-  @Setter
   private DynamicLookupCoordinator dynamicLookupCoordinator = null;
 
   private AiChoiceProvider aiChoiceProvider = AiChoiceProvider.NONE;
@@ -195,6 +217,24 @@ public class BibliographyEditorShell {
     initializeHeaderAndFooter();
     initializeTypeSelection();
     setOnDynamicAddField(this::showDynamicBibtexTypeSelector);
+  }
+
+  /**
+   * Setzt den Bibliographie-Service, ueber den die Shell Eintraege laedt und speichert.
+   *
+   * @param bibliographyService zu verwendender Service; {@code null} deaktiviert Servicezugriffe
+   */
+  public void setBibliographyService(BibliographyService bibliographyService) {
+    this.bibliographyService = bibliographyService;
+  }
+
+  /**
+   * Setzt den zentralen dynamischen Lookup-Koordinator.
+   *
+   * @param dynamicLookupCoordinator Koordinator; {@code null} deaktiviert ausgelagerte Lookup-Logik
+   */
+  public void setDynamicLookupCoordinator(DynamicLookupCoordinator dynamicLookupCoordinator) {
+    this.dynamicLookupCoordinator = dynamicLookupCoordinator;
   }
 
   /**
@@ -393,11 +433,44 @@ public class BibliographyEditorShell {
 
   /**
    * Übernimmt eine Medientyp-Auswahl aus dem Vorschlagsdropdown.
+   * Im Zettelkontext wird beim Wechsel von einem bestehenden Eintrag auf einen
+   * direkt speicherbaren Medientyp der alte Eintrag nur als Rückfallanker
+   * gemerkt; der neue Medientyp startet fachlich leer.
    *
    * @param option ausgewählte Medientyp-Option
    */
   private void applyMediaTypeSelection(MediaTypeOption option) {
-    activeMediaTypeBibName = option == null ? "" : normalizeMediaTypeBibName(option.mediaTypeBibName());
+    String previousMediaTypeBibName = getSelectedMediaTypeBibName();
+    Integer previousSourceEntryId = getSourceEntryId(previousMediaTypeBibName);
+    Integer previousSelectedEntryId = getSelectedEntryId(previousMediaTypeBibName);
+
+    String nextMediaTypeBibName = option == null ? "" : normalizeMediaTypeBibName(option.mediaTypeBibName());
+
+    boolean inlineSwitchToCreatable =
+        noteLinkingContext
+            && !previousMediaTypeBibName.isBlank()
+            && !nextMediaTypeBibName.isBlank()
+            && !previousMediaTypeBibName.equals(nextMediaTypeBibName)
+            && isCreatableInNoteContext(nextMediaTypeBibName)
+            && (
+            previousSourceEntryId != null && previousSourceEntryId > 0
+                || previousSelectedEntryId != null && previousSelectedEntryId > 0
+        );
+
+    if (inlineSwitchToCreatable) {
+      inlineOriginalMediaTypeBibName = previousMediaTypeBibName;
+      inlineOriginalEntryId =
+          previousSourceEntryId != null && previousSourceEntryId > 0
+              ? previousSourceEntryId
+              : previousSelectedEntryId;
+      inlineMediaTypeSwitchInProgress = true;
+    } else if (!noteLinkingContext) {
+      inlineOriginalMediaTypeBibName = "";
+      inlineOriginalEntryId = null;
+      inlineMediaTypeSwitchInProgress = false;
+    }
+
+    activeMediaTypeBibName = nextMediaTypeBibName;
 
     suppressTypeFieldCallbacks = true;
     try {
@@ -408,6 +481,15 @@ public class BibliographyEditorShell {
 
     typeSuggestionMenu.hide();
     showNewEditorAndKeepTypeVisible(option == null ? "" : option.mediaTypeBibName());
+
+    if (inlineSwitchToCreatable) {
+      setSelectedEntryId(nextMediaTypeBibName, null);
+      setSourceEntryId(nextMediaTypeBibName, null);
+      setAutoFillLocked(nextMediaTypeBibName, false);
+      setAutoFilled(nextMediaTypeBibName, false);
+      clearDynamicFormValues(nextMediaTypeBibName);
+      captureBaseline();
+    }
   }
 
   /**
@@ -434,13 +516,8 @@ public class BibliographyEditorShell {
     Region spacer = new Region();
     HBox.setHgrow(spacer, Priority.ALWAYS);
 
-    toggleEdit.selectedProperty().addListener((obs, old, isOn) -> {
-      setEditMode(isOn);
+    toggleEdit.setOnAction(event -> setEditMode(true));
 
-      if (noteLinkingContext && old && !isOn) {
-        onCloseEditor.run();
-      }
-    });
     typeField.visibleProperty().bind(toggleEdit.selectedProperty());
     typeField.managedProperty().bind(toggleEdit.selectedProperty());
     btnDelete.visibleProperty().bind(toggleEdit.selectedProperty());
@@ -606,16 +683,20 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Aktiviert oder deaktiviert den Bearbeitungsmodus.
+   * Aktiviert dauerhaft den Bearbeitungsmodus.
+   * Ein Ausschalten des Bearbeitungsmodus ist nicht mehr vorgesehen.
    *
-   * @param on {@code true} aktiviert Bearbeitung, {@code false} den Lesemodus.
+   * @param on wird aus Kompatibilitätsgründen akzeptiert, aber ignoriert
    */
   public void setEditMode(boolean on) {
-    if (toggleEdit.isSelected() != on) {
-      toggleEdit.setSelected(on);
+    if (!toggleEdit.isSelected()) {
+      toggleEdit.setSelected(true);
     }
-    toggleEdit.setGraphic(on ? BaseIcon.BULLET_GREEN.imageView() : BaseIcon.BULLET_RED.imageView());
+
+    toggleEdit.setGraphic(BaseIcon.BULLET_GREEN.imageView());
     content.setOpacity(1.0);
+
+    updateFieldComponentEditability();
     updateDynamicAddAreaVisibility();
   }
 
@@ -626,8 +707,7 @@ public class BibliographyEditorShell {
    * keine neuen Felder ergänzt werden können.
    */
   private void updateDynamicAddAreaVisibility() {
-    boolean visible = toggleEdit.isSelected()
-                          && editorUsageContext != EditorUsageContext.NOTE_LINKING;
+    boolean visible = editorUsageContext != EditorUsageContext.NOTE_LINKING;
 
     dynamicAddHost.setVisible(visible);
     dynamicAddHost.setManaged(visible);
@@ -709,45 +789,26 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Aktualisiert die Darstellung aller aktuell registrierten Feldzeilen des
+   * Aktualisiert die Darstellung aller registrierten Feldkomponenten des
    * sichtbaren Formulars entsprechend des aktuellen Shell-Kontexts.
    *
    * @param mediaTypeBibName technischer Medientypname
    */
   private void applyFieldRowPresentationForMediaType(String mediaTypeBibName) {
     String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
-    Map<String, Node> nodeRegistry = dynamicFieldNodesByMediaType.get(normalizedMediaTypeBibName);
-    if (nodeRegistry == null || nodeRegistry.isEmpty()) {
+    Map<String, BibliographyFieldComponent> componentRegistry =
+        dynamicFieldComponentsByMediaType.get(normalizedMediaTypeBibName);
+
+    if (componentRegistry == null || componentRegistry.isEmpty()) {
       return;
     }
 
-    for (Map.Entry<String, Node> entry : nodeRegistry.entrySet()) {
-      String bibtexName = normalizeBibtexName(entry.getKey());
-      Node node = entry.getValue();
+    BibliographyFieldPresentation presentation = resolveCurrentFieldPresentation();
 
-      if (!(node instanceof HBox row)) {
-        continue;
+    for (BibliographyFieldComponent component : componentRegistry.values()) {
+      if (component != null) {
+        component.applyPresentation(presentation);
       }
-
-      if (row.getChildren().size() < 2) {
-        continue;
-      }
-
-      Node first = row.getChildren().get(0);
-      Node second = row.getChildren().get(1);
-
-      if (!(first instanceof HBox labelArea)) {
-        continue;
-      }
-
-      boolean personField = false;
-      Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(normalizedMediaTypeBibName);
-      if (registry != null) {
-        Object component = registry.get(bibtexName);
-        personField = component instanceof BibliographyAuthorsView;
-      }
-
-      applyFieldRowPresentation(row, second, labelArea, personField);
     }
   }
 
@@ -819,25 +880,102 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Ermittelt das aktuelle KI-Datumsfeld.
-   * Nach Abschluss der Migration wird ausschließlich {@code ai_used_at}
-   * als fachliches Datumsfeld für KI-Einträge verwendet.
+   * Prüft, ob im Zettelkontext gerade von einem bestehenden Eintrag auf einen
+   * direkt neu speicherbaren Medientyp gewechselt wurde.
+   * In diesem Fall darf die alte Datenbank-ID nicht in den neuen Eintrag
+   * übernommen werden.
    *
    * @param mediaTypeBibName technischer Medientypname
-   * @return {@code ai_used_at} oder leerer String
+   * @return {@code true}, wenn der aktuelle Speichervorgang als neuer Inline-Eintrag gilt
    */
-  private String resolveAiDateFieldName(String mediaTypeBibName) {
+  private boolean isInlineMediaTypeSwitchCreation(String mediaTypeBibName) {
     String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
-    if (!"aitext".equals(normalizedMediaTypeBibName)) {
-      return "";
+
+    return noteLinkingContext
+               && inlineMediaTypeSwitchInProgress
+               && isCreatableInNoteContext(normalizedMediaTypeBibName)
+               && !normalizedMediaTypeBibName.equals(normalizeMediaTypeBibName(inlineOriginalMediaTypeBibName));
+  }
+
+  /**
+   * Prüft, ob ein reguläres Attribut im aktuellen Shell-Kontext gelesen,
+   * geschrieben und gespeichert werden darf.
+   * Im Standardkontext sind alle regulären Attribute erlaubt. Im Zettelkontext
+   * werden nur die tatsächlich fachlich sichtbaren und direkt speicherbaren
+   * Felder zugelassen.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param attribute Attributdefinition
+   * @return {@code true}, wenn das Feld im aktuellen Kontext persistierbar ist
+   */
+  private boolean isAttributePersistableInCurrentContext(String mediaTypeBibName,
+                                                         MediaAttributeDefinition attribute) {
+    if (attribute == null || attribute.fieldDefinition() == null) {
+      return false;
     }
 
-    Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(normalizedMediaTypeBibName);
-    if (registry == null || registry.isEmpty()) {
-      return "";
+    if (editorUsageContext == EditorUsageContext.STANDARD) {
+      return true;
     }
 
-    return registry.containsKey("ai_used_at") ? "ai_used_at" : "";
+    String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
+    String bibtexName = normalizeBibtexName(attribute.fieldDefinition().bibtexName());
+
+    boolean forceWebsiteTitle =
+        "website".equals(normalizedMediaTypeBibName)
+            && "title".equals(bibtexName);
+
+    boolean forceAiField =
+        "aitext".equals(normalizedMediaTypeBibName)
+            && (
+            "title".equals(bibtexName)
+                || "ai_provider".equals(bibtexName)
+                || "ai_model".equals(bibtexName)
+                || "ai_used_at".equals(bibtexName)
+        );
+
+    boolean personField = isPersonDatatype(attribute.fieldDefinition().datatype());
+    boolean allowNecessaryFields = isCreatableInNoteContext(normalizedMediaTypeBibName);
+
+    return forceWebsiteTitle
+               || forceAiField
+               || personField
+               || attribute.isIdentify()
+               || (allowNecessaryFields && attribute.isNecessary());
+  }
+
+  /**
+   * Prüft, ob ein BibTeX-Wert im aktuellen Shell-Kontext in die UI übernommen
+   * oder später gespeichert werden darf.
+   * Im Zettelkontext werden Werte, die nicht zu den erlaubten regulären
+   * Attributen des gewählten Medientyps gehören, bewusst ignoriert.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer BibTeX-Feldname
+   * @return {@code true}, wenn der Wert im aktuellen Kontext zulässig ist
+   */
+  private boolean isBibtexValuePersistableInCurrentContext(String mediaTypeBibName,
+                                                           String bibtexName) {
+    String normalizedBibtexName = normalizeBibtexName(bibtexName);
+    if (normalizedBibtexName.isBlank()) {
+      return false;
+    }
+
+    if (editorUsageContext == EditorUsageContext.STANDARD) {
+      return true;
+    }
+
+    for (MediaAttributeDefinition attribute : getEditorAttributesForMediaType(mediaTypeBibName)) {
+      if (attribute == null || attribute.fieldDefinition() == null) {
+        continue;
+      }
+
+      if (normalizedBibtexName.equals(normalizeBibtexName(attribute.fieldDefinition().bibtexName()))) {
+        return isAttributePersistableInCurrentContext(mediaTypeBibName, attribute);
+      }
+    }
+
+    return false;
   }
 
   /**
@@ -861,6 +999,89 @@ public class BibliographyEditorShell {
   }
 
   /**
+   * Prüft, ob eine automatisch gesetzte Eintrags-ID beim direkten Neuerfassen
+   * im Zettelkontext ignoriert werden muss.
+   * Dies verhindert, dass ein neuer Website- oder KI-Eintrag fälschlich als
+   * Überschreiben eines bestehenden Eintrags behandelt wird.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return {@code true}, wenn die ID beim Speichern ignoriert werden soll
+   */
+  private boolean shouldIgnoreSelectedEntryIdForInlineCreation(String mediaTypeBibName) {
+    String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
+
+    return noteLinkingContext
+               && isCreatableInNoteContext(normalizedMediaTypeBibName)
+               && wasAutoFilled(normalizedMediaTypeBibName)
+               && dirty;
+  }
+
+  /**
+   * Bestimmt den aktuellen Modus des Editors für einen Medientyp.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return aktueller EntryMode
+   */
+  private EntryMode resolveEntryMode(String mediaTypeBibName) {
+    String normalized = normalizeMediaTypeBibName(mediaTypeBibName);
+
+    Integer sourceId = getSourceEntryId(normalized);
+    Integer selectedId = getSelectedEntryId(normalized);
+
+    if (sourceId != null && sourceId > 0) {
+      return EntryMode.EXISTING;
+    }
+
+    if (wasAutoFilled(normalized) && selectedId != null && selectedId > 0) {
+      return EntryMode.AUTOFILLED;
+    }
+
+    return EntryMode.NEW;
+  }
+
+  /**
+   * Ermittelt die Datenbank-ID, die beim Auslesen des Editors in den
+   * DynamicBibliographyEntry übernommen werden soll.
+   * Bei einem Medientypwechsel im Zettelkontext wird keine alte ID übernommen,
+   * damit aus dem neuen Website- oder KI-Eintrag kein Update des alten
+   * Fremdmediums wird.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @return zu übernehmende Eintrags-ID oder {@code null}
+   */
+  private Integer resolveEntryIdForRead(String mediaTypeBibName) {
+    if (isInlineMediaTypeSwitchCreation(mediaTypeBibName)) {
+      return null;
+    }
+
+    EntryMode mode = resolveEntryMode(mediaTypeBibName);
+
+    return switch (mode) {
+      case EXISTING -> getSourceEntryId(mediaTypeBibName);
+
+      case AUTOFILLED -> shouldIgnoreSelectedEntryIdForInlineCreation(mediaTypeBibName)
+                             ? null
+                             : getSelectedEntryId(mediaTypeBibName);
+
+      case NEW -> null;
+    };
+  }
+
+  /**
+   * Liefert, ob der aktuell sichtbare Editorzustand aus einem Medientypwechsel
+   * im Zettelkontext entstanden ist.
+   * In diesem Fall muss der aufrufende Controller den vorher verknüpften
+   * Bibliographie-Eintrag ignorieren und den gelesenen Eintrag als neuen
+   * Inline-Eintrag speichern.
+   *
+   * @return {@code true}, wenn der aktuelle Eintrag als neuer Inline-Eintrag
+   *     nach einem Medientypwechsel behandelt werden muss
+   */
+  public boolean isCurrentInlineMediaTypeSwitchCreation() {
+    return isInlineMediaTypeSwitchCreation(getSelectedMediaTypeBibName());
+  }
+
+  /**
    * Liest den aktuellen Zustand des sichtbaren dynamischen Editors in ein
    * dynamisches Bibliographie-Objekt aus.
    *
@@ -877,12 +1098,9 @@ public class BibliographyEditorShell {
     entry.setMediaTypeBibName(mediaType.bibName());
     entry.setMediaTypeName(mediaType.name());
 
-    Integer sourceEntryId = getCurrentSourceEntryId();
-    if (sourceEntryId == null || sourceEntryId <= 0) {
-      sourceEntryId = getCurrentSelectedEntryId();
-    }
-    if (sourceEntryId != null && sourceEntryId > 0) {
-      entry.setId(sourceEntryId);
+    Integer entryId = resolveEntryIdForRead(mediaType.bibName());
+    if (entryId != null && entryId > 0) {
+      entry.setId(entryId);
     }
 
     List<MediaAttributeDefinition> attributes =
@@ -894,6 +1112,14 @@ public class BibliographyEditorShell {
 
       String bibtexName = attribute.fieldDefinition().bibtexName();
       String datatype = attribute.fieldDefinition().datatype();
+
+      if (!isAttributePersistableInCurrentContext(mediaType.bibName(), attribute)) {
+        continue;
+      }
+
+      if (appendFieldComponentValues(entry, mediaType.bibName(), bibtexName)) {
+        continue;
+      }
 
       if (isPersonDatatype(datatype)) {
         List<PersonRef> persons = mapAuthors(
@@ -934,7 +1160,9 @@ public class BibliographyEditorShell {
     }
 
     Map<String, BibtexFieldDefinition> additionalFields =
-        additionalFieldDefinitionsByMediaType.get(normalizeMediaTypeBibName(mediaType.bibName()));
+        noteLinkingContext
+            ? Map.of()
+            : additionalFieldDefinitionsByMediaType.get(normalizeMediaTypeBibName(mediaType.bibName()));
 
     if (additionalFields != null && !additionalFields.isEmpty()) {
       for (BibtexFieldDefinition fieldDefinition : additionalFields.values()) {
@@ -946,6 +1174,10 @@ public class BibliographyEditorShell {
         String datatype = normalizeBibtexName(fieldDefinition.datatype());
 
         if (bibtexName.isBlank()) {
+          continue;
+        }
+
+        if (appendFieldComponentValues(entry, mediaType.bibName(), bibtexName)) {
           continue;
         }
 
@@ -1015,9 +1247,23 @@ public class BibliographyEditorShell {
     setAutoFillLocked(mediaTypeBibName, false);
     setAutoFilled(mediaTypeBibName, false);
 
-    ensureAdditionalFieldsForEntry(mediaTypeBibName, entry);
+    if (noteLinkingContext) {
+      inlineOriginalEntryId = entry.getId();
+      inlineOriginalMediaTypeBibName = mediaTypeBibName;
+      inlineMediaTypeSwitchInProgress = false;
+    }
+
+    ensureAdditionalFieldsForEntryIfAllowed(mediaTypeBibName, entry);
 
     for (BibValue value : entry.getOrderedValues()) {
+      if (!isBibtexValuePersistableInCurrentContext(mediaTypeBibName, value.bibtexName())) {
+        continue;
+      }
+
+      if (writeValueToFieldComponent(mediaTypeBibName, value)) {
+        continue;
+      }
+
       switch (value) {
         case StringBibValue stringBibValue ->
             setCurrentFieldValue(stringBibValue.bibtexName(), stringBibValue.value());
@@ -1046,39 +1292,8 @@ public class BibliographyEditorShell {
         }
       }
     }
-    applyAiDateValue(mediaTypeBibName, entry);
     captureBaseline();
     applyCurrentContextVisibility();
-  }
-
-  /**
-   * Überträgt das KI-Datum in das vorhandene DatePicker-Feld.
-   * Verwendet ausschließlich das kanonische Feld {@code ai_used_at}.
-   *
-   * @param mediaTypeBibName technischer Medientypname
-   * @param entry geladener Eintrag
-   */
-  private void applyAiDateValue(String mediaTypeBibName, DynamicBibliographyEntry entry) {
-    if (entry == null) {
-      return;
-    }
-
-    String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
-    if (!"aitext".equals(normalizedMediaTypeBibName)) {
-      return;
-    }
-
-    String targetDateField = resolveAiDateFieldName(normalizedMediaTypeBibName);
-    if (targetDateField.isBlank()) {
-      return;
-    }
-
-    String dateValue = extractAiRawDateValue(entry);
-    if (dateValue.isBlank()) {
-      return;
-    }
-
-    setCurrentFieldValue(targetDateField, dateValue);
   }
 
   /**
@@ -1269,27 +1484,6 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Begrenzt ein Textfeld auf Integer-Eingaben.
-   * Erlaubt werden ausschließlich Ziffern sowie ein leerer Feldinhalt.
-   * Damit bleiben auch Jahr- und Monatsfelder konsistent rein numerisch.
-   *
-   * @param fieldView Feldansicht mit zugrunde liegendem TextField
-   */
-  private void enforceIntegerInput(BibliographyFieldView fieldView) {
-    if (fieldView == null || fieldView.getEditor() == null) {
-      return;
-    }
-
-    fieldView.getEditor().setTextFormatter(new TextFormatter<String>(change -> {
-      String nextText = change.getControlNewText();
-      if (nextText.isEmpty() || nextText.matches("\\d+")) {
-        return change;
-      }
-      return null;
-    }));
-  }
-
-  /**
    * Wandelt Autoren aus der Shell in Personenreferenzen um.
    *
    * @param authors Autorenliste aus der UI
@@ -1384,14 +1578,17 @@ public class BibliographyEditorShell {
 
     Map<String, Object> fieldRegistry = new LinkedHashMap<>();
     Map<String, Node> fieldNodeRegistry = new LinkedHashMap<>();
+    Map<String, BibliographyFieldComponent> componentRegistry = new LinkedHashMap<>();
+
+    dynamicFieldRegistryByMediaType.put(mediaTypeBibName, fieldRegistry);
+    dynamicFieldNodesByMediaType.put(mediaTypeBibName, fieldNodeRegistry);
+    dynamicFieldComponentsByMediaType.put(mediaTypeBibName, componentRegistry);
 
     for (MediaAttributeDefinition attribute : attributes) {
       createDynamicField(form, fieldRegistry, fieldNodeRegistry, mediaTypeBibName, attribute);
     }
 
     dynamicFormsByMediaType.put(mediaTypeBibName, form);
-    dynamicFieldRegistryByMediaType.put(mediaTypeBibName, fieldRegistry);
-    dynamicFieldNodesByMediaType.put(mediaTypeBibName, fieldNodeRegistry);
     applyContextVisibility(mediaTypeBibName);
   }
 
@@ -1429,22 +1626,533 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Löst eine Medientypdefinition über ihren technischen Namen auf.
+   * Registriert eine neue Feldkomponente parallel zu den bestehenden Shell-Registries.
+   * Dadurch kann die Shell schrittweise auf BibliographyFieldComponent umgestellt werden,
+   * ohne bestehende Lese-, Schreib- und Validierungslogik sofort zu entfernen.
    *
    * @param mediaTypeBibName technischer Medientypname
-   * @return Medientypdefinition oder {@code null}
+   * @param component zu registrierende Feldkomponente
    */
-  private MediaTypeDefinition resolveMediaTypeDefinition(String mediaTypeBibName) {
-    if (bibliographyService == null) {
+  private void registerFieldComponent(String mediaTypeBibName, BibliographyFieldComponent component) {
+    if (component == null) {
+      return;
+    }
+
+    String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
+    String bibtexName = normalizeBibtexName(component.bibtexName());
+
+    if (normalizedMediaTypeBibName.isBlank() || bibtexName.isBlank()) {
+      return;
+    }
+
+    dynamicFieldComponentsByMediaType
+        .computeIfAbsent(normalizedMediaTypeBibName, key -> new LinkedHashMap<>())
+        .put(bibtexName, component);
+
+    component.setEditable(isEditMode());
+  }
+
+  /**
+   * Ermittelt die Darstellungsform für dynamische Standardfelder im aktuellen
+   * Shell-Kontext.
+   *
+   * @return passende Feldpräsentation
+   */
+  private BibliographyFieldPresentation resolveCurrentFieldPresentation() {
+    if (editorUsageContext == EditorUsageContext.NOTE_LINKING) {
+      return BibliographyFieldPresentation.noteInline();
+    }
+
+    return BibliographyFieldPresentation.popup();
+  }
+
+  /**
+   * Erzeugt eine eigenständige bibliographische Feldkomponente für den flexiblen
+   * Einbau außerhalb des normalen Shell-Formulars.
+   * Unterstützt sowohl reguläre Medientyp-Attribute als auch zusätzliche
+   * BibTeX-Felder, sofern diese über den Service auflösbar sind.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer BibTeX-Feldname
+   * @param presentation gewünschte Darstellung
+   * @return neue Feldkomponente oder {@code null}
+   */
+  public BibliographyFieldComponent createDetachedFieldComponent(String mediaTypeBibName,
+                                                                 String bibtexName,
+                                                                 BibliographyFieldPresentation presentation) {
+    String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
+    String normalizedBibtexName = normalizeBibtexName(bibtexName);
+    BibliographyFieldPresentation safePresentation =
+        presentation == null ? BibliographyFieldPresentation.serviceArea() : presentation;
+
+    if (bibliographyService == null
+            || normalizedMediaTypeBibName.isBlank()
+            || normalizedBibtexName.isBlank()) {
+      return null;
+    }
+
+    Optional<MediaAttributeDefinition> resolvedRegularAttribute =
+        getEditorAttributesForMediaType(normalizedMediaTypeBibName).stream()
+            .filter(attribute -> attribute != null && attribute.fieldDefinition() != null)
+            .filter(attribute -> normalizedBibtexName.equals(
+                normalizeBibtexName(attribute.fieldDefinition().bibtexName())
+            ))
+            .findFirst();
+
+    if (resolvedRegularAttribute.isPresent()) {
+      return createDetachedFieldComponentFromAttribute(
+          normalizedMediaTypeBibName,
+          resolvedRegularAttribute.get(),
+          safePresentation
+      );
+    }
+
+    return bibliographyService.loadBibtexTypeByBibName(normalizedBibtexName)
+               .flatMap(fieldDefinition ->
+                            bibliographyService.createSyntheticAdditionalAttribute(
+                                normalizedMediaTypeBibName,
+                                fieldDefinition
+                            )
+               )
+               .map(attribute ->
+                        createDetachedFieldComponentFromAttribute(
+                            normalizedMediaTypeBibName,
+                            attribute,
+                            safePresentation
+                        )
+               )
+               .orElse(null);
+  }
+
+  /**
+   * Erzeugt eigenständige bibliographische Feldkomponenten für alle Werte eines
+   * dynamischen Eintrags.
+   * Die erzeugten Komponenten werden nicht in den Formular-Registries der Shell
+   * registriert und können daher flexibel an externen UI-Orten eingebaut werden.
+   *
+   * @param entry dynamischer Bibliographie-Eintrag
+   * @param presentation gewünschte Darstellung
+   * @return erzeugte Feldkomponenten in Eintragsreihenfolge
+   */
+  public List<BibliographyFieldComponent> createDetachedFieldComponents(DynamicBibliographyEntry entry,
+                                                                        BibliographyFieldPresentation presentation) {
+    if (entry == null) {
+      return List.of();
+    }
+
+    String mediaTypeBibName = normalizeMediaTypeBibName(entry.getMediaTypeBibName());
+    if (mediaTypeBibName.isBlank()) {
+      return List.of();
+    }
+
+    List<BibliographyFieldComponent> components = new ArrayList<>();
+
+    for (BibValue value : entry.getOrderedValues()) {
+      BibliographyFieldComponent component =
+          createDetachedFieldComponent(mediaTypeBibName, value, presentation);
+
+      if (component != null) {
+        components.add(component);
+      }
+    }
+
+    return List.copyOf(components);
+  }
+
+  /**
+   * Erzeugt eine eigenständige bibliographische Feldkomponente und befüllt sie
+   * sofort mit einem vorhandenen BibValue.
+   * Diese Methode ist für externe Einbauorte gedacht, etwa Servicebereich oder
+   * bibliographische Angaben unter einem Zettel.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param value vorhandener Feldwert
+   * @param presentation gewünschte Darstellung
+   * @return neue befüllte Feldkomponente oder {@code null}
+   */
+  public BibliographyFieldComponent createDetachedFieldComponent(String mediaTypeBibName,
+                                                                 BibValue value,
+                                                                 BibliographyFieldPresentation presentation) {
+    if (value == null) {
+      return null;
+    }
+
+    BibliographyFieldComponent component = createDetachedFieldComponent(
+        mediaTypeBibName,
+        value.bibtexName(),
+        presentation
+    );
+
+    if (component == null) {
+      return null;
+    }
+
+    component.writeValues(List.of(value));
+    return component;
+  }
+
+  /**
+   * Erzeugt ein eigenständiges Related-Feld mit lokalem Related-Zustand.
+   * Detached-Felder dürfen nicht die Related-Registry der Shell verwenden,
+   * weil sie nicht Teil des normalen Formulars sind.
+   *
+   * @param request Erzeugungsanfrage
+   * @param mediaTypeBibName technischer Medientypname
+   * @param attribute Attributdefinition
+   * @return eigenständige Related-Komponente
+   */
+  private BibliographyFieldComponent createDetachedRelatedFieldComponent(BibliographyFieldRequest request,
+                                                                         String mediaTypeBibName,
+                                                                         MediaAttributeDefinition attribute) {
+    final Integer[] relatedEntryId = new Integer[1];
+    final RelatedBibliographyFieldComponent[] holder = new RelatedBibliographyFieldComponent[1];
+
+    RelatedBibliographyFieldComponent.RelatedEntryWriter writer =
+        (ownerMediaTypeBibName, bibtexName, entryId, displayText) -> {
+          relatedEntryId[0] = entryId != null && entryId > 0 ? entryId : null;
+
+          RelatedBibliographyFieldComponent component = holder[0];
+          if (component != null) {
+            boolean previousSuppressed = isLookupSuppressed();
+            setLookupSuppressed(true);
+            try {
+              component.fieldView().setText(displayText == null ? "" : displayText);
+            } finally {
+              setLookupSuppressed(previousSuppressed);
+            }
+          }
+        };
+
+    RelatedBibliographyFieldComponent component =
+        bibliographyFieldFactory.createRelatedField(
+            request,
+            (ownerMediaTypeBibName, bibtexName) -> relatedEntryId[0],
+            writer
+        );
+
+    holder[0] = component;
+
+    bindDetachedRelatedLookupIfAvailable(
+        component,
+        mediaTypeBibName,
+        attribute,
+        relatedEntryId,
+        writer
+    );
+
+    return component;
+  }
+
+  /**
+   * Verdrahtet ein eigenständiges Related-Feld mit Lookup-Logik, ohne den
+   * Formularzustand der Shell zu verändern.
+   *
+   * @param component Related-Komponente
+   * @param mediaTypeBibName technischer Medientypname
+   * @param attribute Attributdefinition
+   * @param relatedEntryId lokaler Related-ID-Speicher
+   * @param writer lokaler Related-Schreiber
+   */
+  private void bindDetachedRelatedLookupIfAvailable(RelatedBibliographyFieldComponent component,
+                                                    String mediaTypeBibName,
+                                                    MediaAttributeDefinition attribute,
+                                                    Integer[] relatedEntryId,
+                                                    RelatedBibliographyFieldComponent.RelatedEntryWriter writer) {
+    if (dynamicLookupCoordinator == null || component == null || attribute == null) {
+      return;
+    }
+
+    String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
+    String bibtexName = component.bibtexName();
+
+    dynamicLookupCoordinator.bindField(
+        component.fieldView(),
+        normalizedMediaTypeBibName,
+        attribute,
+        new DynamicLookupCoordinator.ShellAccess() {
+          @Override
+          public boolean isLookupSuppressed() {
+            return BibliographyEditorShell.this.isLookupSuppressed();
+          }
+
+          @Override
+          public void setLookupSuppressed(boolean suppressed) {
+            BibliographyEditorShell.this.setLookupSuppressed(suppressed);
+          }
+
+          @Override
+          public String getCurrentFieldValue(String ownerMediaTypeBibName, String fieldName) {
+            if (normalizeBibtexName(fieldName).equals(bibtexName)) {
+              return component.fieldView().getText();
+            }
+            return BibliographyEditorShell.this.getCurrentFieldValue(ownerMediaTypeBibName, fieldName);
+          }
+
+          @Override
+          public void setCurrentRelatedEntry(String ownerMediaTypeBibName,
+                                             String fieldName,
+                                             Integer entryId,
+                                             String displayText) {
+            writer.writeRelatedEntry(ownerMediaTypeBibName, fieldName, entryId, displayText);
+          }
+
+          @Override
+          public Integer getSelectedEntryId(String ownerMediaTypeBibName) {
+            return BibliographyEditorShell.this.getSelectedEntryId(ownerMediaTypeBibName);
+          }
+
+          @Override
+          public void setSelectedEntryId(String ownerMediaTypeBibName, Integer entryId) {
+            relatedEntryId[0] = entryId;
+          }
+
+          @Override
+          public boolean wasAutoFilled(String ownerMediaTypeBibName) {
+            return false;
+          }
+
+          @Override
+          public void setAutoFilled(String ownerMediaTypeBibName, boolean autoFilled) {
+          }
+
+          @Override
+          public void setAutoFillLocked(String ownerMediaTypeBibName, boolean locked) {
+          }
+
+          @Override
+          public List<Author> getCurrentPersons(String ownerMediaTypeBibName, String fieldName) {
+            return BibliographyEditorShell.this.getCurrentAuthorsForField(ownerMediaTypeBibName, fieldName);
+          }
+
+          @Override
+          public void applyResolvedEntry(String ownerMediaTypeBibName, Integer entryId, boolean markAsAutoFill) {
+            relatedEntryId[0] = entryId;
+          }
+        }
+    );
+  }
+
+  /**
+   * Erzeugt eine eigenständige Feldkomponente anhand einer Attributdefinition.
+   * Die Komponente wird nicht in den Formular-Registries der Shell registriert.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param attribute Attributdefinition
+   * @param presentation Darstellungsoptionen
+   * @return neue Feldkomponente oder {@code null}
+   */
+  private BibliographyFieldComponent createDetachedFieldComponentFromAttribute(String mediaTypeBibName,
+                                                                  MediaAttributeDefinition attribute,
+                                                                  BibliographyFieldPresentation presentation) {
+    if (attribute == null || attribute.fieldDefinition() == null) {
       return null;
     }
 
     String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
-    if (normalizedMediaTypeBibName.isBlank()) {
+    String bibtexName = normalizeBibtexName(attribute.fieldDefinition().bibtexName());
+    String datatype = normalizeBibtexName(attribute.fieldDefinition().datatype());
+
+    BibliographyFieldRequest request = new BibliographyFieldRequest(
+        normalizedMediaTypeBibName,
+        attribute,
+        presentation,
+        false,
+        null
+    );
+
+    if (isPersonDatatype(datatype)) {
+      return bibliographyFieldFactory.createPersonField(
+          request,
+          row -> findDynamicAuthorSuggestions(
+              normalizedMediaTypeBibName,
+              bibtexName,
+              row.getLastName(),
+              getSelectedEntryId(normalizedMediaTypeBibName)
+          ),
+          this::handleAuthorsEdited,
+          () -> {},
+          this::isLookupSuppressed,
+          this::setSelectedEntryId,
+          getVisibleAuthorRowCount()
+      );
+    }
+
+    if (isRelatedDatatype(datatype)) {
+      return createDetachedRelatedFieldComponent(
+          request,
+          normalizedMediaTypeBibName,
+          attribute
+      );
+    }
+
+    if (isDatePickerDatatype(datatype, bibtexName)) {
+      return bibliographyFieldFactory.createDateField(request);
+    }
+
+    BibliographyFieldComponent component = bibliographyFieldFactory.create(request);
+
+    if (component instanceof AbstractTextBibliographyFieldComponent textComponent) {
+      if (isAiChoiceField(normalizedMediaTypeBibName, bibtexName)) {
+        bindAiChoiceField(textComponent.fieldView(), normalizedMediaTypeBibName, bibtexName);
+      } else {
+        bindDynamicLookupIfAvailable(
+            textComponent.fieldView(),
+            normalizedMediaTypeBibName,
+            attribute
+        );
+      }
+    }
+
+    return component;
+  }
+
+  /**
+   * Entfernt eine Feldkomponente aus der neuen Komponenten-Registry.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer Feldname
+   */
+  private void unregisterFieldComponent(String mediaTypeBibName, String bibtexName) {
+    String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
+    String normalizedBibtexName = normalizeBibtexName(bibtexName);
+
+    Map<String, BibliographyFieldComponent> componentRegistry =
+        dynamicFieldComponentsByMediaType.get(normalizedMediaTypeBibName);
+
+    if (componentRegistry == null) {
+      return;
+    }
+
+    componentRegistry.remove(normalizedBibtexName);
+  }
+
+  /**
+   * Liefert eine registrierte Feldkomponente.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer Feldname
+   * @return Feldkomponente oder {@code null}
+   */
+  private BibliographyFieldComponent getFieldComponent(String mediaTypeBibName, String bibtexName) {
+    Map<String, BibliographyFieldComponent> componentRegistry =
+        dynamicFieldComponentsByMediaType.get(normalizeMediaTypeBibName(mediaTypeBibName));
+
+    if (componentRegistry == null) {
       return null;
     }
 
-    return bibliographyService.loadMediaTypeByBibName(normalizedMediaTypeBibName).orElse(null);
+    return componentRegistry.get(normalizeBibtexName(bibtexName));
+  }
+
+  /**
+   * Synchronisiert die Editierbarkeit aller registrierten Feldkomponenten
+   * mit dem aktuellen Bearbeitungsmodus der Shell.
+   */
+  private void updateFieldComponentEditability() {
+    for (Map<String, BibliographyFieldComponent> componentRegistry
+        : dynamicFieldComponentsByMediaType.values()) {
+      if (componentRegistry == null || componentRegistry.isEmpty()) {
+        continue;
+      }
+
+      for (BibliographyFieldComponent component : componentRegistry.values()) {
+        if (component != null) {
+          component.setEditable(true);
+        }
+      }
+    }
+  }
+
+  /**
+   * Überträgt alle Werte einer registrierten Feldkomponente in einen dynamischen Eintrag.
+   *
+   * @param targetEntry Zieleintrag
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer Feldname
+   * @return {@code true}, wenn eine Feldkomponente vorhanden war
+   */
+  private boolean appendFieldComponentValues(DynamicBibliographyEntry targetEntry,
+                                             String mediaTypeBibName,
+                                             String bibtexName) {
+    if (targetEntry == null) {
+      return false;
+    }
+
+    BibliographyFieldComponent fieldComponent = getFieldComponent(mediaTypeBibName, bibtexName);
+    if (fieldComponent == null) {
+      return false;
+    }
+
+    for (BibValue value : fieldComponent.readValues()) {
+      if (value != null) {
+        targetEntry.putValue(value);
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Schreibt einen einzelnen BibValue in eine registrierte Feldkomponente zurück.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param value zu schreibender Wert
+   * @return {@code true}, wenn eine Feldkomponente vorhanden war
+   */
+  private boolean writeValueToFieldComponent(String mediaTypeBibName, BibValue value) {
+    if (value == null) {
+      return false;
+    }
+
+    BibliographyFieldComponent fieldComponent =
+        getFieldComponent(mediaTypeBibName, value.bibtexName());
+
+    if (fieldComponent == null) {
+      return false;
+    }
+
+    fieldComponent.writeValues(List.of(value));
+    return true;
+  }
+
+  /**
+   * Liest einen einfachen Anzeigewert aus einer registrierten Feldkomponente.
+   * Diese Methode dient als Brücke für Validierung, Dirty-State und ältere
+   * Shell-Zugriffe, solange die Legacy-Registry noch parallel existiert.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer Feldname
+   * @return Feldwert oder leerer String
+   */
+  private String getCurrentFieldValueFromComponent(String mediaTypeBibName, String bibtexName) {
+    BibliographyFieldComponent component = getFieldComponent(mediaTypeBibName, bibtexName);
+    if (component == null) {
+      return "";
+    }
+
+    for (BibValue value : component.readValues()) {
+      if (value == null) {
+        continue;
+      }
+
+      if (!normalizeBibtexName(value.bibtexName()).equals(normalizeBibtexName(bibtexName))) {
+        continue;
+      }
+
+      if (value instanceof StringBibValue stringValue) {
+        return stringValue.value() == null ? "" : stringValue.value();
+      }
+
+      if (value instanceof IntegerBibValue integerValue) {
+        return integerValue.value() == null ? "" : String.valueOf(integerValue.value());
+      }
+
+      if (value instanceof RelatedBibValue relatedValue) {
+        return relatedValue.displayValue() == null ? "" : relatedValue.displayValue();
+      }
+    }
+
+    return "";
   }
 
   /**
@@ -1724,6 +2432,7 @@ public class BibliographyEditorShell {
       }
 
       registry.remove(fieldToRemove);
+      unregisterFieldComponent(normalizedMediaTypeBibName, fieldToRemove);
       additionalDefinitions.remove(fieldToRemove);
       relatedEntryIdsByFieldKey.remove(
           relatedFieldKey(normalizedMediaTypeBibName, fieldToRemove)
@@ -1801,91 +2510,85 @@ public class BibliographyEditorShell {
    */
   private Node createAdditionalFieldNode(String mediaTypeBibName, BibtexFieldDefinition fieldDefinition) {
     String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
-    String bibtexName = normalizeBibtexName(fieldDefinition.bibtexName());
-    String datatype = normalizeBibtexName(fieldDefinition.datatype());
-    String labelText = fieldDefinition.displayName();
 
-    Button deleteButton = BaseIcon.TAG_BLUE_DELETE.button("Eigenschaft entfernen");
-    deleteButton.setOnAction(event -> removeAdditionalField(normalizedMediaTypeBibName, bibtexName));
+    if (fieldDefinition == null || normalizedMediaTypeBibName.isBlank()) {
+      return null;
+    }
+
+    String bibtexName = normalizeBibtexName(fieldDefinition.bibtexName());
+    if (bibtexName.isBlank()) {
+      return null;
+    }
 
     Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(normalizedMediaTypeBibName);
     if (registry == null) {
       return null;
     }
 
-    if (isPersonDatatype(datatype)) {
-      Label label = new Label(labelText);
+    MediaAttributeDefinition syntheticAttribute =
+        createSyntheticAdditionalAttribute(normalizedMediaTypeBibName, fieldDefinition);
 
-      HBox header = new HBox(6, deleteButton, label);
-      header.setAlignment(Pos.CENTER_LEFT);
-
-      BibliographyAuthorsView authorsView = new BibliographyAuthorsView(
-          normalizedMediaTypeBibName,
-          editProperty(),
-          row -> findDynamicAuthorSuggestions(
-              normalizedMediaTypeBibName,
-              bibtexName,
-              row.getLastName(),
-              getSelectedEntryId(normalizedMediaTypeBibName)
-          ),
-          this::handleAuthorsEdited,
-          () -> {},
-          this::isLookupSuppressed,
-          this::setSelectedEntryId,
-          getVisibleAuthorRowCount()
-      );
-
-      registry.put(bibtexName, authorsView);
-
-      VBox wrapper = new VBox(4, header, authorsView);
-      wrapper.getStyleClass().add("biblio-dynamic-added-field");
-      return wrapper;
+    if (syntheticAttribute == null) {
+      return null;
     }
 
-    if (isDatePickerDatatype(datatype, bibtexName)) {
-      DatePicker datePicker = new DatePicker();
-      datePicker.valueProperty().addListener((obs, oldValue, newValue) -> refreshDirtyState());
-      registry.put(bibtexName, datePicker);
+    FieldComponentBuildResult result = buildFieldComponent(
+        normalizedMediaTypeBibName,
+        syntheticAttribute,
+        resolveCurrentFieldPresentation().withRemoveButton(true),
+        true,
+        () -> removeAdditionalField(normalizedMediaTypeBibName, bibtexName)
+    );
 
-      Node node = labeledNode(labelText, datePicker, true, deleteButton);
-      if (node instanceof Region region) {
-        region.getStyleClass().add("biblio-dynamic-added-field");
-      }
-      return node;
+    if (result == null || result.component() == null) {
+      return null;
     }
 
-    BibliographyFieldView fieldView = new BibliographyFieldView(labelText, editProperty());
-
-    if (isIntegerDatatype(datatype)) {
-      enforceIntegerInput(fieldView);
-    }
-
-    fieldView.getEditor().textProperty().addListener((obs, oldValue, newValue) -> refreshDirtyState());
-
-    if (bibliographyService != null) {
-      bibliographyService.createSyntheticAdditionalAttribute(normalizedMediaTypeBibName, fieldDefinition)
-          .ifPresent(syntheticAttribute ->
-                         bindDynamicLookupIfAvailable(fieldView, normalizedMediaTypeBibName, syntheticAttribute)
-          );
-    }
-
-    registry.put(bibtexName, fieldView);
-
-    Node node = labeledNode(labelText, fieldView, true, deleteButton);
+    Node node = result.component().getNode();
     if (node instanceof Region region) {
       region.getStyleClass().add("biblio-dynamic-added-field");
     }
+
+    registry.put(bibtexName, result.legacyComponent());
+    registerFieldComponent(normalizedMediaTypeBibName, result.component());
+
     return node;
   }
 
   /**
-   * Stellt sicher, dass beim Laden eines Eintrags alle zusätzlich belegten Felder
-   * vor dem Zurückschreiben in die UI als echte Feldkomponenten vorhanden sind.
+   * Erzeugt eine synthetische Attributdefinition für ein zusätzlich eingefügtes Feld.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param fieldDefinition BibTeX-Felddefinition
+   * @return synthetische Attributdefinition oder {@code null}
+   */
+  private MediaAttributeDefinition createSyntheticAdditionalAttribute(String mediaTypeBibName,
+                                                                      BibtexFieldDefinition fieldDefinition) {
+    if (bibliographyService == null || fieldDefinition == null) {
+      return null;
+    }
+
+    return bibliographyService
+               .createSyntheticAdditionalAttribute(mediaTypeBibName, fieldDefinition)
+               .orElse(null);
+  }
+
+  /**
+   * Stellt zusätzliche Felder nur in Kontexten her, in denen Zusatzfelder
+   * fachlich sichtbar und bearbeitbar sein dürfen.
+   * Im Zettelkontext werden Zusatzfelder bewusst nicht erzeugt, damit beim
+   * Medienwechsel keine Eigenschaften eines vorherigen Mediums als löschbare
+   * Zusatzfelder unter dem Zettel erscheinen.
    *
    * @param mediaTypeBibName technischer Medientypname
    * @param entry geladener Eintrag
    */
-  private void ensureAdditionalFieldsForEntry(String mediaTypeBibName, DynamicBibliographyEntry entry) {
+  private void ensureAdditionalFieldsForEntryIfAllowed(String mediaTypeBibName,
+                                                       DynamicBibliographyEntry entry) {
+    if (editorUsageContext == EditorUsageContext.NOTE_LINKING) {
+      return;
+    }
+
     if (entry == null || bibliographyService == null) {
       return;
     }
@@ -1910,11 +2613,122 @@ public class BibliographyEditorShell {
   }
 
   /**
+   * Erzeugt eine bibliographische Feldkomponente für ein Attribut und verdrahtet
+   * Lookup, Dirty-State und Legacy-Anker zentral.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param attribute Attributdefinition
+   * @param presentation Darstellungsoptionen
+   * @param additionalField ob es sich um ein Zusatzfeld handelt
+   * @param onRemove optionale Entfernen-Aktion
+   * @return Bauresultat oder {@code null}
+   */
+  private FieldComponentBuildResult buildFieldComponent(String mediaTypeBibName,
+                                                        MediaAttributeDefinition attribute,
+                                                        BibliographyFieldPresentation presentation,
+                                                        boolean additionalField,
+                                                        Runnable onRemove) {
+    if (attribute == null || attribute.fieldDefinition() == null) {
+      return null;
+    }
+
+    String normalizedMediaTypeBibName = normalizeMediaTypeBibName(mediaTypeBibName);
+    String bibtexName = normalizeBibtexName(attribute.fieldDefinition().bibtexName());
+    String datatype = normalizeBibtexName(attribute.fieldDefinition().datatype());
+
+    if (normalizedMediaTypeBibName.isBlank() || bibtexName.isBlank()) {
+      return null;
+    }
+
+    BibliographyFieldRequest request = new BibliographyFieldRequest(
+        normalizedMediaTypeBibName,
+        attribute,
+        presentation,
+        additionalField,
+        onRemove
+    );
+
+    if (isPersonDatatype(datatype)) {
+      PersonBibliographyFieldComponent component =
+          bibliographyFieldFactory.createPersonField(
+              request,
+              row -> findDynamicAuthorSuggestions(
+                  normalizedMediaTypeBibName,
+                  bibtexName,
+                  row.getLastName(),
+                  getSelectedEntryId(normalizedMediaTypeBibName)
+              ),
+              this::handleAuthorsEdited,
+              () -> {},
+              this::isLookupSuppressed,
+              this::setSelectedEntryId,
+              getVisibleAuthorRowCount()
+          );
+
+      return new FieldComponentBuildResult(component, component.authorsView());
+    }
+
+    if (isRelatedDatatype(datatype)) {
+      RelatedBibliographyFieldComponent component =
+          bibliographyFieldFactory.createRelatedField(
+              request,
+              this::getCurrentRelatedEntryId,
+              this::setCurrentRelatedEntry
+          );
+
+      BibliographyFieldView fieldView = component.fieldView();
+
+      bindDynamicLookupIfAvailable(
+          fieldView,
+          normalizedMediaTypeBibName,
+          attribute
+      );
+
+      fieldView.getEditor().textProperty().addListener((obs, oldValue, newValue) -> refreshDirtyState());
+
+      return new FieldComponentBuildResult(component, fieldView);
+    }
+
+    if (isDatePickerDatatype(datatype, bibtexName)) {
+      DateBibliographyFieldComponent component =
+          bibliographyFieldFactory.createDateField(request);
+
+      DatePicker datePicker = component.datePicker();
+      datePicker.valueProperty().addListener((obs, oldValue, newValue) -> refreshDirtyState());
+
+      return new FieldComponentBuildResult(component, datePicker);
+    }
+
+    BibliographyFieldComponent component = bibliographyFieldFactory.create(request);
+
+    if (component instanceof AbstractTextBibliographyFieldComponent textComponent) {
+      BibliographyFieldView fieldView = textComponent.fieldView();
+
+      if (isAiChoiceField(normalizedMediaTypeBibName, bibtexName)) {
+        bindAiChoiceField(fieldView, normalizedMediaTypeBibName, bibtexName);
+      } else {
+        bindDynamicLookupIfAvailable(
+            fieldView,
+            normalizedMediaTypeBibName,
+            attribute
+        );
+      }
+
+      fieldView.getEditor().textProperty().addListener((obs, oldValue, newValue) -> refreshDirtyState());
+
+      return new FieldComponentBuildResult(component, fieldView);
+    }
+
+    return null;
+  }
+
+  /**
    * Erzeugt eine UI-Komponente für ein einzelnes Attribut des dynamischen
    * Formulars und registriert diese unter dem technischen BibTeX-Namen.
    *
    * @param form Zielcontainer des dynamischen Formulars
    * @param fieldRegistry Registry der Feldkomponenten des Formulars
+   * @param fieldNodeRegistry Node-Registry des Formulars
    * @param ownerMediaTypeBibName technischer Medientypname des Formulars
    * @param attribute Attributdefinition des zu erzeugenden Feldes
    */
@@ -1925,6 +2739,7 @@ public class BibliographyEditorShell {
                                   MediaAttributeDefinition attribute) {
     if (form == null
             || fieldRegistry == null
+            || fieldNodeRegistry == null
             || ownerMediaTypeBibName == null
             || attribute == null
             || attribute.fieldDefinition() == null) {
@@ -1933,108 +2748,30 @@ public class BibliographyEditorShell {
 
     String normalizedOwnerMediaTypeBibName = normalizeMediaTypeBibName(ownerMediaTypeBibName);
     String bibtexName = normalizeBibtexName(attribute.fieldDefinition().bibtexName());
-    String datatype = normalizeBibtexName(attribute.fieldDefinition().datatype());
-    String labelText = attribute.fieldDefinition().displayName();
 
-    if (bibtexName.isBlank()) {
+    if (normalizedOwnerMediaTypeBibName.isBlank() || bibtexName.isBlank()) {
       return;
     }
 
-    if (isPersonDatatype(datatype)) {
-      BibliographyAuthorsView authorsView = new BibliographyAuthorsView(
-          normalizedOwnerMediaTypeBibName,
-          editProperty(),
-          row -> findDynamicAuthorSuggestions(
-              normalizedOwnerMediaTypeBibName,
-              bibtexName,
-              row.getLastName(),
-              getSelectedEntryId(normalizedOwnerMediaTypeBibName)
-          ),
-          this::handleAuthorsEdited,
-          () -> {
-          },
-          this::isLookupSuppressed,
-          this::setSelectedEntryId,
-          getVisibleAuthorRowCount()
-      );
-
-      Node node = labeledNode(labelText, authorsView, false, null, true);
-      applyImportanceStyle(node, attribute);
-
-      form.getChildren().add(node);
-      fieldRegistry.put(bibtexName, authorsView);
-      fieldNodeRegistry.put(bibtexName, node);
-      return;
-    }
-
-    if (isRelatedDatatype(datatype)) {
-      BibliographyFieldView fieldView = new BibliographyFieldView(labelText, editProperty());
-
-      bindDynamicLookupIfAvailable(
-          fieldView,
-          normalizedOwnerMediaTypeBibName,
-          attribute
-      );
-
-      fieldView.getEditor().textProperty().addListener((obs, oldValue, newValue) -> refreshDirtyState());
-
-      Node node = labeledNode(labelText, fieldView);
-      applyImportanceStyle(node, attribute);
-
-      form.getChildren().add(node);
-      fieldRegistry.put(bibtexName, fieldView);
-      fieldNodeRegistry.put(bibtexName, node);
-      return;
-    }
-
-    if (isDatePickerDatatype(datatype, bibtexName)) {
-      DatePicker datePicker = new DatePicker();
-      datePicker.valueProperty().addListener((obs, oldValue, newValue) -> refreshDirtyState());
-      Node node = labeledNode(labelText, datePicker);
-      applyImportanceStyle(node, attribute);
-
-      form.getChildren().add(node);
-      fieldRegistry.put(bibtexName, datePicker);
-      fieldNodeRegistry.put(bibtexName, node);
-      return;
-    }
-
-    if (isAiChoiceField(normalizedOwnerMediaTypeBibName, bibtexName)) {
-      BibliographyFieldView fieldView = new BibliographyFieldView(labelText, editProperty());
-
-      bindAiChoiceField(fieldView, normalizedOwnerMediaTypeBibName, bibtexName);
-
-      fieldView.getEditor().textProperty().addListener((obs, oldValue, newValue) -> refreshDirtyState());
-
-      Node node = labeledNode(labelText, fieldView);
-      applyImportanceStyle(node, attribute);
-
-      form.getChildren().add(node);
-      fieldRegistry.put(bibtexName, fieldView);
-      fieldNodeRegistry.put(bibtexName, node);
-      return;
-    }
-
-    BibliographyFieldView fieldView = new BibliographyFieldView(labelText, editProperty());
-
-    if (isIntegerDatatype(datatype)) {
-      enforceIntegerInput(fieldView);
-    }
-
-    bindDynamicLookupIfAvailable(
-        fieldView,
+    FieldComponentBuildResult result = buildFieldComponent(
         normalizedOwnerMediaTypeBibName,
-        attribute
+        attribute,
+        resolveCurrentFieldPresentation(),
+        false,
+        null
     );
 
-    fieldView.getEditor().textProperty().addListener((obs, oldValue, newValue) -> refreshDirtyState());
+    if (result == null || result.component() == null) {
+      return;
+    }
 
-    Node node = labeledNode(labelText, fieldView);
+    Node node = result.component().getNode();
     applyImportanceStyle(node, attribute);
 
     form.getChildren().add(node);
-    fieldRegistry.put(bibtexName, fieldView);
+    fieldRegistry.put(bibtexName, result.legacyComponent());
     fieldNodeRegistry.put(bibtexName, node);
+    registerFieldComponent(normalizedOwnerMediaTypeBibName, result.component());
   }
 
   /**
@@ -2472,6 +3209,11 @@ public class BibliographyEditorShell {
    * @return Autorenliste des Feldes oder eine leere Liste
    */
   private List<Author> getCurrentAuthorsForField(String mediaTypeBibName, String bibtexName) {
+    BibliographyFieldComponent fieldComponent = getFieldComponent(mediaTypeBibName, bibtexName);
+    if (fieldComponent instanceof PersonBibliographyFieldComponent personComponent) {
+      return personComponent.authorsView().toAuthors();
+    }
+
     Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(normalizeMediaTypeBibName(mediaTypeBibName));
     if (registry == null) {
       return List.of();
@@ -2495,6 +3237,12 @@ public class BibliographyEditorShell {
   private void setCurrentAuthorsForField(String mediaTypeBibName,
                                          String bibtexName,
                                          List<Author> authors) {
+    BibliographyFieldComponent fieldComponent = getFieldComponent(mediaTypeBibName, bibtexName);
+    if (fieldComponent instanceof PersonBibliographyFieldComponent personComponent) {
+      applyAuthors(personComponent.authorsView(), authors);
+      return;
+    }
+
     Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(normalizeMediaTypeBibName(mediaTypeBibName));
     if (registry == null) {
       return;
@@ -2507,121 +3255,14 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Verpackt einen Knoten mit Beschriftung.
+   * Prüft, ob ein Feld als Datumsfeld mit DatePicker gerendert werden soll.
+   * Neben expliziten Datentypen werden auch kanonische Feldnamen wie
+   * {@code date}, {@code urldate} und {@code ai_used_at} berücksichtigt.
    *
-   * @param labelText Beschriftung
-   * @param node Zielknoten
-   * @return Container mit Label und Knoten
+   * @param datatype technischer Datentyp aus den Metadaten
+   * @param bibtexName technischer BibTeX-Feldname
+   * @return {@code true}, wenn das Feld als DatePicker-Feld behandelt wird
    */
-  private Node labeledNode(String labelText, Node node) {
-    return labeledNode(labelText, node, false, null, false);
-  }
-
-  /**
-   * Verpackt einen Knoten mit Beschriftung und optionalem Delete-Button
-   * in einer einheitlich ausgerichteten Feldzeile.
-   *
-   * @param labelText Beschriftung
-   * @param node Zielknoten
-   * @param withDeleteButton {@code true}, wenn die Zeile Platz für einen
-   *                         Delete-Button berücksichtigen soll
-   * @return Container mit Feldzeile
-   */
-  private Node labeledNode(String labelText, Node node, boolean withDeleteButton) {
-    return labeledNode(labelText, node, withDeleteButton, null, false);
-  }
-
-  /**
-   * Verpackt einen Knoten mit Beschriftung und optionalem Delete-Button
-   * in einer einheitlich ausgerichteten Feldzeile.
-   *
-   * @param labelText Beschriftung
-   * @param node Zielknoten
-   * @param withDeleteButton {@code true}, wenn die Zeile Platz für einen
-   *                         Delete-Button berücksichtigen soll
-   * @param deleteButton optionaler Delete-Button
-   * @return Container mit Feldzeile
-   */
-  private Node labeledNode(String labelText, Node node, boolean withDeleteButton, Button deleteButton) {
-    return labeledNode(labelText, node, withDeleteButton, deleteButton, false);
-  }
-
-  /**
-   * Verpackt einen Knoten mit Beschriftung und optionalem Delete-Button
-   * in einer einheitlich ausgerichteten Feldzeile.
-   *
-   * @param labelText Beschriftung
-   * @param node Zielknoten
-   * @param withDeleteButton {@code true}, wenn die Zeile Platz für einen
-   *                         Delete-Button berücksichtigen soll
-   * @param deleteButton optionaler Delete-Button
-   * @param personField {@code true}, wenn es sich um ein Personenfeld handelt
-   * @return Container mit Feldzeile
-   */
-  private Node labeledNode(String labelText,
-                           Node node,
-                           boolean withDeleteButton,
-                           Button deleteButton,
-                           boolean personField) {
-    HBox row = new HBox(8);
-    row.getStyleClass().add("biblio-field-row");
-    row.setAlignment(Pos.CENTER_LEFT);
-
-    HBox labelArea = new HBox(FIELD_DELETE_LABEL_GAP);
-    labelArea.getStyleClass().add("biblio-field-label-area");
-    labelArea.setAlignment(Pos.CENTER_LEFT);
-    labelArea.setMinWidth(FIELD_LABEL_AREA_WIDTH);
-    labelArea.setPrefWidth(FIELD_LABEL_AREA_WIDTH);
-    labelArea.setMaxWidth(FIELD_LABEL_AREA_WIDTH);
-
-    if (withDeleteButton && deleteButton != null) {
-      deleteButton.setMinWidth(FIELD_DELETE_BUTTON_WIDTH);
-      deleteButton.setPrefWidth(FIELD_DELETE_BUTTON_WIDTH);
-      deleteButton.setMaxWidth(FIELD_DELETE_BUTTON_WIDTH);
-      labelArea.getChildren().add(deleteButton);
-    }
-
-    Label label = createFixedFieldLabel(
-        labelText,
-        withDeleteButton
-            ? FIELD_LABEL_AREA_WIDTH - FIELD_DELETE_BUTTON_WIDTH - FIELD_DELETE_LABEL_GAP
-            : FIELD_LABEL_AREA_WIDTH
-    );
-    labelArea.getChildren().add(label);
-
-    applyPromptText(node, labelText);
-    applyFieldRowPresentation(row, node, labelArea, personField);
-
-    row.getChildren().addAll(labelArea, node);
-    return row;
-  }
-
-  /**
-   * Erzeugt ein fest breites Feldlabel mit Tooltip auf den vollständigen Text.
-   * Ist der Text länger als die verfügbare Breite, wird er visuell gekürzt.
-   *
-   * @param labelText anzuzeigender Text
-   * @param width feste Breite des Labels
-   * @return konfiguriertes Label
-   */
-  private Label createFixedFieldLabel(String labelText, double width) {
-    String text = labelText == null ? "" : labelText.trim();
-
-    Label label = new Label(text);
-    label.getStyleClass().add("biblio-field-label");
-    label.setMinWidth(width);
-    label.setPrefWidth(width);
-    label.setMaxWidth(width);
-    label.setTextOverrun(OverrunStyle.ELLIPSIS);
-    label.setWrapText(false);
-
-    if (!text.isBlank()) {
-      label.setTooltip(new Tooltip(text));
-    }
-
-    return label;
-  }
-
   private boolean isDatePickerDatatype(String datatype, String bibtexName) {
     String normalizedDatatype = normalizeBibtexName(datatype);
     String normalizedBibtexName = normalizeBibtexName(bibtexName);
@@ -2631,69 +3272,6 @@ public class BibliographyEditorShell {
                || "date".equalsIgnoreCase(normalizedBibtexName)
                || "urldate".equalsIgnoreCase(normalizedBibtexName)
                || "ai_used_at".equalsIgnoreCase(normalizedBibtexName);
-  }
-
-  /**
-   * Überträgt einen Labeltext als interne Beschriftung in die eigentliche
-   * Eingabekomponente.
-   *
-   * @param node Zielkomponente
-   * @param labelText anzuzeigender Hinweistext
-   */
-  private void applyPromptText(Node node, String labelText) {
-    String prompt = labelText == null ? "" : labelText.trim();
-    if (prompt.isBlank() || node == null) {
-      return;
-    }
-
-    if (node instanceof BibliographyFieldView fieldView && fieldView.getEditor() != null) {
-      fieldView.getEditor().setPromptText(prompt);
-      return;
-    }
-
-    if (node instanceof DatePicker datePicker) {
-      datePicker.setPromptText(prompt);
-    }
-  }
-
-  /**
-   * Passt die Darstellung einer Feldzeile an den aktuellen Shell-Kontext an.
-   * Im Zettelkontext werden äußere Labels für Nicht-Personenfelder ausgeblendet,
-   * so dass nur die Eingabefelder mit interner Beschriftung sichtbar bleiben.
-   *
-   * @param row Feldzeile
-   * @param fieldNode eigentliche Eingabekomponente
-   * @param labelArea linker Labelbereich
-   * @param personField {@code true}, wenn es sich um ein Personenfeld handelt
-   */
-  private void applyFieldRowPresentation(HBox row,
-                                         Node fieldNode,
-                                         HBox labelArea,
-                                         boolean personField) {
-    if (row == null || fieldNode == null || labelArea == null) {
-      return;
-    }
-
-    boolean hideExternalLabel =
-        editorUsageContext == EditorUsageContext.NOTE_LINKING;
-
-    labelArea.setVisible(!hideExternalLabel);
-    labelArea.setManaged(!hideExternalLabel);
-
-    if (hideExternalLabel) {
-      labelArea.setMinWidth(0);
-      labelArea.setPrefWidth(0);
-      labelArea.setMaxWidth(0);
-    } else {
-      labelArea.setMinWidth(FIELD_LABEL_AREA_WIDTH);
-      labelArea.setPrefWidth(FIELD_LABEL_AREA_WIDTH);
-      labelArea.setMaxWidth(FIELD_LABEL_AREA_WIDTH);
-    }
-
-    if (fieldNode instanceof Region region) {
-      HBox.setHgrow(region, Priority.ALWAYS);
-      region.setMaxWidth(Double.MAX_VALUE);
-    }
   }
 
   /**
@@ -2770,17 +3348,6 @@ public class BibliographyEditorShell {
 
     MediaTypeOption option = resolveMediaTypeOption(typeField.getText());
     return option == null ? "" : normalizeMediaTypeBibName(option.mediaTypeBibName());
-  }
-
-  /**
-   * Prüft, ob für einen technischen Medientyp aktuell eine auswählbare
-   * Option in der Shell vorhanden ist.
-   *
-   * @param mediaTypeBibName technischer Medientypname
-   * @return {@code true}, wenn eine passende Option existiert
-   */
-  public boolean supportsMediaTypeBibName(String mediaTypeBibName) {
-    return mediaTypeOptionsByBibName.containsKey(normalizeMediaTypeBibName(mediaTypeBibName));
   }
 
   /**
@@ -2889,7 +3456,12 @@ public class BibliographyEditorShell {
 
       relatedEntryIdsByFieldKey.remove(relatedFieldKey(normalizedMediaTypeBibName, bibtexName));
 
-      if (component instanceof BibliographyFieldView fieldView) {
+      BibliographyFieldComponent fieldComponent =
+          getFieldComponent(normalizedMediaTypeBibName, bibtexName);
+
+      if (fieldComponent != null) {
+        fieldComponent.clear();
+      } else if (component instanceof BibliographyFieldView fieldView) {
         fieldView.setText("");
         fieldView.hideSuggestions();
       } else if (component instanceof BibliographyAuthorsView authorsView) {
@@ -2926,6 +3498,11 @@ public class BibliographyEditorShell {
     String key = normalizeBibtexName(bibtexName);
     String mediaTypeBibName = getSelectedMediaTypeBibName();
 
+    String componentValue = getCurrentFieldValueFromComponent(mediaTypeBibName, key);
+    if (!componentValue.isBlank()) {
+      return componentValue;
+    }
+
     Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(mediaTypeBibName);
     if (registry == null) {
       return "";
@@ -2946,6 +3523,53 @@ public class BibliographyEditorShell {
   }
 
   /**
+   * Schreibt einen einfachen Textwert in eine registrierte Feldkomponente.
+   * Unterstützt String-, Integer- und DatePicker-basierte String-Werte.
+   *
+   * @param mediaTypeBibName technischer Medientypname
+   * @param bibtexName technischer Feldname
+   * @param value zu schreibender Textwert
+   * @return {@code true}, wenn eine Feldkomponente gefunden und beschrieben wurde
+   */
+  private boolean setCurrentFieldValueToComponent(String mediaTypeBibName,
+                                                  String bibtexName,
+                                                  String value) {
+    BibliographyFieldComponent component = getFieldComponent(mediaTypeBibName, bibtexName);
+    if (component == null) {
+      return false;
+    }
+
+    String normalizedBibtexName = normalizeBibtexName(bibtexName);
+    String text = value == null ? "" : value.trim();
+
+    BibValue bibValue;
+    if (component instanceof DateBibliographyFieldComponent) {
+      bibValue = new StringBibValue(normalizedBibtexName, text);
+    } else if (component instanceof AbstractTextBibliographyFieldComponent
+                   && isIntegerComponentValue(component)) {
+      bibValue = new IntegerBibValue(normalizedBibtexName, parseIntegerValue(text));
+    } else {
+      bibValue = new StringBibValue(normalizedBibtexName, text);
+    }
+
+    component.writeValues(List.of(bibValue));
+    return true;
+  }
+
+  /**
+   * Prüft anhand des Komponentenattributs, ob eine Komponente Integer-Werte erwartet.
+   *
+   * @param component Feldkomponente
+   * @return {@code true}, wenn das Feld als Integer-Datentyp definiert ist
+   */
+  private boolean isIntegerComponentValue(BibliographyFieldComponent component) {
+    return component != null
+               && component.attribute() != null
+               && component.attribute().fieldDefinition() != null
+               && isIntegerDatatype(component.attribute().fieldDefinition().datatype());
+  }
+
+  /**
    * Setzt einen Feldwert des aktuell sichtbaren dynamischen Formulars über
    * seinen technischen Feldnamen.
    *
@@ -2956,6 +3580,10 @@ public class BibliographyEditorShell {
     String key = normalizeBibtexName(bibtexName);
     String text = value == null ? "" : value.trim();
     String mediaTypeBibName = getSelectedMediaTypeBibName();
+
+    if (setCurrentFieldValueToComponent(mediaTypeBibName, key, text)) {
+      return;
+    }
 
     Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(mediaTypeBibName);
     if (registry == null) {
@@ -2969,42 +3597,6 @@ public class BibliographyEditorShell {
     }
     if (component instanceof DatePicker datePicker) {
       datePicker.setValue(parseLocalDate(text));
-    }
-  }
-
-  /**
-   * Liefert die aktuell ausgewählten Autoren des sichtbaren Formulars.
-   *
-   * @return aktuelle Autorenliste
-   */
-  public List<Author> getCurrentAuthors() {
-    Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(getSelectedMediaTypeBibName());
-    if (registry != null) {
-      for (Object component : registry.values()) {
-        if (component instanceof BibliographyAuthorsView authorsView) {
-          return authorsView.toAuthors();
-        }
-      }
-    }
-    return getAuthors();
-  }
-
-  /**
-   * Setzt die Autoren des aktuell sichtbaren dynamischen Formulars.
-   *
-   * @param authors neue Autorenliste
-   */
-  public void setCurrentAuthors(List<Author> authors) {
-    Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(getSelectedMediaTypeBibName());
-    if (registry == null) {
-      return;
-    }
-
-    for (Object component : registry.values()) {
-      if (component instanceof BibliographyAuthorsView authorsView) {
-        applyAuthors(authorsView, authors);
-        return;
-      }
     }
   }
 
@@ -3058,53 +3650,6 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Setzt die aktuell selektierte Related-ID für das sichtbare Formular und
-   * belässt den aktuellen Anzeigetext des Feldes unverändert.
-   *
-   * @param bibtexName technischer Related-Feldname
-   * @param entryId Ziel-ID oder {@code null}
-   */
-  public void setCurrentRelatedEntryId(String bibtexName, Integer entryId) {
-    String displayText = getCurrentFieldValue(getSelectedMediaTypeBibName(), bibtexName);
-    setCurrentRelatedEntry(
-        getSelectedMediaTypeBibName(),
-        bibtexName,
-        entryId,
-        displayText
-    );
-  }
-
-  /**
-   * Fordert das Anlegen eines Related-Zielmediums anhand des technischen
-   * Feldnamens an.
-   *
-   * @param bibtexName technischer Related-Feldname
-   * @param displayText aktueller Feldtext
-   */
-  public void requestCreateRelatedEntry(String bibtexName, String displayText) {
-    if (dynamicLookupCoordinator == null) {
-      return;
-    }
-
-    String ownerMediaTypeBibName = getSelectedMediaTypeBibName();
-    String targetMediaTypeBibName =
-        dynamicLookupCoordinator.resolveRelatedTargetMediaTypeBibName(
-            ownerMediaTypeBibName,
-            bibtexName
-        );
-
-    if (targetMediaTypeBibName.isBlank()) {
-      return;
-    }
-
-    onRequestCreateRelated.requestCreateRelated(
-        normalizeBibtexName(bibtexName),
-        targetMediaTypeBibName,
-        displayText == null ? "" : displayText.trim()
-    );
-  }
-
-  /**
    * Liefert den Feldtext eines technischen Feldes innerhalb eines bestimmten
    * Formulars.
    *
@@ -3113,8 +3658,14 @@ public class BibliographyEditorShell {
    * @return Feldtext oder leerer String
    */
   public String getCurrentFieldValue(String mediaTypeBibName, String bibtexName) {
+    String componentValue = getCurrentFieldValueFromComponent(mediaTypeBibName, bibtexName);
+    if (!componentValue.isBlank()) {
+      return componentValue;
+    }
+
     Map<String, Object> registry =
         dynamicFieldRegistryByMediaType.get(normalizeMediaTypeBibName(mediaTypeBibName));
+
     if (registry == null) {
       return "";
     }
@@ -3173,6 +3724,20 @@ public class BibliographyEditorShell {
       relatedEntryIdsByFieldKey.put(fieldKey, entryId);
     }
 
+    BibliographyFieldComponent fieldComponent =
+        getFieldComponent(normalizedMediaTypeBibName, normalizedBibtexName);
+
+    if (fieldComponent instanceof RelatedBibliographyFieldComponent relatedComponent) {
+      boolean previousSuppressed = isLookupSuppressed();
+      setLookupSuppressed(true);
+      try {
+        relatedComponent.fieldView().setText(displayText == null ? "" : displayText);
+      } finally {
+        setLookupSuppressed(previousSuppressed);
+      }
+      return;
+    }
+
     Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(normalizedMediaTypeBibName);
     if (registry == null) {
       return;
@@ -3209,21 +3774,24 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Liefert den Titel des aktuell sichtbaren dynamischen Formulars.
-   *
-   * @return Titelfeld des aktiven Formulars oder leerer String
-   */
-  public String getTitleText() {
-    return getCurrentFieldValue(getSelectedMediaTypeBibName(), "title");
-  }
-
-  /**
    * Liefert die Autoren des aktuell sichtbaren dynamischen Formulars.
    *
    * @return Autorenliste des aktiven Formulars
    */
   public List<Author> getAuthors() {
     String mediaTypeBibName = getSelectedMediaTypeBibName();
+
+    Map<String, BibliographyFieldComponent> componentRegistry =
+        dynamicFieldComponentsByMediaType.get(normalizeMediaTypeBibName(mediaTypeBibName));
+
+    if (componentRegistry != null && !componentRegistry.isEmpty()) {
+      for (BibliographyFieldComponent component : componentRegistry.values()) {
+        if (component instanceof PersonBibliographyFieldComponent personComponent) {
+          return personComponent.authorsView().toAuthors();
+        }
+      }
+    }
+
     Map<String, Object> registry = dynamicFieldRegistryByMediaType.get(mediaTypeBibName);
     if (registry == null || registry.isEmpty()) {
       return List.of();
@@ -3288,15 +3856,6 @@ public class BibliographyEditorShell {
   }
 
   /**
-   * Liefert die Property des Bearbeitungsmodus.
-   *
-   * @return Selected-Property des Bearbeitungstoggles.
-   */
-  private BooleanProperty editProperty() {
-    return toggleEdit.selectedProperty();
-  }
-
-  /**
    * Aktualisiert eine Map mit optionaler Eintrags-ID.
    *
    * @param map Ziel-Map
@@ -3324,16 +3883,6 @@ public class BibliographyEditorShell {
    */
   private String normalizeBibtexName(String value) {
     return value == null ? "" : value.trim();
-  }
-
-  /**
-   * Normalisiert einen Metadaten-Datentyp für technische Vergleiche.
-   *
-   * @param datatype Datentyp aus den Metadaten
-   * @return normalisierte Datentypbezeichnung
-   */
-  private String normalizeDatatype(String datatype) {
-    return datatype == null ? "" : datatype.trim().toLowerCase(Locale.ROOT);
   }
 
   /**
@@ -3758,16 +4307,6 @@ public class BibliographyEditorShell {
    */
   private void setSelectedEntryId(String mediaTypeBibName, Integer entryId) {
     updateEntryIdMap(selectedEntryIdsByMediaType, normalizeMediaTypeBibName(mediaTypeBibName), entryId);
-  }
-
-  /**
-   * Prüft, ob der automatische Titelfill für einen technischen Medientyp gesperrt ist.
-   *
-   * @param mediaTypeBibName technischer Medientypname
-   * @return {@code true}, wenn kein weiterer Autofill erfolgen soll
-   */
-  private boolean isAutoFillLocked(String mediaTypeBibName) {
-    return Boolean.TRUE.equals(autoFillLockedByMediaType.get(normalizeMediaTypeBibName(mediaTypeBibName)));
   }
 
   /**

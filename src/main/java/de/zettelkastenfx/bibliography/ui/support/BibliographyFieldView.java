@@ -9,7 +9,6 @@ import javafx.scene.control.MenuItem;
 import javafx.scene.control.OverrunStyle;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.StackPane;
-import lombok.Getter;
 
 import java.util.List;
 
@@ -21,10 +20,10 @@ import java.util.List;
 public class BibliographyFieldView extends StackPane {
 
   /** Eingabefeld des Views. */
-  @Getter private final TextField editor = new TextField();
+  private final TextField editor = new TextField();
 
   /** Lesemodus-Label des Views. */
-  @Getter private final Label label = new Label();
+  private final Label label = new Label();
 
   /** Kontextmenü für Vorschläge. */
   public final ContextMenu suggestionMenu = new ContextMenu();
@@ -61,6 +60,24 @@ public class BibliographyFieldView extends StackPane {
     });
 
     getChildren().addAll(editor, label);
+  }
+
+  /**
+   * Liefert das Eingabefeld.
+   *
+   * @return Textfeld des Bearbeitungsmodus
+   */
+  public TextField getEditor() {
+    return editor;
+  }
+
+  /**
+   * Liefert das Lesemodus-Label.
+   *
+   * @return Label des Lesemodus
+   */
+  public Label getLabel() {
+    return label;
   }
 
   /**

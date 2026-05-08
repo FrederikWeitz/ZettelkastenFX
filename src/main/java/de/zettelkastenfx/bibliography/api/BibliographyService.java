@@ -458,7 +458,42 @@ public interface BibliographyService {
                                                     int limit);
 
   /**
-   * Löscht einen bibliographischen Eintrag vollständig aus dem Speicher.
+   * Sucht Bibliographie-Eintraege ueber Autorenangaben.
+   * Mehrere Autoren werden als UND-Filter interpretiert.
+   *
+   * @param mediaTypeBibName technischer Medientypname oder leer fuer alle
+   * @param authors Autorenfilter
+   * @param limit maximale Trefferzahl
+   * @return passende bibliographische Referenzen
+   */
+  List<BibliographyReference> searchMediaReferencesByAuthors(String mediaTypeBibName,
+                                                             List<Author> authors,
+                                                             int limit);
+
+  /**
+   * Sucht Bibliographie-IDs ueber Autorenangaben ohne Referenzobjekte zu laden.
+   *
+   * @param mediaTypeBibName technischer Medientypname oder leer fuer alle
+   * @param authors Autorenfilter
+   * @param limit maximale Trefferzahl
+   * @return passende Bibliographie-IDs
+   */
+  List<Integer> searchMediaEntryIdsByAuthors(String mediaTypeBibName,
+                                             List<Author> authors,
+                                             int limit);
+
+  /**
+   * Erweitert Medien-IDs um direkt verknuepfbare Eintraege.
+   * Direkt verknuepfbare Medien bleiben erhalten; Container-Medien werden ueber
+   * Related-Felder auf enthaltene direkt verknuepfbare Medien abgebildet.
+   *
+   * @param entryIds Medien-IDs
+   * @return direkt mit Zetteln verknuepfbare Medien-IDs
+   */
+  List<Integer> resolveDirectEntryIds(List<Integer> entryIds);
+
+  /**
+   * Loescht einen bibliographischen Eintrag vollstaendig aus dem Speicher.
    *
    * @param entryId Datenbank-ID des Eintrags
    */

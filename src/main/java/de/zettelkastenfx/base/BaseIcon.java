@@ -54,6 +54,8 @@ public enum BaseIcon {
 
   DELETE("delete", "Löschen"),
 
+  DISKETTE("diskette", "Speichern"),
+
   DOCUMENT_PAGE_PREVIOUS("document_page_previous", "Zurück"),
   DOCUMENT_PAGE_NEXT("document_page_next", "Vor"),
 

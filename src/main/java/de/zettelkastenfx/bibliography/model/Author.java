@@ -1,17 +1,86 @@
 package de.zettelkastenfx.bibliography.model;
 
-import lombok.Getter;
-import lombok.Setter;
-
+/**
+ * Beschreibt eine Person innerhalb bibliographischer Angaben.
+ */
 public class Author {
 
-  @Setter @Getter private Integer id;       // DB-ID (kommt in Schritt 2)
-  @Getter private String firstName; // Vorname
-  @Getter private String lastName; // Nachname
-  @Getter @Setter int position; // intern für die Reihenfolge, die der Nutzer dann sieht, damit diese gewählt werden kann, und gleich bleibt
+  private Integer id;
+  private String firstName;
+  private String lastName;
+  int position;
 
-  public void setFirstName(String firstName) { this.firstName = firstName == null ? "" : firstName.trim(); }
-  public void setLastName(String lastName) { this.lastName = lastName == null ? "" : lastName.trim(); }
+  /**
+   * Liefert die Datenbank-ID des Autors.
+   *
+   * @return Datenbank-ID oder {@code null}
+   */
+  public Integer getId() {
+    return id;
+  }
+
+  /**
+   * Setzt die Datenbank-ID des Autors.
+   *
+   * @param id Datenbank-ID oder {@code null}
+   */
+  public void setId(Integer id) {
+    this.id = id;
+  }
+
+  /**
+   * Liefert den Vornamen.
+   *
+   * @return Vorname
+   */
+  public String getFirstName() {
+    return firstName;
+  }
+
+  /**
+   * Setzt den Vornamen.
+   *
+   * @param firstName Vorname
+   */
+  public void setFirstName(String firstName) {
+    this.firstName = firstName == null ? "" : firstName.trim();
+  }
+
+  /**
+   * Liefert den Nachnamen.
+   *
+   * @return Nachname
+   */
+  public String getLastName() {
+    return lastName;
+  }
+
+  /**
+   * Setzt den Nachnamen.
+   *
+   * @param lastName Nachname
+   */
+  public void setLastName(String lastName) {
+    this.lastName = lastName == null ? "" : lastName.trim();
+  }
+
+  /**
+   * Liefert die Position innerhalb einer Personenliste.
+   *
+   * @return Position
+   */
+  public int getPosition() {
+    return position;
+  }
+
+  /**
+   * Setzt die Position innerhalb einer Personenliste.
+   *
+   * @param position Position
+   */
+  public void setPosition(int position) {
+    this.position = position;
+  }
 
   @Override
   public String toString() {

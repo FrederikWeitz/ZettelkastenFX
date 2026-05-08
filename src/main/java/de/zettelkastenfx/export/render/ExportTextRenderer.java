@@ -25,7 +25,9 @@ public class ExportTextRenderer {
         out.append(System.lineSeparator());
       }
     }
-    if (document.selection().bibliographyPlacement() == BibliographyPlacement.END_OF_DOCUMENT
+    if ((document.selection().bibliographyPlacement() == BibliographyPlacement.END_OF_DOCUMENT
+        || document.selection().bibliographyPlacement() == BibliographyPlacement.END_OF_LAST_DOCUMENT
+        || document.selection().bibliographyPlacement() == BibliographyPlacement.SEPARATE_FILE)
         && !document.endBibliography().isEmpty()) {
       out.append(System.lineSeparator()).append("Bibliographische Angaben").append(System.lineSeparator());
       for (ExportBibliographyEntry entry : document.endBibliography()) {

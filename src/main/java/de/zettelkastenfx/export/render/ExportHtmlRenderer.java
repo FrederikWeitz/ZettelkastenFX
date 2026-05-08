@@ -5,6 +5,10 @@ import de.zettelkastenfx.export.model.ExportBibliographyEntry;
 import de.zettelkastenfx.export.model.ExportBibliographyField;
 import de.zettelkastenfx.export.model.ExportDocument;
 import de.zettelkastenfx.export.model.ExportNote;
+import de.zettelkastenfx.export.model.ExportParagraph;
+import de.zettelkastenfx.export.model.ExportParagraphStyle;
+import de.zettelkastenfx.export.model.ExportTextRun;
+import de.zettelkastenfx.export.model.ExportTextStyle;
 
 /**
  * Rendert das neutrale Exportmodell nach XHTML.
@@ -42,7 +46,9 @@ public class ExportHtmlRenderer {
       }
     }
 
-    if (document.selection().bibliographyPlacement() == BibliographyPlacement.END_OF_DOCUMENT
+    if ((document.selection().bibliographyPlacement() == BibliographyPlacement.END_OF_DOCUMENT
+        || document.selection().bibliographyPlacement() == BibliographyPlacement.END_OF_LAST_DOCUMENT
+        || document.selection().bibliographyPlacement() == BibliographyPlacement.SEPARATE_FILE)
         && !document.endBibliography().isEmpty()) {
       html.append("<h3>Bibliographische Angaben</h3>");
       for (ExportBibliographyEntry entry : document.endBibliography()) {
@@ -68,8 +74,15 @@ public class ExportHtmlRenderer {
       html.append("<h3>").append(escape(header)).append("</h3>");
     }
     if (document.selection().includeBody() && !note.bodyText().isBlank()) {
-      for (String paragraph : note.bodyText().split("\\R", -1)) {
-        html.append("<p>").append(escape(paragraph).replace("  ", " &#160;")).append("</p>");
+      for (ExportParagraph paragraph : note.bodyParagraphs()) {
+        html.append("<p");
+        String paragraphCss = paragraphCss(paragraph.style());
+        if (!paragraphCss.isBlank()) {
+          html.append(" style=\"").append(paragraphCss).append("\"");
+        }
+        html.append(">");
+        renderRuns(html, paragraph);
+        html.append("</p>");
       }
     }
     if (document.selection().includeKeywords() && !note.keywords().isEmpty()) {
@@ -98,6 +111,97 @@ public class ExportHtmlRenderer {
           .append(escape(field.value()))
           .append("</p>");
     }
+  }
+
+  /**
+   * Rendert formatierte Textbereiche in den HTML-Puffer.
+   *
+   * @param html Zielpuffer
+   * @param paragraph Exportabsatz
+   */
+  private void renderRuns(StringBuilder html, ExportParagraph paragraph) {
+    for (ExportTextRun run : paragraph.runs()) {
+      ExportTextStyle style = run.style();
+      String css = inlineCss(style);
+      if (css.isBlank()) {
+        html.append(escape(run.text()).replace("  ", " &#160;"));
+      } else {
+        html.append("<span style=\"")
+            .append(css)
+            .append("\">")
+            .append(escape(run.text()).replace("  ", " &#160;"))
+            .append("</span>");
+      }
+    }
+  }
+
+  /**
+   * Baut CSS fuer exportrelevante Inline-Formatierungen.
+   *
+   * @param style Exportstil
+   * @return CSS-Deklarationen
+   */
+  private String inlineCss(ExportTextStyle style) {
+    StringBuilder css = new StringBuilder();
+    if (style.bold()) {
+      css.append("font-weight:bold;");
+    }
+    if (style.italic()) {
+      css.append("font-style:italic;");
+    }
+    if (style.underline() || style.strikethrough()) {
+      css.append("text-decoration:");
+      if (style.underline()) {
+        css.append(" underline");
+      }
+      if (style.strikethrough()) {
+        css.append(" line-through");
+      }
+      css.append(";");
+    }
+    if (style.fontFamily() != null) {
+      css.append("font-family:'").append(escapeCss(style.fontFamily())).append("';");
+    }
+    if (style.textColor() != null) {
+      css.append("color:").append(style.textColor()).append(";");
+    }
+    if (style.backgroundColor() != null) {
+      css.append("background-color:").append(style.backgroundColor()).append(";");
+    }
+    return css.toString();
+  }
+
+  /**
+   * Baut CSS fuer exportrelevante Absatzformatierungen.
+   *
+   * @param style Absatzstil
+   * @return CSS-Deklarationen
+   */
+  private String paragraphCss(ExportParagraphStyle style) {
+    StringBuilder css = new StringBuilder();
+    if (style.alignment() != null) {
+      css.append("text-align:").append(style.alignment()).append(";");
+    }
+    if (style.indentPixels() > 0) {
+      css.append("padding-left:").append(style.indentPixels()).append("px;");
+    }
+    if (style.fontSizePixels() != null) {
+      css.append("font-size:").append(style.fontSizePixels()).append("px;");
+    }
+    if (style.bold()) {
+      css.append("font-weight:bold;");
+    }
+    return css.toString();
+  }
+
+  /**
+   * Maskiert Text fuer CSS-Stringwerte.
+   *
+   * @param value Rohwert
+   * @return CSS-maskierter Wert
+   */
+  private String escapeCss(String value) {
+    return value == null ? "" : value.replace("\\", "\\\\").replace("'", "\\'");
   }
 
   /**

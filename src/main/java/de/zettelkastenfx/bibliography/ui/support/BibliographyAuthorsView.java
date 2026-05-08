@@ -343,7 +343,7 @@ public class BibliographyAuthorsView extends StackPane {
   /**
    * Einzelne Autorenzeile der Autorenansicht.
    */
-  public static final class AuthorRow extends GridPane {
+  public final class AuthorRow extends GridPane {
 
     final Label posLabel = new Label();
     final TextField lastNameField = new TextField();

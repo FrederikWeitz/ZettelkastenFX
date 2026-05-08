@@ -845,6 +845,39 @@ public class BibliographyServiceImpl implements BibliographyService {
   }
 
   @Override
+  public List<BibliographyReference> searchMediaReferencesByAuthors(String mediaTypeBibName,
+                                                                    List<Author> authors,
+                                                                    int limit) {
+    return searchMediaEntryIdsByAuthors(mediaTypeBibName, authors, limit).stream()
+               .map(this::loadReference)
+               .flatMap(Optional::stream)
+               .toList();
+  }
+
+  @Override
+  public List<Integer> searchMediaEntryIdsByAuthors(String mediaTypeBibName,
+                                                    List<Author> authors,
+                                                    int limit) {
+    String normalizedBibName = mediaTypeBibName == null ? "" : mediaTypeBibName.trim();
+
+    Integer mediaTypeId = null;
+    if (!normalizedBibName.isBlank()) {
+      Optional<MediaTypeDefinition> mediaType = metadataRepository.loadMediaTypeByBibName(normalizedBibName);
+      if (mediaType.isEmpty()) {
+        return List.of();
+      }
+      mediaTypeId = mediaType.get().id();
+    }
+
+    return dynamicRepository.searchEntryIdsByAuthors(mediaTypeId, authors, limit);
+  }
+
+  @Override
+  public List<Integer> resolveDirectEntryIds(List<Integer> entryIds) {
+    return dynamicRepository.resolveDirectEntryIds(entryIds);
+  }
+
+  @Override
   public void deleteEntry(int entryId) {
     dynamicRepository.delete(entryId);
   }

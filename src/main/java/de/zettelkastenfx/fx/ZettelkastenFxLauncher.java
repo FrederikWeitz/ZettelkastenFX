@@ -25,7 +25,7 @@ public class ZettelkastenFxLauncher extends Application {
   @Override
   public void start(Stage primaryStage) {
     DataSource ds = DbBootstrap.initAndMigrate();
-    PersistenceUtil.setDatasource(ds);
+    PersistenceUtil.setDataSource(ds);
 
     BrowserConnection.setAppInstance(this);
 

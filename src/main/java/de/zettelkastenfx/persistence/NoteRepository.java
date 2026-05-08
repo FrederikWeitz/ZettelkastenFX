@@ -119,6 +119,78 @@ public class NoteRepository {
   /**
    * Insert wenn id <= 0, sonst Update. Gibt Note-ID zurück.
    */
+  /**
+   * Laedt alle Zettel in stabiler Reihenfolge fuer modulare Exportpfade.
+   *
+   * @return alle Zettel, aufsteigend nach Zettelnummer sortiert
+   */
+  public List<Note> loadAllForExport() {
+    String sql = """
+      SELECT id
+      FROM notes
+      ORDER BY id ASC
+      """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql);
+         ResultSet rs = ps.executeQuery()) {
+      List<Note> notes = new ArrayList<>();
+      while (rs.next()) {
+        load(rs.getInt("id")).ifPresent(notes::add);
+      }
+      return notes;
+    } catch (SQLException e) {
+      throw new IllegalStateException("loadAllForExport fehlgeschlagen", e);
+    }
+  }
+
+  /**
+   * Laedt alle Zettelnummern in stabiler Exportreihenfolge ohne Zettelinhalte.
+   *
+   * @return alle Zettelnummern, aufsteigend sortiert
+   */
+  public List<Integer> loadAllNoteIdsForExport() {
+    String sql = """
+      SELECT id
+      FROM notes
+      ORDER BY id ASC
+      """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql);
+         ResultSet rs = ps.executeQuery()) {
+      List<Integer> noteIds = new ArrayList<>();
+      while (rs.next()) {
+        noteIds.add(rs.getInt("id"));
+      }
+      return noteIds;
+    } catch (SQLException e) {
+      throw new IllegalStateException("loadAllNoteIdsForExport fehlgeschlagen", e);
+    }
+  }
+
+  /**
+   * Laedt eine konkrete Zettelauswahl in der uebergebenen Reihenfolge.
+   * Nicht vorhandene IDs werden ignoriert, damit Aufrufer eine bestehende
+   * UI-Auswahl ohne eigene Vorfilterung uebergeben koennen.
+   *
+   * @param noteIds gewuenschte Zettelnummern
+   * @return gefundene Zettel in Auswahlreihenfolge
+   */
+  public List<Note> loadForExport(Collection<Integer> noteIds) {
+    if (noteIds == null || noteIds.isEmpty()) {
+      return loadAllForExport();
+    }
+
+    List<Note> notes = new ArrayList<>();
+    for (Integer noteId : noteIds) {
+      if (noteId != null && noteId > 0) {
+        load(noteId).ifPresent(notes::add);
+      }
+    }
+    return notes;
+  }
+
   public int save(Note note) {
     if (note == null) {
       throw new IllegalArgumentException("save: note darf nicht null sein.");
@@ -686,6 +758,65 @@ public class NoteRepository {
       return out;
     } catch (SQLException e) {
       throw new IllegalStateException("loadBibliographyUsageRows fehlgeschlagen", e);
+    }
+  }
+
+  /**
+   * Laedt Zettelnummern fuer eine Menge bibliographischer Eintraege.
+   * Die Abfrage bleibt bewusst schlank, damit Zaehl- und Auswahlvorschauen im
+   * Exportfenster nicht komplette Zettel inklusive Inhalt laden muessen.
+   *
+   * @param entryIds Bibliographie-IDs
+   * @return passende Zettelnummern in Exportreihenfolge
+   */
+  public List<Integer> loadNoteIdsForBibliographyEntries(Collection<Integer> entryIds) {
+    if (entryIds == null || entryIds.isEmpty()) {
+      return List.of();
+    }
+
+    List<Integer> normalized = entryIds.stream()
+                                   .filter(Objects::nonNull)
+                                   .filter(id -> id > 0)
+                                   .distinct()
+                                   .toList();
+    if (normalized.isEmpty()) {
+      return List.of();
+    }
+
+    LinkedHashSet<Integer> noteIds = new LinkedHashSet<>();
+    int chunkSize = 800;
+    for (int start = 0; start < normalized.size(); start += chunkSize) {
+      int end = Math.min(start + chunkSize, normalized.size());
+      noteIds.addAll(loadNoteIdsForBibliographyEntryChunk(normalized.subList(start, end)));
+    }
+    return new ArrayList<>(noteIds);
+  }
+
+  private List<Integer> loadNoteIdsForBibliographyEntryChunk(List<Integer> entryIds) {
+    String placeholders = String.join(", ", Collections.nCopies(entryIds.size(), "?"));
+    String sql = """
+        SELECT id
+        FROM notes
+        WHERE bibliography_ref_id IN (""" + placeholders + """
+        )
+        ORDER BY id ASC
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql)) {
+      for (int i = 0; i < entryIds.size(); i++) {
+        ps.setInt(i + 1, entryIds.get(i));
+      }
+
+      try (ResultSet rs = ps.executeQuery()) {
+        List<Integer> noteIds = new ArrayList<>();
+        while (rs.next()) {
+          noteIds.add(rs.getInt("id"));
+        }
+        return noteIds;
+      }
+    } catch (SQLException e) {
+      throw new IllegalStateException("loadNoteIdsForBibliographyEntries fehlgeschlagen", e);
     }
   }
 

@@ -10,7 +10,6 @@ import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
 import javafx.stage.Popup;
-import lombok.Getter;
 import org.fxmisc.flowless.VirtualizedScrollPane;
 import org.fxmisc.richtext.InlineCssTextArea;
 
@@ -21,25 +20,19 @@ import java.util.function.IntConsumer;
 
 public class NoteEditorPane extends VBox {
 
-  @Getter
   private final StackPane titleStack;
-  @Getter
   private final TextArea titleEditorArea;
 
-  @Getter
   private final InlineCssTextArea bodyArea;
   private final VirtualizedScrollPane<InlineCssTextArea> bodyScrollPane;
 
-  @Getter
   private final ContextMenu formattingContextMenu;
   private final HBox formattingBarContainer;
 
-  @Getter
   private final StackPane bodyContainer;
   private final NoteFormattingMenuContent formattingMenuContent;
 
   // HeaderBar
-  @Getter
   private final BorderPane headerBar;
 
   private final Label lblHeaderNoteNo;
@@ -58,7 +51,6 @@ public class NoteEditorPane extends VBox {
   private List<String> infoProjects = List.of();
 
   // Fenster für die bibliographischen Angaben
-  @Getter
   private final VBox bibliographyHost;
 
   public NoteEditorPane() {
@@ -181,6 +173,69 @@ public class NoteEditorPane extends VBox {
     formattingContextMenu.setOnShowing(e -> formattingMenuContent.syncFromSelection());
 
     getChildren().addAll(headerBar, titleStack, bodyContainer, bibliographyHost);
+  }
+
+  /**
+   * Liefert den Container des Titelfeldes.
+   *
+   * @return Titel-Stack
+   */
+  public StackPane getTitleStack() {
+    return titleStack;
+  }
+
+  /**
+   * Liefert das Titelfeld.
+   *
+   * @return Titel-Editor
+   */
+  public TextArea getTitleEditorArea() {
+    return titleEditorArea;
+  }
+
+  /**
+   * Liefert den Rich-Text-Inhaltsbereich.
+   *
+   * @return Body-Editor
+   */
+  public InlineCssTextArea getBodyArea() {
+    return bodyArea;
+  }
+
+  /**
+   * Liefert das Kontextmenü für Formatierungen.
+   *
+   * @return Formatierungsmenü
+   */
+  public ContextMenu getFormattingContextMenu() {
+    return formattingContextMenu;
+  }
+
+  /**
+   * Liefert den Container des Body-Bereichs.
+   *
+   * @return Body-Container
+   */
+  public StackPane getBodyContainer() {
+    return bodyContainer;
+  }
+
+  /**
+   * Liefert die Kopfzeile des Editors.
+   *
+   * @return Header-Bar
+   */
+  public BorderPane getHeaderBar() {
+    return headerBar;
+  }
+
+  /**
+   * Liefert den Host für bibliographische Angaben.
+   *
+   * @return Bibliographie-Host
+   */
+  public VBox getBibliographyHost() {
+    return bibliographyHost;
   }
 
   public void setHeaderNoteNumber(Integer noteId) {
