@@ -73,8 +73,16 @@ public class ExportHtmlRenderer {
     if (!header.isBlank()) {
       html.append("<h3>").append(escape(header)).append("</h3>");
     }
-    if (document.selection().includeBody() && !note.bodyText().isBlank()) {
+    if (document.selection().includeBody() && !note.bodyParagraphs().isEmpty()) {
       for (ExportParagraph paragraph : note.bodyParagraphs()) {
+        if (paragraph.isImage()) {
+          renderImageParagraph(html, paragraph);
+          continue;
+        }
+        if (paragraph.isTable()) {
+          renderTable(html, paragraph);
+          continue;
+        }
         html.append("<p");
         String paragraphCss = paragraphCss(paragraph.style());
         if (!paragraphCss.isBlank()) {
@@ -95,6 +103,44 @@ public class ExportHtmlRenderer {
         && note.bibliographyEntry() != null) {
       renderBibliography(html, note.bibliographyEntry());
     }
+  }
+
+  /**
+   * Rendert einen Bildabsatz in HTML.
+   *
+   * @param html Zielpuffer
+   * @param paragraph Bildabsatz
+   */
+  private void renderImageParagraph(StringBuilder html, ExportParagraph paragraph) {
+    html.append("<p");
+    String paragraphCss = paragraphCss(paragraph.style());
+    if (!paragraphCss.isBlank()) {
+      html.append(" style=\"").append(paragraphCss).append("\"");
+    }
+    html.append("><img src=\"")
+        .append(escape(paragraph.imagePath().toUri().toString()))
+        .append("\" alt=\"\" style=\"max-width:100%;height:auto;\" /></p>");
+  }
+
+  /**
+   * Rendert einen Tabellenabsatz in HTML.
+   *
+   * @param html Zielpuffer
+   * @param paragraph Tabellenabsatz
+   */
+  private void renderTable(StringBuilder html, ExportParagraph paragraph) {
+    html.append("<table style=\"border-collapse:collapse;width:100%;margin:0 0 0.7em 0;\">");
+    for (int row = 0; row < paragraph.table().rows(); row++) {
+      html.append("<tr>");
+      for (int column = 0; column < paragraph.table().columns(); column++) {
+        String cellText = paragraph.table().cell(row, column);
+        html.append("<td style=\"border:1px solid #000;padding:1px;\">")
+            .append(cellText == null || cellText.isBlank() ? "&#160;" : escape(cellText).replace("\n", "<br />"))
+            .append("</td>");
+      }
+      html.append("</tr>");
+    }
+    html.append("</table>");
   }
 
   /**
@@ -184,6 +230,9 @@ public class ExportHtmlRenderer {
     }
     if (style.indentPixels() > 0) {
       css.append("padding-left:").append(style.indentPixels()).append("px;");
+    }
+    if (style.spacingBeforePixels() > 0) {
+      css.append("padding-top:").append(style.spacingBeforePixels()).append("px;");
     }
     if (style.fontSizePixels() != null) {
       css.append("font-size:").append(style.fontSizePixels()).append("px;");

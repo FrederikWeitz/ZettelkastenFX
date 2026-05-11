@@ -12,6 +12,7 @@ import de.zettelkastenfx.export.ui.ManualExportDialog;
 import de.zettelkastenfx.notes.controller.ZettelWindowView.KeyTableRow;
 import de.zettelkastenfx.notes.editor.NoteEditorPane;
 import de.zettelkastenfx.notes.editor.format.InlineCssStyleUtil;
+import de.zettelkastenfx.notes.keywords.KeywordsTablePane;
 import de.zettelkastenfx.notes.model.LinkType;
 import de.zettelkastenfx.notes.model.Note;
 import de.zettelkastenfx.notes.model.NoteLink;
@@ -36,16 +37,17 @@ import javafx.scene.layout.*;
 import javafx.stage.Popup;
 import javafx.stage.Stage;
 import javafx.util.Duration;
-import org.fxmisc.richtext.InlineCssTextArea;
 
 import java.awt.*;
 import java.net.URI;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class ZettelWindowController {
+
+  private static final int MEDIA_REFERENCE_SEARCH_LIMIT = 500;
 
   private final Stage stage;
   private final ZettelWindowView view;
@@ -62,6 +64,7 @@ public class ZettelWindowController {
 
   // BottomToolbar / Zettelwechsel
   private boolean updatingNoteIdField;
+  private boolean openingNoteFromLockedList;
 
   // Maximal zulässige Zettel-ID (wird von uns gepflegt; später ggf. aus DB)
   private int maxNoteId = 0;
@@ -122,9 +125,32 @@ public class ZettelWindowController {
   private final Map<String, MediaTypeDefinition> bookMediaTypesByNormalizedText = new LinkedHashMap<>();
   private boolean suppressBookMediaTypeCallbacks;
   private boolean suppressBookAuthorCallbacks;
+  private boolean keyContextFilterUsesAiContext;
   private Integer selectedBookEntryId;
+  private BibliographyEditorShell activeEmbeddedBibliographyShell;
   private final PauseTransition bookRefreshDebounce = new PauseTransition(Duration.millis(140));
+  private final PauseTransition listRefreshDebounce = new PauseTransition(Duration.millis(120));
+  private final ExecutorService bookRefreshExecutor = Executors.newSingleThreadExecutor(this::createBookRefreshThread);
+  private long bookServiceRefreshRequestId;
   private record MagnifyBranchReference(NoteReferenceInfo reference, boolean incoming) {}
+  private record BookAuthorFilter(String lastName, String firstName) {}
+  private record BookRefreshRequest(
+      long requestId,
+      ZettelWindowView.BookMediaTableSortState mediaSortState,
+      ZettelWindowView.BookNoteTableSortState noteSortState,
+      String mediaTypeBibName,
+      String titleQuery,
+      boolean resolvedMediaType,
+      boolean notesVisible,
+      Integer selectedEntryId,
+      ZettelWindowView.BookAuthorMode authorMode,
+      List<BookAuthorFilter> authorFilters
+  ) {}
+  private record BookRefreshResult(
+      List<ZettelWindowView.BookMediaRow> mediaRows,
+      List<ZettelWindowView.BookNoteRow> noteRows,
+      String errorMessage
+  ) {}
 
   private static final class ListNoteData {
     private final int noteId;
@@ -159,7 +185,8 @@ public class ZettelWindowController {
         PersistenceUtil.getDataSource()
     );
 
-    bookRefreshDebounce.setOnFinished(event -> refreshBookWindow());
+    bookRefreshDebounce.setOnFinished(_ -> requestAsyncBookRefresh());
+    listRefreshDebounce.setOnFinished(_ -> refreshListWindow());
     rebuildBookMediaTypeCache();
 
     openInitialNote();
@@ -206,19 +233,19 @@ public class ZettelWindowController {
     wireBookEvents();
 
     // Dropdown für Folgezettel
-    view.getMiFollowing().setOnAction(e -> createTypedFollowUpNote(LinkType.SERIE));
-    view.getMiIdea().setOnAction(e -> createTypedFollowUpNote(LinkType.IDEE));
-    view.getMiQuestion().setOnAction(e -> createTypedFollowUpNote(LinkType.FRAGE));
-    view.getMiCritique().setOnAction(e -> createTypedFollowUpNote(LinkType.KRITIK));
-    view.getMiTask().setOnAction(e -> createTypedFollowUpNote(LinkType.AUFGABE));
+    view.getMiFollowing().setOnAction(_ -> createTypedFollowUpNote(LinkType.SERIE));
+    view.getMiIdea().setOnAction(_ -> createTypedFollowUpNote(LinkType.IDEE));
+    view.getMiQuestion().setOnAction(_ -> createTypedFollowUpNote(LinkType.FRAGE));
+    view.getMiCritique().setOnAction(_ -> createTypedFollowUpNote(LinkType.KRITIK));
+    view.getMiTask().setOnAction(_ -> createTypedFollowUpNote(LinkType.AUFGABE));
 
     // Menü (oben): "Datei -> Schließen" schließt nur dieses Fenster
-    view.getMenuFile().getItems().getLast().setOnAction(event -> stage.close());
+    view.getMenuFile().getItems().getLast().setOnAction(_ -> stage.close());
 
     // Menü (oben): Exportfenster
     view.getMenuFile().getItems().getFirst().setText("Export");
-    view.getMenuFile().getItems().getFirst().setOnAction(event -> openManualExportDialog());
-    view.getMenuFile().getItems().getLast().setOnAction(event -> stage.close());
+    view.getMenuFile().getItems().getFirst().setOnAction(_ -> openManualExportDialog());
+    view.getMenuFile().getItems().getLast().setOnAction(_ -> stage.close());
 
     view.getKeywordsTablePane().setOnKeywordsCommitted(() -> {
       saveCurrentIfValid();
@@ -232,15 +259,36 @@ public class ZettelWindowController {
       view.clearKeyActionStatus();
     });
     view.getKeywordsTablePane().setKeywordSuggestionProvider(this::loadKeywordSuggestionsForInlineEdit);
+    view.setKeyAltClickHandler(this::addKeywordToCurrentNote);
 
     wireBottomToolbar();
     wireHeaderBarNavigation();
     initLinkEditPopup();
 
-    stage.setOnCloseRequest(e -> {
+    stage.setOnCloseRequest(_ -> {
       linkEditPopup.hide();
+      shutdownBookRefreshExecutor();
       saveOrDiscardCurrentNoteBeforeLeave();
     });
+  }
+
+  /**
+   * Erzeugt einen Daemon-Thread fuer die asynchrone BOOK-Aktualisierung.
+   *
+   * @param task auszufuehrende Aufgabe
+   * @return konfigurierte Thread-Instanz
+   */
+  private Thread createBookRefreshThread(Runnable task) {
+    Thread thread = new Thread(task, "zettelkasten-book-refresh");
+    thread.setDaemon(true);
+    return thread;
+  }
+
+  /**
+   * Beendet den Hintergrundexecutor fuer den BOOK-Refresh.
+   */
+  private void shutdownBookRefreshExecutor() {
+    bookRefreshExecutor.shutdownNow();
   }
 
   /**
@@ -254,62 +302,72 @@ public class ZettelWindowController {
    * Verdrahtet die Bedienelemente des integrierten MAGNIFY_LINK-Fensters.
    */
   private void wireMagnifyLinkEvents() {
-    view.getMagnifyLinkNoteIdField().setOnAction(e -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkNoteIdField().setOnAction(_ -> refreshMagnifyLinkWindow());
 
-    view.getMagnifyLinkNoteIdField().focusedProperty().addListener((obs, oldValue, newValue) -> {
+    view.getMagnifyLinkNoteIdField().focusedProperty().addListener((_, oldValue, newValue) -> {
       if (oldValue && !newValue) {
         refreshMagnifyLinkWindow();
       }
     });
 
-    view.getMagnifyLinkIncomingDepthSlider().valueProperty().addListener((obs, oldValue, newValue) -> refreshMagnifyLinkWindow());
-    view.getMagnifyLinkOutgoingDepthSlider().valueProperty().addListener((obs, oldValue, newValue) -> refreshMagnifyLinkWindow());
-    view.getMagnifyLinkDirectedTraversalButton().setOnAction(e -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkIncomingDepthSlider().valueProperty().addListener((_, _, _) -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkOutgoingDepthSlider().valueProperty().addListener((_, _, _) -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkDirectedTraversalButton().setOnAction(_ -> refreshMagnifyLinkWindow());
 
-    view.getMagnifyLinkSerieButton().setOnAction(e -> refreshMagnifyLinkWindow());
-    view.getMagnifyLinkIdeaButton().setOnAction(e -> refreshMagnifyLinkWindow());
-    view.getMagnifyLinkQuestionButton().setOnAction(e -> refreshMagnifyLinkWindow());
-    view.getMagnifyLinkCritiqueButton().setOnAction(e -> refreshMagnifyLinkWindow());
-    view.getMagnifyLinkTaskButton().setOnAction(e -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkSerieButton().setOnAction(_ -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkIdeaButton().setOnAction(_ -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkQuestionButton().setOnAction(_ -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkCritiqueButton().setOnAction(_ -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkTaskButton().setOnAction(_ -> refreshMagnifyLinkWindow());
 
-    view.getMagnifyLinkFilterField().textProperty().addListener((obs, oldValue, newValue) -> refreshMagnifyLinkWindow());
+    view.getMagnifyLinkFilterField().textProperty().addListener((_, _, _) -> refreshMagnifyLinkWindow());
   }
 
   /**
    * Verdrahtet die Bedienelemente des LIST-Fensters.
    */
   private void wireListEvents() {
-    view.getListPageKeyButton().setOnAction(e -> {
+    view.getListPageKeyButton().setOnAction(_ -> {
       view.setListMode(ZettelWindowView.ListMode.PAGE_KEY);
       refreshListWindow();
     });
 
-    view.getListDepthSlider().valueProperty().addListener((obs, oldValue, newValue) -> {
+    view.getListDepthSlider().valueProperty().addListener((_, _, _) -> {
       view.setListMode(ZettelWindowView.ListMode.PAGE_KEY);
       refreshListWindow();
     });
 
-    view.getListFilterField().focusedProperty().addListener((obs, oldValue, newValue) -> {
+    view.getListFilterField().focusedProperty().addListener((_, _, newValue) -> {
       if (newValue) {
         view.setListMode(ZettelWindowView.ListMode.FILTER);
         refreshListWindow();
       }
     });
 
-    view.getListFilterField().textProperty().addListener((obs, oldValue, newValue) -> {
+    view.getListFilterField().textProperty().addListener((_, _, _) -> {
       if (view.getActiveServiceAreaMode() == ZettelWindowView.ServiceAreaMode.LIST) {
-        refreshListWindow();
+        requestListRefresh();
       }
     });
 
-    view.getListFullTextToggleButton().setOnAction(e -> {
+    view.getListFullTextToggleButton().setOnAction(_ -> {
       view.setListMode(ZettelWindowView.ListMode.FILTER);
       refreshListWindow();
     });
 
-    view.getListFilterTable().setRowFactory(table -> {
+    view.getListLockToggleButton().setOnAction(_ -> {
+      view.updateListLockIcon();
+      if (view.getListLockToggleButton().isSelected()) {
+        listRefreshDebounce.stop();
+      } else {
+        refreshListWindow(true);
+        view.scrollListToTop();
+      }
+    });
+
+    view.getListFilterTable().setRowFactory(_ -> {
       TableRow<ZettelWindowView.ListFilterRow> row = new TableRow<>();
-      row.itemProperty().addListener((obs, oldItem, newItem) -> {
+      row.itemProperty().addListener((_, _, newItem) -> {
         row.getStyleClass().remove("zettel-list-filter-body-match-row");
         if (newItem != null && newItem.isBodyMatchOnly()) {
           row.getStyleClass().add("zettel-list-filter-body-match-row");
@@ -317,7 +375,7 @@ public class ZettelWindowController {
       });
       row.setOnMouseClicked(event -> {
         if (event.getButton() == MouseButton.PRIMARY && !row.isEmpty()) {
-          openNoteViaToolbar(row.getItem().getNoteId());
+          openNoteFromList(row.getItem().getNoteId());
         }
       });
       return row;
@@ -333,27 +391,27 @@ public class ZettelWindowController {
    * - Zettelsprung aus der unteren Tabelle
    */
   private void wireBookEvents() {
-    view.getBookShowNotesToggleButton().selectedProperty().addListener((obs, oldValue, selected) -> {
+    view.getBookShowNotesToggleButton().selectedProperty().addListener((_, _, selected) -> {
       view.setBookNotesVisible(selected);
-      refreshBookWindow();
+      requestAsyncBookRefresh();
     });
 
-    view.getBookShowMediaColumnToggleButton().setOnAction(e -> refreshBookWindow());
+    view.getBookShowMediaColumnToggleButton().setOnAction(_ -> requestAsyncBookRefresh());
 
-    view.getBookAuthorModeButton().setOnAction(e -> {
+    view.getBookAuthorModeButton().setOnAction(_ -> {
       cycleBookAuthorMode();
       wireBookAuthorRowEvents();
-      refreshBookWindow();
+      requestAsyncBookRefresh();
     });
 
-    view.getBookMediaTypeField().textProperty().addListener((obs, oldValue, newValue) -> {
+    view.getBookMediaTypeField().textProperty().addListener((_, _, newValue) -> {
       if (suppressBookMediaTypeCallbacks) {
         return;
       }
       handleBookMediaTypeTextChanged(newValue);
     });
 
-    view.getBookMediaTypeField().focusedProperty().addListener((obs, oldValue, focused) -> {
+    view.getBookMediaTypeField().focusedProperty().addListener((_, _, focused) -> {
       if (focused) {
         if (!safeTrim(view.getBookMediaTypeField().getText()).isBlank()) {
           showBookMediaTypeSuggestions(view.getBookMediaTypeField().getText());
@@ -365,7 +423,7 @@ public class ZettelWindowController {
       commitBookMediaTypeSelection();
     });
 
-    view.getBookMediaTypeField().setOnMouseClicked(e -> {
+    view.getBookMediaTypeField().setOnMouseClicked(_ -> {
       if (!view.getBookMediaTypeField().isFocused()) {
         view.getBookMediaTypeField().requestFocus();
       }
@@ -388,12 +446,12 @@ public class ZettelWindowController {
       }
     });
 
-    view.getBookTitleField().textProperty().addListener((obs, oldValue, newValue) -> requestBookRefresh());
+    view.getBookTitleField().textProperty().addListener((_, _, _) -> requestBookRefresh());
 
     view.getBookMediaTable().setPlaceholder(new Label("Keine Medien gefunden"));
     view.getBookNotesTable().setPlaceholder(new Label("Keine Zettel gefunden"));
 
-    view.getBookMediaTable().setRowFactory(table -> {
+    view.getBookMediaTable().setRowFactory(_ -> {
       TableRow<ZettelWindowView.BookMediaRow> row = new TableRow<>();
 
       row.setOnMouseClicked(event -> {
@@ -414,13 +472,13 @@ public class ZettelWindowController {
           view.selectBookMediaRow(selectedBookEntryId);
         }
 
-        refreshBookWindow();
+        requestAsyncBookRefresh();
       });
 
       return row;
     });
 
-    view.getBookNotesTable().setRowFactory(table -> {
+    view.getBookNotesTable().setRowFactory(_ -> {
       TableRow<ZettelWindowView.BookNoteRow> row = new TableRow<>();
       row.setOnMouseClicked(event -> {
         if (event.getButton() == MouseButton.PRIMARY && !row.isEmpty()) {
@@ -475,7 +533,7 @@ public class ZettelWindowController {
         continue;
       }
 
-      row.getLastNameField().textProperty().addListener((obs, oldValue, newValue) -> {
+      row.getLastNameField().textProperty().addListener((_, _, newValue) -> {
         if (suppressBookAuthorCallbacks) {
           return;
         }
@@ -486,7 +544,7 @@ public class ZettelWindowController {
         requestBookRefresh();
       });
 
-      row.getFirstNameField().textProperty().addListener((obs, oldValue, newValue) -> {
+      row.getFirstNameField().textProperty().addListener((_, _, newValue) -> {
         if (suppressBookAuthorCallbacks) {
           return;
         }
@@ -496,7 +554,7 @@ public class ZettelWindowController {
         requestBookRefresh();
       });
 
-      row.getLastNameField().focusedProperty().addListener((obs, oldValue, focused) -> {
+      row.getLastNameField().focusedProperty().addListener((_, _, focused) -> {
         if (focused) {
           if (!safeTrim(row.getLastNameField().getText()).isBlank()) {
             showBookAuthorSuggestions(row);
@@ -509,7 +567,7 @@ public class ZettelWindowController {
         }
       });
 
-      row.getLastNameField().setOnMouseClicked(event -> {
+      row.getLastNameField().setOnMouseClicked(_ -> {
         if (!row.getLastNameField().isFocused()) {
           row.getLastNameField().requestFocus();
         }
@@ -644,7 +702,7 @@ public class ZettelWindowController {
       Label label = new Label(labelText);
 
       CustomMenuItem item = new CustomMenuItem(label, true);
-      item.setOnAction(e -> applyBookAuthorSuggestion(row, suggestion));
+      item.setOnAction(_ -> applyBookAuthorSuggestion(row, suggestion));
       items.add(item);
     }
 
@@ -720,12 +778,10 @@ public class ZettelWindowController {
   /**
    * Bewertet einen Autorenvorschlag für die BOOK-Sortierung.
    * Zuerst wird der Nachname gewichtet, danach optional der Vorname.
-   *
    * Nachname:
    * 0 = beginnt mit Präfix
    * 1 = enthält Präfix
    * 2 = sonstiger Fallback
-   *
    * Vorname:
    * +0 = kein Vornamenfilter oder beginnt mit Filter
    * +1 = enthält Filter
@@ -794,7 +850,7 @@ public class ZettelWindowController {
     }
 
     ensureBookMultiAuthorTrailingBlankRow();
-    refreshBookWindow();
+    requestAsyncBookRefresh();
   }
 
   /**
@@ -887,29 +943,33 @@ public class ZettelWindowController {
   }
 
   /**
-   * Prüft, ob ein bibliographischer Eintrag zu allen aktuell sichtbaren
-   * BOOK-Autorenfiltern passt.
+   * Prueft einen Eintrag gegen eine vorab gesicherte Autorenfilter-Situation.
    *
    * @param entry bibliographischer Eintrag
-   * @return {@code true}, wenn alle belegten Autorenzeilen passen
+   * @param authorMode aktiver BOOK-Autorenmodus
+   * @param filters gesicherte Autorenfilter
+   * @return {@code true}, wenn alle belegten Autorenfilter passen
    */
-  private boolean matchesBookAuthorFilters(DynamicBibliographyEntry entry) {
-    List<ZettelWindowView.BookAuthorRow> rows = view.getBookAuthorRowModels();
-    if (rows.isEmpty() || view.getActiveBookAuthorMode() == ZettelWindowView.BookAuthorMode.OFF) {
+  private boolean matchesBookAuthorFilters(
+      DynamicBibliographyEntry entry,
+      ZettelWindowView.BookAuthorMode authorMode,
+      List<BookAuthorFilter> filters
+  ) {
+    if (filters == null || filters.isEmpty() || authorMode == ZettelWindowView.BookAuthorMode.OFF) {
       return true;
     }
 
     List<PersonRef> persons = extractPreviewPersons(entry);
     if (persons.isEmpty()) {
-      return rows.stream().noneMatch(this::isBookAuthorRowFilled);
+      return filters.stream().noneMatch(this::isBookAuthorFilterFilled);
     }
 
-    for (ZettelWindowView.BookAuthorRow row : rows) {
-      if (!isBookAuthorRowFilled(row)) {
+    for (BookAuthorFilter filter : filters) {
+      if (!isBookAuthorFilterFilled(filter)) {
         continue;
       }
 
-      boolean rowMatched = persons.stream().anyMatch(person -> matchesBookAuthorRow(person, row));
+      boolean rowMatched = persons.stream().anyMatch(person -> matchesBookAuthorFilter(person, filter));
       if (!rowMatched) {
         return false;
       }
@@ -919,20 +979,17 @@ public class ZettelWindowController {
   }
 
   /**
-   * Prüft, ob eine BOOK-Autorenzeile überhaupt Filterinhalt enthält.
+   * Prueft, ob ein gesicherter BOOK-Autorenfilter Inhalt enthaelt.
    *
-   * @param row Autorenzeile
-   * @return {@code true}, wenn Vor- oder Nachname befüllt ist
+   * @param filter Autorenfilter
+   * @return {@code true}, wenn Vor- oder Nachname befuellt ist
    */
-  private boolean isBookAuthorRowFilled(ZettelWindowView.BookAuthorRow row) {
-    if (row == null) {
+  private boolean isBookAuthorFilterFilled(BookAuthorFilter filter) {
+    if (filter == null) {
       return false;
     }
 
-    String lastName = row.getLastNameField() == null ? row.getLastName() : row.getLastNameField().getText();
-    String firstName = row.getFirstNameField() == null ? row.getFirstName() : row.getFirstNameField().getText();
-
-    return !safeTrim(lastName).isBlank() || !safeTrim(firstName).isBlank();
+    return !safeTrim(filter.lastName()).isBlank() || !safeTrim(filter.firstName()).isBlank();
   }
 
   /**
@@ -941,10 +998,24 @@ public class ZettelWindowController {
    * @return Anzahl aktiver Autorenfilter
    */
   private int countActiveBookAuthorFilters() {
+    return countActiveBookAuthorFilters(snapshotBookAuthorFilters());
+  }
+
+  /**
+   * Zaehlt belegte Autorenfilter in einer gesicherten Filtersituation.
+   *
+   * @param filters gesicherte Autorenfilter
+   * @return Anzahl aktiver Autorenfilter
+   */
+  private int countActiveBookAuthorFilters(List<BookAuthorFilter> filters) {
     int count = 0;
 
-    for (ZettelWindowView.BookAuthorRow row : view.getBookAuthorRowModels()) {
-      if (isBookAuthorRowFilled(row)) {
+    if (filters == null) {
+      return 0;
+    }
+
+    for (BookAuthorFilter filter : filters) {
+      if (isBookAuthorFilterFilled(filter)) {
         count++;
       }
     }
@@ -962,38 +1033,45 @@ public class ZettelWindowController {
   }
 
   /**
-   * Prüft, ob eine Person zu einer BOOK-Autorenzeile passt.
-   * Nachname und Vorname werden jeweils per Teilstring und gemeinsam per UND geprüft.
+   * Prüft, ob eine Person zu einem gesicherten BOOK-Autorenfilter passt.
    *
    * @param person Person des Eintrags
-   * @param row Autorenzeile
+   * @param filter Autorenfilter
    * @return {@code true}, wenn die Person passt
    */
-  private boolean matchesBookAuthorRow(PersonRef person, ZettelWindowView.BookAuthorRow row) {
-    if (person == null || row == null) {
+  private boolean matchesBookAuthorFilter(PersonRef person, BookAuthorFilter filter) {
+    if (person == null || filter == null) {
       return false;
     }
 
     String personLastName = safeTrim(person.lastName()).toLowerCase(Locale.ROOT);
     String personFirstName = safeTrim(person.firstName()).toLowerCase(Locale.ROOT);
-
-    String filterLastName = safeTrim(
-        row.getLastNameField() == null ? row.getLastName() : row.getLastNameField().getText()
-    ).toLowerCase(Locale.ROOT);
-
-    String filterFirstName = safeTrim(
-        row.getFirstNameField() == null ? row.getFirstName() : row.getFirstNameField().getText()
-    ).toLowerCase(Locale.ROOT);
+    String filterLastName = safeTrim(filter.lastName()).toLowerCase(Locale.ROOT);
+    String filterFirstName = safeTrim(filter.firstName()).toLowerCase(Locale.ROOT);
 
     if (!filterLastName.isBlank() && !personLastName.contains(filterLastName)) {
       return false;
     }
 
-    if (!filterFirstName.isBlank() && !personFirstName.contains(filterFirstName)) {
-      return false;
-    }
+    return filterFirstName.isBlank() || personFirstName.contains(filterFirstName);
+  }
 
-    return true;
+  /**
+   * Sichert die aktuellen BOOK-Autorenfilter für eine asynchrone Aktualisierung.
+   *
+   * @return unveränderliche Filterliste
+   */
+  private List<BookAuthorFilter> snapshotBookAuthorFilters() {
+    List<BookAuthorFilter> filters = new ArrayList<>();
+    for (ZettelWindowView.BookAuthorRow row : view.getBookAuthorRowModels()) {
+      if (row == null) {
+        continue;
+      }
+      String lastName = row.getLastNameField() == null ? row.getLastName() : row.getLastNameField().getText();
+      String firstName = row.getFirstNameField() == null ? row.getFirstName() : row.getFirstNameField().getText();
+      filters.add(new BookAuthorFilter(safeTrim(lastName), safeTrim(firstName)));
+    }
+    return List.copyOf(filters);
   }
 
   /**
@@ -1013,12 +1091,8 @@ public class ZettelWindowController {
                                                    .filter(attribute -> attribute != null && attribute.fieldDefinition() != null)
                                                    .filter(attribute -> isPersonDatatype(attribute.fieldDefinition().datatype()))
                                                    .filter(attribute -> attribute.isIdentify() || attribute.isNecessary())
-                                                   .sorted(
-                                                       Comparator
-                                                           .comparingInt(this::personPreviewPriority)
-                                                           .thenComparingInt(attribute -> attribute.fieldDefinition().id())
-                                                   )
-                                                   .findFirst()
+                                                   .min(Comparator.comparingInt(this::personPreviewPriority)
+                                                                  .thenComparingInt(attribute -> attribute.fieldDefinition().id()))
                                                    .orElse(null);
 
     if (personAttribute == null || personAttribute.fieldDefinition() == null) {
@@ -1038,21 +1112,22 @@ public class ZettelWindowController {
   }
 
   /**
-   * Baut die BOOK-Zetteltabelle aus den aktuell sichtbaren Medien oder
-   * aus der explizit selektierten Medienzeile auf.
+   * Baut die BOOK-Zetteltabelle aus sichtbaren Medien und einer gesicherten Auswahl auf.
    *
    * @param visibleMediaRows aktuell sichtbare Medienzeilen
    * @param usageRows bereits geladene Bibliographie-Nutzungszeilen
-   * @return Zettelzeilen für die untere Tabelle
+   * @param selectedEntryId gesicherte Medienauswahl
+   * @return Zettelzeilen fuer die untere Tabelle
    */
   private List<ZettelWindowView.BookNoteRow> buildBookNoteRows(
       List<ZettelWindowView.BookMediaRow> visibleMediaRows,
-      List<NoteRepository.BibliographyUsageRow> usageRows
+      List<NoteRepository.BibliographyUsageRow> usageRows,
+      Integer selectedEntryId
   ) {
     Set<Integer> relevantEntryIds = new LinkedHashSet<>();
 
-    if (selectedBookEntryId != null && selectedBookEntryId > 0) {
-      relevantEntryIds.add(selectedBookEntryId);
+    if (selectedEntryId != null && selectedEntryId > 0) {
+      relevantEntryIds.add(selectedEntryId);
     } else {
       for (ZettelWindowView.BookMediaRow row : visibleMediaRows) {
         if (row != null && row.getEntryId() > 0) {
@@ -1173,7 +1248,7 @@ public class ZettelWindowController {
 
       Label label = new Label(labelText);
       CustomMenuItem item = new CustomMenuItem(label, true);
-      item.setOnAction(e -> applyBookMediaTypeSelection(type));
+      item.setOnAction(_ -> applyBookMediaTypeSelection(type));
       items.add(item);
     }
 
@@ -1207,7 +1282,7 @@ public class ZettelWindowController {
     }
 
     view.getBookMediaTypeMenu().hide();
-    refreshBookWindow();
+    requestAsyncBookRefresh();
   }
 
   /**
@@ -1224,7 +1299,7 @@ public class ZettelWindowController {
     String currentText = safeTrim(view.getBookMediaTypeField().getText());
     if (currentText.isBlank()) {
       view.setBookResolvedMediaTypeSelection(false, "");
-      refreshBookWindow();
+      requestAsyncBookRefresh();
     }
   }
 
@@ -1305,9 +1380,9 @@ public class ZettelWindowController {
     editor.getTitleEditorArea().setFocusTraversable(false);
     editor.getTitleEditorArea().setMouseTransparent(true);
 
-    editor.getTitleStack().setOnMouseClicked(event -> beginTitleEdit(editor));
+    editor.getTitleStack().setOnMouseClicked(_ -> beginTitleEdit(editor));
 
-    editor.getTitleEditorArea().focusedProperty().addListener((obs, oldFocused, newFocused) -> {
+    editor.getTitleEditorArea().focusedProperty().addListener((_, _, newFocused) -> {
       if (!newFocused) {
         commitTitle(editor);
       }
@@ -1329,7 +1404,7 @@ public class ZettelWindowController {
   private void wireBodyEditingAndContextMenu(NoteEditorPane editor) {
     editor.getBodyArea().setEditable(false);
 
-    editor.getBodyArea().addEventHandler(MouseEvent.MOUSE_PRESSED, event -> {
+    editor.getBodyArea().addEventHandler(MouseEvent.MOUSE_PRESSED, _ -> {
       if (!editor.getBodyContainer().getStyleClass().contains("note-body-active")) {
         editor.getBodyContainer().getStyleClass().add("note-body-active");
       }
@@ -1338,7 +1413,7 @@ public class ZettelWindowController {
       editor.getBodyArea().requestFocus();
     });
 
-    editor.getBodyArea().focusedProperty().addListener((obs, oldFocused, newFocused) -> {
+    editor.getBodyArea().focusedProperty().addListener((_, _, newFocused) -> {
       if (newFocused) {
         if (!editor.getBodyContainer().getStyleClass().contains("note-body-active")) {
           editor.getBodyContainer().getStyleClass().add("note-body-active");
@@ -1351,14 +1426,34 @@ public class ZettelWindowController {
       }
     });
 
-    editor.getBodyArea().setOnContextMenuRequested(event -> {
-      boolean hasSelection = editor.getBodyArea().getSelection() != null
-                                 && editor.getBodyArea().getSelection().getLength() > 0;
+    editor.getBodyArea().addEventFilter(KeyEvent.KEY_PRESSED, event -> {
+      if (event.getCode() == KeyCode.X
+          && event.isAltDown()
+          && !event.isControlDown()
+          && !event.isMetaDown()
+          && !event.isShiftDown()) {
+        editor.toggleBodySourceMode();
+        focusBodyForEditing(editor);
+        event.consume();
+        return;
+      }
 
-      if (hasSelection) {
-        editor.getFormattingContextMenu().show(editor.getBodyArea(), event.getScreenX(), event.getScreenY());
-      } else {
+      if (event.getCode() == KeyCode.ENTER
+              && !event.isAltDown()
+              && !event.isControlDown()
+              && !event.isMetaDown()
+              && !event.isShiftDown()
+              && InlineCssStyleUtil.handleListEnter(editor.getBodyArea())) {
+        event.consume();
+      }
+    });
+
+    editor.getBodyArea().setOnContextMenuRequested(event -> {
+      if (editor.getFormattingContextMenu().isShowing()) {
         editor.getFormattingContextMenu().hide();
+      } else {
+        editor.prepareBodyFormattingContext();
+        editor.getFormattingContextMenu().show(editor.getBodyArea(), event.getScreenX(), event.getScreenY());
       }
 
       event.consume();
@@ -1372,7 +1467,7 @@ public class ZettelWindowController {
   }
 
   private void wireGlobalBodyDeactivateHandlers(NoteEditorPane editor) {
-    stage.focusedProperty().addListener((obs, oldFocused, newFocused) -> {
+    stage.focusedProperty().addListener((_, _, newFocused) -> {
       if (!newFocused) {
         deactivateBody(editor);
         if (stage.getScene() != null) {
@@ -1381,7 +1476,7 @@ public class ZettelWindowController {
       }
     });
 
-    stage.sceneProperty().addListener((obs, oldScene, newScene) -> {
+    stage.sceneProperty().addListener((_, _, newScene) -> {
       if (newScene == null) {
         return;
       }
@@ -1406,7 +1501,7 @@ public class ZettelWindowController {
   }
 
   private void wireGlobalTitleCommitHandlers(NoteEditorPane editor) {
-    stage.focusedProperty().addListener((obs, oldFocused, newFocused) -> {
+    stage.focusedProperty().addListener((_, _, newFocused) -> {
       if (!newFocused) {
         commitTitle(editor);
         if (stage.getScene() != null) {
@@ -1415,7 +1510,7 @@ public class ZettelWindowController {
       }
     });
 
-    stage.sceneProperty().addListener((obs, oldScene, newScene) -> {
+    stage.sceneProperty().addListener((_, _, newScene) -> {
       if (newScene == null) {
         return;
       }
@@ -1444,17 +1539,17 @@ public class ZettelWindowController {
 
     // Enter im Feld -> Zettelwechsel
     bottom.noteIdField().setText(String.valueOf(currentNote.getId()));
-    bottom.noteIdField().setOnAction(e -> handleNoteIdCommit());
+    bottom.noteIdField().setOnAction(_ -> handleNoteIdCommit());
 
     // Klick woanders hin / Fokusverlust -> ebenfalls wechseln
-    bottom.noteIdField().focusedProperty().addListener((obs, wasFocused, isFocused) -> {
+    bottom.noteIdField().focusedProperty().addListener((_, wasFocused, isFocused) -> {
       if (wasFocused && !isFocused) {
         handleNoteIdCommit();
       }
     });
 
-    bottom.backButton().setOnAction(e -> navigateBack());
-    bottom.forwardButton().setOnAction(e -> navigateForward());
+    bottom.backButton().setOnAction(_ -> navigateBack());
+    bottom.forwardButton().setOnAction(_ -> navigateForward());
 
     // BookToggle
     var toggle = view.getBottomToolbar().bookToggle();
@@ -1463,8 +1558,8 @@ public class ZettelWindowController {
     view.getNoteEditorPane().setBibliographyVisible(toggle.isSelected());
 
     // Umschalten
-    toggle.selectedProperty().addListener((obs, was, is) -> renderBibliographyHost());
-    renderBibliographyHost();
+    toggle.selectedProperty().addListener((_, _, _) -> renderBibliographyHost(false));
+    renderBibliographyHost(false);
 
     updateHistoryButtons();
     syncBottomToolbarFromState();
@@ -1524,7 +1619,7 @@ public class ZettelWindowController {
       String next = change.getControlNewText();
       return next.matches("\\d*") ? change : null;
     }));
-    linkEditNoteIdField.textProperty().addListener((obs, oldValue, newValue) -> refreshLinkEditSelectionState());
+    linkEditNoteIdField.textProperty().addListener((_, _, _) -> refreshLinkEditSelectionState());
     linkEditNoteIdField.addEventFilter(KeyEvent.KEY_PRESSED, event -> {
       if (event.getCode() == KeyCode.ENTER) {
         refreshLinkEditSelectionState();
@@ -1543,11 +1638,11 @@ public class ZettelWindowController {
     linkEditReverseButton = BaseIcon.ARROW_REFRESH.button("Verweis umdrehen");
     Button btnClose = BaseIcon.CROSS.button();
 
-    btnPrev.setOnAction(e -> selectPreviousExistingNoteInPopup());
-    btnNext.setOnAction(e -> selectNextExistingNoteInPopup());
-    btnGoSuccessor.setOnAction(e -> selectNextSuccessorInPopup());
-    linkEditReverseButton.setOnAction(e -> reverseSelectedLinkInPopup());
-    btnClose.setOnAction(e -> closeLinkEditPopup());
+    btnPrev.setOnAction(_ -> selectPreviousExistingNoteInPopup());
+    btnNext.setOnAction(_ -> selectNextExistingNoteInPopup());
+    btnGoSuccessor.setOnAction(_ -> selectNextSuccessorInPopup());
+    linkEditReverseButton.setOnAction(_ -> reverseSelectedLinkInPopup());
+    btnClose.setOnAction(_ -> closeLinkEditPopup());
 
     btnPrev.setFocusTraversable(false);
     btnNext.setFocusTraversable(false);
@@ -1661,7 +1756,7 @@ public class ZettelWindowController {
     button.setPrefWidth(34);
     button.setMinHeight(30);
     button.setPrefHeight(30);
-    button.setOnAction(e -> handleLinkTypeToggle(linkType, button.isSelected()));
+    button.setOnAction(_ -> handleLinkTypeToggle(linkType, button.isSelected()));
     return button;
   }
 
@@ -2186,11 +2281,14 @@ public class ZettelWindowController {
 
     currentNote.applyTo(view.getNoteEditorPane(), view.getKeywordsTablePane());
     syncInfoPopup(currentNote);
-    renderBibliographyHost();
+    renderBibliographyHost(false);
     syncBottomToolbar(currentNote);
     view.getNoteEditorPane().setBibliographyVisible(
         view.getBottomToolbar().bookToggle().isSelected()
     );
+    if (view.getActiveServiceAreaMode() == ZettelWindowView.ServiceAreaMode.KEY) {
+      refreshKeyWindow();
+    }
   }
 
   /**
@@ -2383,8 +2481,7 @@ public class ZettelWindowController {
     if (maxNoteId <= 0) return 0;
 
     if (requested < 1) return 1;
-    if (requested > maxNoteId) return maxNoteId;
-    return requested;
+    return Math.min(requested, maxNoteId);
   }
 
   private void setNoteIdField(int id) {
@@ -2431,6 +2528,27 @@ public class ZettelWindowController {
     updateHistoryButtons();
   }
 
+  /**
+   * Oeffnet einen Zettel aus dem LIST-Fenster.
+   * Bei aktiver LIST-Sperre wird nur das Zettelfenster gewechselt; die
+   * serviceabhaengigen LIST- und Verweisansichten bleiben unveraendert.
+   *
+   * @param id ID des zu oeffnenden Zettels
+   */
+  private void openNoteFromList(int id) {
+    boolean locked = view.getListLockToggleButton().isSelected();
+    if (locked) {
+      listRefreshDebounce.stop();
+    }
+    boolean previous = openingNoteFromLockedList;
+    openingNoteFromLockedList = locked;
+    try {
+      openNoteViaToolbar(id);
+    } finally {
+      openingNoteFromLockedList = previous;
+    }
+  }
+
   private void onNoteActivated(int requestedId) {
     loading = true;
     try {
@@ -2450,7 +2568,7 @@ public class ZettelWindowController {
       // UI befüllen aus der Note
       currentNote.applyTo(view.getNoteEditorPane(), view.getKeywordsTablePane());
       syncInfoPopup(currentNote);
-      renderBibliographyHost();
+      renderBibliographyHost(false);
 
       // BottomToolbar befüllen (nur Anzeige, Feld bleibt editierbar)
       setNoteIdField(currentNote.getId());
@@ -2460,9 +2578,14 @@ public class ZettelWindowController {
 
       view.getNoteEditorPane().setOnNavigateToNote(this::openNoteViaToolbar);
       view.getNoteEditorPane().setBibliographyVisible(view.getBottomToolbar().bookToggle().isSelected());
-      resetMagnifyBranchCollapseState();
-      refreshMagnifyLinkWindow();
-      refreshListWindow();
+      if (!openingNoteFromLockedList) {
+        resetMagnifyBranchCollapseState();
+        refreshMagnifyLinkWindow();
+        refreshListWindowAfterNoteActivation();
+      }
+      if (view.getActiveServiceAreaMode() == ZettelWindowView.ServiceAreaMode.KEY) {
+        refreshKeyWindow();
+      }
       if (linkEditPopup.isShowing()) {
         refreshCurrentSuccessorsFromRepository();
         refreshLinkEditSelectionState();
@@ -2482,7 +2605,7 @@ public class ZettelWindowController {
   private void navigateBack() {
     if (backHistory.isEmpty()) return;
 
-    Integer current = currentNote.getId();
+    int current = currentNote.getId();
     if (current > 0) {
       forwardHistory.push(current);
     }
@@ -2499,7 +2622,7 @@ public class ZettelWindowController {
   private void navigateForward() {
     if (forwardHistory.isEmpty()) return;
 
-    Integer current = currentNote.getId();
+    int current = currentNote.getId();
     if (current > 0) {
       backHistory.push(current);
     }
@@ -2684,10 +2807,9 @@ public class ZettelWindowController {
     int currentId = currentNote.getId();
 
     boolean noteExists = noteRepository.existsNote(currentId);
-    boolean deletedBecauseLast = false;
 
     if (noteExists) {
-      deletedBecauseLast = noteRepository.deleteNoteIfItIsLast(currentId);
+      boolean deletedBecauseLast = noteRepository.deleteNoteIfItIsLast(currentId);
       if (deletedBecauseLast) {
         noteRepository.removeAllIncomingLinksToNote(currentId);
         clearPendingFollowUpStateIfCurrentMatches();
@@ -2793,6 +2915,10 @@ public class ZettelWindowController {
     maxNoteId = Math.max(maxNoteId, savedId);
 
     clearPendingFollowUpAfterSuccessfulSave();
+
+    if (openingNoteFromLockedList) {
+      return;
+    }
 
     setNoteIdField(savedId);
     refreshKeywordCounts();
@@ -2930,12 +3056,13 @@ public class ZettelWindowController {
     );
 
     bundle.shell().configureForNoteLinkingContext();
-    bundle.shell().setOnCloseEditor(this::renderBibliographyHost);
+    bundle.shell().setOnCloseEditor(() -> renderBibliographyHost(false));
     return bundle.shell();
   }
 
   private void showBibliographyShell(BibliographyEditorShell shell) {
     var host = view.getNoteEditorPane().getBibliographyHost();
+    activeEmbeddedBibliographyShell = shell;
     host.getChildren().clear();
     host.getChildren().add(shell.getRoot());
   }
@@ -2979,16 +3106,6 @@ public class ZettelWindowController {
     );
   }
 
-  private boolean confirmMissingRequiredFields(String typeLabel, String missingText) {
-    Alert alert = new Alert(Alert.AlertType.WARNING);
-    alert.initOwner(stage);
-    alert.setTitle("Bibliographische Angabe");
-    alert.setHeaderText(typeLabel + " kann noch nicht gespeichert werden");
-    alert.setContentText("Es fehlen Pflichtangaben:\n\n" + missingText);
-    alert.showAndWait();
-    return false;
-  }
-
   /**
    * Fragt bei einem potenziellen Dublettenfund, wie gespeichert werden soll.
    *
@@ -3006,7 +3123,7 @@ public class ZettelWindowController {
                                .map(entry -> bibliographyService.loadReference(entry.getId())
                                                  .map(BibliographyReference::displayText)
                                                  .orElse("Eintrag #" + entry.getId()))
-                               .filter(text -> text != null && !text.isBlank())
+                               .filter(text -> !text.isBlank())
                                .distinct()
                                .limit(5)
                                .reduce((a, b) -> a + "\n• " + b)
@@ -3048,7 +3165,7 @@ public class ZettelWindowController {
 
     String linkedText = bibliographyService.loadReference(linkedEntryId == null ? 0 : linkedEntryId)
                             .map(BibliographyReference::displayText)
-                            .filter(text -> text != null && !text.isBlank())
+                            .filter(text -> !text.isBlank())
                             .orElse(linkedEntryId == null ? "Bestehender Eintrag" : "Eintrag #" + linkedEntryId);
 
     Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
@@ -3599,10 +3716,27 @@ public class ZettelWindowController {
    * Die eigentliche Bearbeitung erfolgt erst nach bewusstem Öffnen des Editors.
    */
   private void renderBibliographyHost() {
+    renderBibliographyHost(true);
+  }
+
+  /**
+   * Rendert den Bibliographiebereich des aktuellen Zettels neu.
+   * Ein bereits geöffneter Editor bleibt bei normalen Speicher- und
+   * Fokuswechseln erhalten und wird nur bei ausdrücklichem Schließen,
+   * Speichern, Zettelwechsel oder Toolbar-Umschaltung ersetzt.
+   *
+   * @param keepOpenEditor ob ein eingebetteter Editor erhalten bleiben soll
+   */
+  private void renderBibliographyHost(boolean keepOpenEditor) {
     boolean visible = view.getBottomToolbar().bookToggle().isSelected();
     view.getNoteEditorPane().setBibliographyVisible(visible);
 
     var host = view.getNoteEditorPane().getBibliographyHost();
+    if (keepOpenEditor && shouldKeepEmbeddedBibliographyEditorOpen(host, visible)) {
+      return;
+    }
+
+    activeEmbeddedBibliographyShell = null;
     host.getChildren().clear();
 
     if (!visible || currentNote == null) {
@@ -3621,6 +3755,21 @@ public class ZettelWindowController {
     }
 
     showCompactBibliographyPreview(entry);
+  }
+
+  /**
+   * Prüft, ob der aktuell eingebettete Bibliographie-Editor unverändert im
+   * Zettelbereich sichtbar bleiben soll.
+   *
+   * @param host Bibliographie-Container unter dem Zettel
+   * @param visible aktueller Sichtbarkeitszustand des Containers
+   * @return {@code true}, wenn der offene Editor erhalten bleibt
+   */
+  private boolean shouldKeepEmbeddedBibliographyEditorOpen(VBox host, boolean visible) {
+    return visible
+               && activeEmbeddedBibliographyShell != null
+               && host != null
+               && host.getChildren().contains(activeEmbeddedBibliographyShell.getRoot());
   }
 
   /**
@@ -3867,7 +4016,10 @@ public class ZettelWindowController {
 
     currentNote.setBibliographyRefId(null);
 
-    renderBibliographyHost();
+    renderBibliographyHost(false);
+    if (view.getActiveServiceAreaMode() == ZettelWindowView.ServiceAreaMode.KEY) {
+      refreshKeyWindow();
+    }
   }
 
   /**
@@ -3990,7 +4142,10 @@ public class ZettelWindowController {
     noteRepository.linkBibliographyEntry(currentNote.getId(), entryId);
     currentNote.setBibliographyRefId(entryId);
 
-    renderBibliographyHost();
+    renderBibliographyHost(false);
+    if (view.getActiveServiceAreaMode() == ZettelWindowView.ServiceAreaMode.KEY) {
+      refreshKeyWindow();
+    }
   }
 
   /**
@@ -4054,7 +4209,17 @@ public class ZettelWindowController {
    */
   private void toggleServiceArea() {
     boolean wasCollapsed = view.isServiceAreaCollapsed();
-    view.toggleServiceAreaCollapsed();
+    view.rememberCurrentWorkAreaWidths();
+    double serviceAreaWidthDelta = view.getServiceAreaToggleWidthDelta();
+
+    if (wasCollapsed) {
+      stage.setWidth(stage.getWidth() + serviceAreaWidthDelta);
+      view.setServiceAreaCollapsed(false);
+    } else {
+      view.setServiceAreaCollapsed(true);
+      stage.setWidth(Math.max(stage.getMinWidth(), stage.getWidth() - serviceAreaWidthDelta));
+    }
+    view.restoreRememberedWorkAreaWidthsAfterLayout();
 
     if (wasCollapsed && view.getActiveServiceAreaMode() != null) {
       if (view.getActiveServiceAreaMode() == ZettelWindowView.ServiceAreaMode.MAGNIFY_LINK) {
@@ -4118,7 +4283,7 @@ public class ZettelWindowController {
 
     if (mode == ZettelWindowView.ServiceAreaMode.BOOK) {
       view.setServiceAreaContent(view.getBookPane());
-      refreshBookWindow();
+      scheduleBookRefreshAfterServiceSwitch();
       return;
     }
 
@@ -4142,28 +4307,123 @@ public class ZettelWindowController {
       return;
     }
 
-    ZettelWindowView.BookMediaTableSortState mediaSortState = view.getBookMediaTableSortState();
-    ZettelWindowView.BookNoteTableSortState noteSortState = view.getBookNoteTableSortState();
+    BookRefreshRequest request = createBookRefreshRequest(++bookServiceRefreshRequestId);
+    BookRefreshResult result = loadBookRefreshResult(request);
+    applyBookRefreshResult(request, result);
+  }
 
+  /**
+   * Fordert eine BOOK-Aktualisierung im Hintergrund an.
+   * Der JavaFX-Thread erstellt nur einen stabilen Snapshot und wendet das
+   * Ergebnis spaeter an; Datenbankarbeit und Zeilenaufbau laufen im Executor.
+   */
+  private void requestAsyncBookRefresh() {
+    if (view.getActiveServiceAreaMode() != ZettelWindowView.ServiceAreaMode.BOOK) {
+      return;
+    }
+
+    BookRefreshRequest request = createBookRefreshRequest(++bookServiceRefreshRequestId);
+    try {
+      bookRefreshExecutor.execute(() -> {
+        BookRefreshResult result = loadBookRefreshResult(request);
+        Platform.runLater(() -> applyBookRefreshResult(request, result));
+      });
+    } catch (RuntimeException ignored) {
+      // Beim Schliessen des Fensters kann der Executor bereits beendet sein.
+    }
+  }
+
+  /**
+   * Erstellt einen stabilen BOOK-Refresh-Snapshot auf dem JavaFX-Thread.
+   *
+   * @param requestId eindeutige Aktualisierungsnummer
+   * @return Snapshot der aktuellen BOOK-Eingaben
+   */
+  private BookRefreshRequest createBookRefreshRequest(long requestId) {
     String mediaTypeBibName = view.hasBookResolvedMediaTypeSelection()
                                   ? view.getBookResolvedMediaTypeBibName()
                                   : "";
 
-    String titleQuery = safeTrim(view.getBookTitleField().getText());
-
-    List<BibliographyReference> references = bibliographyService.searchMediaReferences(
+    return new BookRefreshRequest(
+        requestId,
+        view.getBookMediaTableSortState(),
+        view.getBookNoteTableSortState(),
         mediaTypeBibName,
-        titleQuery,
-        200
+        safeTrim(view.getBookTitleField().getText()),
+        view.hasBookResolvedMediaTypeSelection(),
+        view.getBookShowNotesToggleButton().isSelected(),
+        selectedBookEntryId,
+        view.getActiveBookAuthorMode(),
+        snapshotBookAuthorFilters()
     );
+  }
 
-    List<NoteRepository.BibliographyUsageRow> usageRows = noteRepository.loadBibliographyUsageRows();
+  /**
+   * Laedt und berechnet alle BOOK-Zeilen fuer einen Snapshot.
+   *
+   * @param request Refresh-Snapshot
+   * @return berechnetes Ergebnis
+   */
+  private BookRefreshResult loadBookRefreshResult(BookRefreshRequest request) {
+    try {
+      List<BibliographyReference> references = bibliographyService.searchMediaReferences(
+          request.mediaTypeBibName(),
+          request.titleQuery(),
+          MEDIA_REFERENCE_SEARCH_LIMIT
+      );
 
-    Map<Integer, Integer> noteCountsByEntryId = new LinkedHashMap<>();
-    for (NoteRepository.BibliographyUsageRow usageRow : usageRows) {
-      noteCountsByEntryId.merge(usageRow.bibliographyEntryId(), 1, Integer::sum);
+      Map<Integer, Integer> noteCountsByEntryId = loadBookNoteCountsByEntryId();
+      List<ZettelWindowView.BookMediaRow> mediaRows = buildBookMediaRows(
+          request,
+          references == null ? List.of() : references,
+          noteCountsByEntryId
+      );
+
+      List<ZettelWindowView.BookNoteRow> noteRows = List.of();
+      if (request.notesVisible()) {
+        List<NoteRepository.BibliographyUsageRow> usageRows = noteRepository.loadBibliographyUsageRows();
+        noteRows = buildBookNoteRows(mediaRows, usageRows == null ? List.of() : usageRows, request.selectedEntryId());
+      }
+
+      return new BookRefreshResult(mediaRows, noteRows, "");
+    } catch (RuntimeException exception) {
+      return new BookRefreshResult(List.of(), List.of(), safeTrim(exception.getMessage()));
     }
+  }
 
+  /**
+   * Laedt die aggregierten Zettelzahlen fuer BOOK-Medien.
+   *
+   * @return Zuordnung Bibliographie-Eintrags-ID -> Zettelzahl
+   */
+  private Map<Integer, Integer> loadBookNoteCountsByEntryId() {
+    Map<Integer, Integer> noteCountsByEntryId = new LinkedHashMap<>();
+    Map<Integer, Integer> loadedNoteCounts = noteRepository.loadBibliographyUsageCountsByEntryId();
+    if (loadedNoteCounts != null) {
+      loadedNoteCounts.forEach((entryId, noteCount) -> {
+        if (entryId != null && entryId > 0 && noteCount != null && noteCount > 0) {
+          noteCountsByEntryId.put(entryId, noteCount);
+        }
+      });
+    }
+    return noteCountsByEntryId;
+  }
+
+  /**
+   * Baut Medienzeilen fuer den BOOK-Service aus schlanken Referenzen.
+   *
+   * @param request Refresh-Snapshot
+   * @param references gefundene Bibliographie-Referenzen
+   * @param noteCountsByEntryId Zettelzahlen nach Bibliographie-ID
+   * @return sichtbare Medienzeilen
+   */
+  private List<ZettelWindowView.BookMediaRow> buildBookMediaRows(
+      BookRefreshRequest request,
+      List<BibliographyReference> references,
+      Map<Integer, Integer> noteCountsByEntryId
+  ) {
+    boolean hasAuthorFilters = request.authorMode() != ZettelWindowView.BookAuthorMode.OFF
+                                   && countActiveBookAuthorFilters(request.authorFilters()) > 0;
     List<ZettelWindowView.BookMediaRow> mediaRows = new ArrayList<>();
     for (BibliographyReference reference : references) {
       if (reference == null || reference.entryId() <= 0) {
@@ -4171,16 +4431,18 @@ public class ZettelWindowController {
       }
 
       DynamicBibliographyEntry entry = bibliographyService.loadEntry(reference.entryId()).orElse(null);
-      if (entry == null) {
-        continue;
+      if (hasAuthorFilters) {
+        if (entry == null || !matchesBookAuthorFilters(entry, request.authorMode(), request.authorFilters())) {
+          continue;
+        }
       }
 
-      if (!matchesBookAuthorFilters(entry)) {
-        continue;
-      }
-
-      String authorText = resolvePreviewPerson(entry);
-      String titleText = resolvePreviewTitle(entry);
+      String authorText = entry == null
+                              ? resolveBookReferenceAuthor(reference)
+                              : resolvePreviewPerson(entry);
+      String titleText = entry == null
+                             ? resolveBookReferenceTitle(reference, authorText)
+                             : resolvePreviewTitle(entry);
 
       if (titleText.isBlank()) {
         titleText = safeTrim(reference.displayText());
@@ -4191,32 +4453,155 @@ public class ZettelWindowController {
           authorText,
           titleText,
           safeTrim(reference.mediaTypeName()),
-          noteCountsByEntryId.getOrDefault(reference.entryId(), 0)
+          noteCountsByEntryId == null ? 0 : noteCountsByEntryId.getOrDefault(reference.entryId(), 0)
       ));
     }
 
-    if (selectedBookEntryId != null) {
+    return mediaRows;
+  }
+
+  /**
+   * Wendet ein fertiges BOOK-Ergebnis auf dem JavaFX-Thread an.
+   *
+   * @param request Refresh-Snapshot
+   * @param result Ergebnis der Hintergrundarbeit
+   */
+  private void applyBookRefreshResult(BookRefreshRequest request, BookRefreshResult result) {
+    if (request.requestId() != bookServiceRefreshRequestId
+            || view.getActiveServiceAreaMode() != ZettelWindowView.ServiceAreaMode.BOOK) {
+      return;
+    }
+
+    if (result.errorMessage() != null && !result.errorMessage().isBlank()) {
+      view.setBookStatus("BookService konnte nicht aktualisiert werden: " + result.errorMessage());
+      return;
+    }
+
+    List<ZettelWindowView.BookMediaRow> mediaRows = result.mediaRows() == null ? List.of() : result.mediaRows();
+    List<ZettelWindowView.BookNoteRow> noteRows = result.noteRows() == null ? List.of() : result.noteRows();
+
+    Integer selectedEntryId = request.selectedEntryId();
+    if (selectedEntryId != null) {
+      int selectedEntryIdValue = selectedEntryId;
       boolean selectedStillVisible = mediaRows.stream()
-                                         .anyMatch(row -> row != null && row.getEntryId() == selectedBookEntryId);
+                                         .anyMatch(row -> row != null && row.getEntryId() == selectedEntryIdValue);
 
       if (!selectedStillVisible) {
-        selectedBookEntryId = null;
+        selectedEntryId = null;
       }
     }
 
+    selectedBookEntryId = selectedEntryId;
     view.setBookMediaRows(mediaRows);
-    view.applyBookMediaTableSortState(mediaSortState);
+    view.applyBookMediaTableSortState(request.mediaSortState());
     view.selectBookMediaRow(selectedBookEntryId);
 
-    List<ZettelWindowView.BookNoteRow> noteRows = buildBookNoteRows(mediaRows, usageRows);
-    view.setBookNoteRows(noteRows);
-    view.applyBookNoteTableSortState(noteSortState);
+    if (request.notesVisible()) {
+      view.setBookNoteRows(noteRows);
+      view.applyBookNoteTableSortState(request.noteSortState());
+    } else if (!view.getBookNotesTable().getItems().isEmpty()) {
+      view.setBookNoteRows(List.of());
+    }
 
-    boolean resolvedMediaType = view.hasBookResolvedMediaTypeSelection();
-    view.setBookResolvedMediaTypeSelection(resolvedMediaType, mediaTypeBibName);
-    view.setBookNotesVisible(view.getBookShowNotesToggleButton().isSelected());
+    view.setBookResolvedMediaTypeSelection(request.resolvedMediaType(), request.mediaTypeBibName());
+    view.setBookNotesVisible(request.notesVisible());
 
     view.setBookStatus(buildBookStatusText(mediaRows, noteRows));
+  }
+
+  /**
+   * Plant den BOOK-Refresh nach dem Einsetzen des BOOK-Panels ein.
+   * Dadurch kann der Moduswechsel zuerst sichtbar werden; die Tabellenarbeit
+   * laeuft im naechsten JavaFX-Puls und nicht mehr im unmittelbaren Klickpfad.
+   */
+  private void scheduleBookRefreshAfterServiceSwitch() {
+    Platform.runLater(() -> {
+      if (view.getActiveServiceAreaMode() != ZettelWindowView.ServiceAreaMode.BOOK) {
+        return;
+      }
+      requestAsyncBookRefresh();
+    });
+  }
+
+  /**
+   * Ermittelt aus einer Referenzanzeige einen Autorenwert fuer die BOOK-Tabelle,
+   * ohne den kompletten Eintrag erneut laden zu muessen.
+   *
+   * @param reference bibliographische Referenz
+   * @return erkannter Autorenwert oder leerer String
+   */
+  private String resolveBookReferenceAuthor(BibliographyReference reference) {
+    String displayText = safeTrim(reference == null ? "" : reference.displayText());
+    if (displayText.isBlank()) {
+      return "";
+    }
+
+    String firstPart = firstDisplayPart(displayText);
+    return looksLikePersonDisplay(firstPart) ? firstPart : "";
+  }
+
+  /**
+   * Ermittelt aus der Referenzanzeige einen Titelwert fuer die BOOK-Tabelle,
+   * wenn kein kompletter Eintrag fuer Autorenfilter geladen werden musste.
+   *
+   * @param reference bibliographische Referenz
+   * @param authorText bereits erkannter Autorenwert
+   * @return Titel- bzw. Identifikationstext
+   */
+  private String resolveBookReferenceTitle(BibliographyReference reference, String authorText) {
+    if (reference == null) {
+      return "";
+    }
+
+    String displayText = safeTrim(reference.displayText());
+    if (displayText.isBlank()) {
+      return "";
+    }
+
+    String normalizedAuthor = safeTrim(authorText);
+    if (!normalizedAuthor.isBlank()) {
+      String pipePrefix = normalizedAuthor + " | ";
+      if (displayText.startsWith(pipePrefix)) {
+        return safeTrim(displayText.substring(pipePrefix.length()));
+      }
+
+      String colonPrefix = normalizedAuthor + ": ";
+      if (displayText.startsWith(colonPrefix)) {
+        return safeTrim(displayText.substring(colonPrefix.length()));
+      }
+    }
+
+    return displayText;
+  }
+
+  /**
+   * Liefert den ersten durch die Referenzanzeige getrennten Teil.
+   *
+   * @param displayText kompakter Referenztext
+   * @return erster Teil oder leerer String
+   */
+  private String firstDisplayPart(String displayText) {
+    String normalized = safeTrim(displayText);
+    int separator = normalized.indexOf(" | ");
+    if (separator < 0) {
+      separator = normalized.indexOf(": ");
+    }
+    if (separator < 0) {
+      return normalized;
+    }
+
+    return safeTrim(normalized.substring(0, separator));
+  }
+
+  /**
+   * Prueft defensiv, ob ein Anzeigenwert wie eine Personenanzeige aussieht.
+   *
+   * @param value Anzeigenwert
+   * @return {@code true}, wenn der Wert wahrscheinlich eine Person ist
+   */
+  private boolean looksLikePersonDisplay(String value) {
+    String normalized = safeTrim(value);
+    return !normalized.isBlank() && normalized.contains(",");
   }
 
   /**
@@ -4778,18 +5163,27 @@ public class ZettelWindowController {
   private void wireKeyEvents() {
     view.setKeyKeywordEditCommitHandler(this::handleKeyTableKeywordCommit);
 
-    view.getKeyReplaceButton().setOnAction(e -> handleKeyReplaceAction());
-
-    view.getKeyKeepField().textProperty().addListener((obs, oldValue, newValue) ->
-                                                          view.clearKeyActionStatus()
-    );
-
-    view.getKeyReplaceField().getEditor().textProperty().addListener((obs, oldValue, newValue) -> {
+    view.getKeyFilterField().textProperty().addListener((obs, oldValue, newValue) -> {
+      refreshKeyWindow();
       view.clearKeyActionStatus();
-      refreshKeyReplaceSuggestions(newValue);
     });
 
-    view.getKeyFilterField().textProperty().addListener((obs, oldValue, newValue) -> {
+    view.getKeyMediumFilterButton().setOnAction(e -> {
+      if (!view.getKeyMediumFilterButton().isSelected()) {
+        keyContextFilterUsesAiContext = false;
+        view.getKeyAiContextFilterButton().setSelected(false);
+      }
+      refreshKeyWindow();
+      view.clearKeyActionStatus();
+    });
+
+    view.getKeyAiContextFilterButton().setOnAction(e -> {
+      if (!view.getKeyMediumFilterButton().isSelected()) {
+        keyContextFilterUsesAiContext = false;
+        view.getKeyAiContextFilterButton().setSelected(false);
+      } else {
+        keyContextFilterUsesAiContext = view.getKeyAiContextFilterButton().isSelected();
+      }
       refreshKeyWindow();
       view.clearKeyActionStatus();
     });
@@ -4826,18 +5220,130 @@ public class ZettelWindowController {
     ZettelWindowView.KeyTableSortState sortState = view.snapshotKeyTableSortState();
 
     String filterText = normalizeKeyword(view.getKeyFilterField().getText());
-    List<ZettelWindowView.KeyTableRow> rows = new ArrayList<>();
+    DynamicBibliographyEntry currentBibliographyEntry = resolveCurrentDynamicBibliographyEntry();
+    syncKeyContextFilterButtons(currentBibliographyEntry);
 
-    for (NoteRepository.KeywordUsageRow row : noteRepository.loadKeywordUsageRows()) {
-      rows.add(new KeyTableRow(row.id(), row.keyword(), row.count()));
-    }
+    List<ZettelWindowView.KeyTableRow> contextRows = loadKeyContextRows(currentBibliographyEntry);
+    List<ZettelWindowView.KeyTableRow> rows = loadGlobalKeyRowsExcluding(contextRows);
 
-    List<ZettelWindowView.KeyTableRow> visibleRows = applyKeyFilter(rows, filterText);
+    List<ZettelWindowView.KeyTableRow> visibleRows = new ArrayList<>();
+    visibleRows.addAll(applyKeyFilter(contextRows, filterText));
+    visibleRows.addAll(applyKeyFilter(rows, filterText));
+
+    int totalKeywordCount = contextRows.size() + rows.size();
 
     view.setKeyRows(visibleRows);
     view.restoreKeyTableSortState(sortState);
-    view.setKeyInventoryStatus(buildKeyInventoryStatusText(visibleRows.size(), filterText, rows.size()));
+    view.setKeyInventoryStatus(buildKeyInventoryStatusText(visibleRows.size(), filterText, totalKeywordCount));
     refreshKeyHeaderTable();
+  }
+
+  /**
+   * Synchronisiert Sichtbarkeit und Aktivierbarkeit der KEY-Kontextbuttons.
+   *
+   * @param currentBibliographyEntry aktuell verknüpfter bibliographischer Eintrag
+   */
+  private void syncKeyContextFilterButtons(DynamicBibliographyEntry currentBibliographyEntry) {
+    boolean aiText = isAiTextEntry(currentBibliographyEntry);
+    boolean mediumFilterActive = view.getKeyMediumFilterButton().isSelected();
+
+    view.getKeyAiContextFilterButton().setVisible(aiText);
+    view.getKeyAiContextFilterButton().setManaged(aiText);
+    view.getKeyAiContextFilterButton().setDisable(!aiText || !mediumFilterActive);
+
+    if (!aiText || !mediumFilterActive) {
+      keyContextFilterUsesAiContext = false;
+      view.getKeyAiContextFilterButton().setSelected(false);
+    } else {
+      view.getKeyAiContextFilterButton().setSelected(keyContextFilterUsesAiContext);
+    }
+  }
+
+  /**
+   * Lädt die hervorgehobene Zusatzliste des KEY-Fensters.
+   *
+   * @param currentBibliographyEntry aktuell verknüpfter bibliographischer Eintrag
+   * @return Zusatzzeilen für Medium oder KI-Kontext
+   */
+  private List<ZettelWindowView.KeyTableRow> loadKeyContextRows(DynamicBibliographyEntry currentBibliographyEntry) {
+    if (!view.getKeyMediumFilterButton().isSelected()
+            || currentNote == null
+            || currentNote.getBibliographyRefId() == null
+            || currentNote.getBibliographyRefId() <= 0) {
+      return List.of();
+    }
+
+    if (keyContextFilterUsesAiContext && isAiTextEntry(currentBibliographyEntry)) {
+      String aiContext = extractStringBibValue(currentBibliographyEntry, "ai_context");
+      return toKeyRows(noteRepository.loadKeywordUsageRowsForAiContext(aiContext), true);
+    }
+
+    return toKeyRows(
+        noteRepository.loadKeywordUsageRowsForBibliographyEntry(currentNote.getBibliographyRefId()),
+        true
+    );
+  }
+
+  /**
+   * Lädt die globale KEY-Liste ohne Schlagwörter, die bereits in der Zusatzliste stehen.
+   *
+   * @param contextRows bereits geladene Zusatzzeilen
+   * @return reguläre KEY-Zeilen
+   */
+  private List<ZettelWindowView.KeyTableRow> loadGlobalKeyRowsExcluding(List<ZettelWindowView.KeyTableRow> contextRows) {
+    Set<Integer> contextKeywordIds = new HashSet<>();
+    if (contextRows != null) {
+      for (ZettelWindowView.KeyTableRow row : contextRows) {
+        contextKeywordIds.add(row.getKeywordId());
+      }
+    }
+
+    List<ZettelWindowView.KeyTableRow> rows = new ArrayList<>();
+    for (NoteRepository.KeywordUsageRow row : noteRepository.loadKeywordUsageRows()) {
+      if (!contextKeywordIds.contains(row.id())) {
+        rows.add(new KeyTableRow(row.id(), row.keyword(), row.count()));
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * Wandelt Repository-Zeilen in KEY-Tabellenzeilen um.
+   *
+   * @param rows Repository-Zeilen
+   * @param contextRow {@code true}, wenn die Zeilen zur Zusatzliste gehören
+   * @return Tabellenzeilen
+   */
+  private List<ZettelWindowView.KeyTableRow> toKeyRows(List<NoteRepository.KeywordUsageRow> rows, boolean contextRow) {
+    if (rows == null || rows.isEmpty()) {
+      return List.of();
+    }
+
+    List<ZettelWindowView.KeyTableRow> mappedRows = new ArrayList<>();
+    for (NoteRepository.KeywordUsageRow row : rows) {
+      mappedRows.add(new KeyTableRow(row.id(), row.keyword(), row.count(), contextRow));
+    }
+    return mappedRows;
+  }
+
+  /**
+   * Liest einen String-Wert aus einem dynamischen bibliographischen Eintrag.
+   *
+   * @param entry bibliographischer Eintrag
+   * @param bibtexName technischer Feldname
+   * @return String-Wert oder leerer String
+   */
+  private String extractStringBibValue(DynamicBibliographyEntry entry, String bibtexName) {
+    if (entry == null || bibtexName == null || bibtexName.isBlank()) {
+      return "";
+    }
+
+    return entry.findValue(bibtexName)
+                .filter(StringBibValue.class::isInstance)
+                .map(StringBibValue.class::cast)
+                .map(StringBibValue::value)
+                .map(this::safeTrim)
+                .orElse("");
   }
 
   /**
@@ -5102,25 +5608,97 @@ public class ZettelWindowController {
    * Die aktuell eingegebene Zeichenkette wird case-insensitiv innerhalb
    * der vorhandenen Schlagwörter gesucht.
    *
-   * @param typedText aktuell eingegebener Text
+   * @param request KeywordSuggestionRequest
    * @return maximal 15 passende Schlagwörter
    */
-  private List<String> loadKeywordSuggestionsForInlineEdit(String typedText) {
-    String normalized = normalizeKeyword(typedText);
+  private List<String> loadKeywordSuggestionsForInlineEdit(KeywordsTablePane.KeywordSuggestionRequest request) {
+    String normalized = normalizeKeyword(request.text());
     if (normalized.isBlank()) {
       return List.of();
     }
 
-    return noteRepository.searchKeywordsContainingIgnoreCase(normalized, 15).stream()
-               .filter(keyword -> !keyword.equalsIgnoreCase(normalized))
+    List<String> raw = noteRepository.searchKeywordsUnicodeAware(normalized, request.prefixOnly(), request.allTokens(), 40);
+    return preferCaseAwareDuplicates(raw, normalized).stream()
+               .filter(keyword -> !keyword.equals(normalized))
+               .limit(15)
                .toList();
+  }
+
+  /**
+   * Filtert case-insensitive Duplikatgruppen so, dass bei mehrfach vorhandenen
+   * Schreibweisen die zur Eingabe passende Gross-/Kleinschreibung bevorzugt wird.
+   *
+   * @param suggestions Vorschlaege
+   * @param typedText Eingabe
+   * @return bereinigte Vorschlaege
+   */
+  private List<String> preferCaseAwareDuplicates(List<String> suggestions, String typedText) {
+    Map<String, List<String>> groups = new LinkedHashMap<>();
+    for (String suggestion : suggestions) {
+      groups.computeIfAbsent(lowerKeyword(suggestion), ignored -> new ArrayList<>()).add(suggestion);
+    }
+
+    List<String> out = new ArrayList<>();
+    for (List<String> group : groups.values()) {
+      if (group.size() <= 1) {
+        out.addAll(group);
+        continue;
+      }
+      List<String> caseMatches = group.stream()
+                                      .filter(value -> value.contains(typedText) || value.startsWith(typedText))
+                                      .toList();
+      out.addAll(caseMatches.isEmpty() ? group : caseMatches);
+    }
+    return out;
+  }
+
+  /**
+   * Fuegt dem aktuellen Zettel ein Schlagwort hinzu und aktualisiert die Ansicht sofort.
+   *
+   * @param keyword Schlagwort
+   */
+  private void addKeywordToCurrentNote(String keyword) {
+    String normalized = normalizeKeyword(keyword);
+    if (currentNote == null || normalized.isBlank()) {
+      return;
+    }
+    if (currentNote.getKeywords().stream().anyMatch(existing -> existing.equals(normalized))) {
+      return;
+    }
+    currentNote.getKeywords().add(normalized);
+    view.getKeywordsTablePane().setKeywords(currentNote.getKeywords());
+    saveCurrentIfValid();
+    refreshKeywordViews();
+    refreshListWindow();
+  }
+
+  /**
+   * Wandelt einen Schlagworttext unicodefaehig in Kleinschreibung.
+   *
+   * @param value Rohwert
+   * @return normalisierter Wert
+   */
+  private String lowerKeyword(String value) {
+    return value == null ? "" : value.toLowerCase(Locale.GERMAN);
   }
 
   /**
    * Aktualisiert den sichtbaren Inhalt des LIST-Fensters.
    */
   private void refreshListWindow() {
+    refreshListWindow(false);
+  }
+
+  /**
+   * Aktualisiert den sichtbaren Inhalt des LIST-Fensters.
+   *
+   * @param force {@code true}, wenn auch eine gesperrte Liste neu aufgebaut werden soll
+   */
+  private void refreshListWindow(boolean force) {
     if (view.getActiveServiceAreaMode() != ZettelWindowView.ServiceAreaMode.LIST) {
+      return;
+    }
+    if (!force && view.getListLockToggleButton().isSelected()) {
       return;
     }
 
@@ -5138,6 +5716,25 @@ public class ZettelWindowController {
     } else {
       refreshListFilterWindow(notesById, keywordIndex);
     }
+  }
+
+  /**
+   * Aktualisiert LIST nach einem Zettelwechsel nur dann, wenn die aktuelle
+   * Ansicht vom aktiven Zettel abhaengt. Die Filtertabelle bleibt dadurch
+   * schnell anklickbar und wird beim Oeffnen eines Treffers nicht neu berechnet.
+   */
+  private void refreshListWindowAfterNoteActivation() {
+    if (view.getActiveListMode() == ZettelWindowView.ListMode.FILTER) {
+      return;
+    }
+    refreshListWindow(false);
+  }
+
+  /**
+   * Fordert eine entprellte Aktualisierung des LIST-Fensters an.
+   */
+  private void requestListRefresh() {
+    listRefreshDebounce.playFromStart();
   }
 
   /**
@@ -5361,9 +5958,7 @@ public class ZettelWindowController {
     }
 
     try {
-      InlineCssTextArea area = new InlineCssTextArea();
-      InlineCssRtfxBlobCodec.decodeFromGzipInto(area, note.bodyBlob);
-      return area.getText();
+      return InlineCssRtfxBlobCodec.decodeFromGzipToPlainText(note.bodyBlob);
     } catch (Exception ex) {
       return "";
     }
@@ -5376,7 +5971,7 @@ public class ZettelWindowController {
    * @return normalisierter Text
    */
   private String normalizeFilterText(String text) {
-    return text == null ? "" : text.trim().toLowerCase(Locale.ROOT);
+    return text == null ? "" : text.trim().toLowerCase(Locale.GERMAN);
   }
 
   /**
@@ -5387,8 +5982,8 @@ public class ZettelWindowController {
    * @return {@code true}, wenn Treffer vorliegt
    */
   private boolean containsIgnoreCase(String text, String needle) {
-    String source = text == null ? "" : text.toLowerCase(Locale.ROOT);
-    String search = needle == null ? "" : needle.toLowerCase(Locale.ROOT);
+    String source = text == null ? "" : text.toLowerCase(Locale.GERMAN);
+    String search = needle == null ? "" : needle.toLowerCase(Locale.GERMAN);
     return source.contains(search);
   }
 
@@ -5456,7 +6051,7 @@ public class ZettelWindowController {
     button.setAlignment(Pos.CENTER_LEFT);
     button.setWrapText(false);
     button.setPadding(new Insets(2, 0, 2, depth * 16.0));
-    button.setOnAction(e -> openNoteViaToolbar(noteId));
+    button.setOnAction(e -> openNoteFromList(noteId));
     return button;
   }
 

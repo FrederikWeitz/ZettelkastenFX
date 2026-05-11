@@ -2,8 +2,11 @@ package de.zettelkastenfx.export;
 
 import de.zettelkastenfx.export.model.ExportParagraph;
 import de.zettelkastenfx.export.model.ExportParagraphStyle;
+import de.zettelkastenfx.export.model.ExportTable;
 import de.zettelkastenfx.export.model.ExportTextRun;
 import de.zettelkastenfx.export.model.ExportTextStyle;
+import de.zettelkastenfx.notes.editor.media.EditorImageAssetService;
+import de.zettelkastenfx.notes.editor.table.EditorTableService;
 import de.zettelkastenfx.notes.model.Note;
 import de.zettelkastenfx.persistence.InlineCssRtfxBlobCodec;
 import org.fxmisc.richtext.model.Paragraph;
@@ -77,6 +80,16 @@ public class NoteBodyTextExtractor {
 
     List<ExportParagraph> paragraphs = new ArrayList<>();
     for (Paragraph<String, String, String> paragraph : document.getParagraphs()) {
+      String paragraphText = paragraph.getText();
+      if (EditorImageAssetService.isImageReferenceParagraph(paragraphText)) {
+        paragraphs.add(ExportParagraph.image(EditorImageAssetService.resolveReferencePath(paragraphText)));
+        continue;
+      }
+      if (EditorTableService.isTableReferenceParagraph(paragraphText)) {
+        paragraphs.add(tableParagraph(paragraphText));
+        continue;
+      }
+
       List<ExportTextRun> runs = new ArrayList<>();
       for (StyledSegment<String, String> segment : paragraph.getStyledSegments()) {
         String text = segment.getSegment();
@@ -101,8 +114,31 @@ public class NoteBodyTextExtractor {
       return List.of();
     }
     return normalized.lines()
-                     .map(ExportParagraph::plain)
+                     .map(line -> EditorImageAssetService.isImageReferenceParagraph(line)
+                                      ? ExportParagraph.image(EditorImageAssetService.resolveReferencePath(line))
+                                      : EditorTableService.isTableReferenceParagraph(line)
+                                            ? tableParagraph(line)
+                                      : ExportParagraph.plain(line))
                      .toList();
+  }
+
+  /**
+   * Wandelt einen Tabellenmarker in einen Exportabsatz.
+   *
+   * @param line Tabellenmarker
+   * @return Tabellenabsatz
+   */
+  private ExportParagraph tableParagraph(String line) {
+    var tableData = EditorTableService.resolveReference(line);
+    List<List<String>> cells = new ArrayList<>();
+    for (List<String> row : tableData.cells()) {
+      List<String> exportedRow = new ArrayList<>();
+      for (String cell : row) {
+        exportedRow.add(EditorTableService.plainCellText(cell));
+      }
+      cells.add(List.copyOf(exportedRow));
+    }
+    return ExportParagraph.table(new ExportTable(tableData.rows(), tableData.columns(), cells));
   }
 
   /**
@@ -116,7 +152,10 @@ public class NoteBodyTextExtractor {
       return List.of();
     }
     int end = paragraphs.size();
-    while (end > 0 && paragraphs.get(end - 1).plainText().isBlank()) {
+    while (end > 0
+        && !paragraphs.get(end - 1).isImage()
+        && !paragraphs.get(end - 1).isTable()
+        && paragraphs.get(end - 1).plainText().isBlank()) {
       end--;
     }
     return List.copyOf(paragraphs.subList(0, end));

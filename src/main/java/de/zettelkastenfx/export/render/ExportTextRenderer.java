@@ -5,6 +5,7 @@ import de.zettelkastenfx.export.model.ExportBibliographyEntry;
 import de.zettelkastenfx.export.model.ExportBibliographyField;
 import de.zettelkastenfx.export.model.ExportDocument;
 import de.zettelkastenfx.export.model.ExportNote;
+import de.zettelkastenfx.export.model.ExportParagraph;
 
 /**
  * Rendert das Exportmodell in eine einfache Textstruktur fuer RTF.
@@ -50,8 +51,16 @@ public class ExportTextRenderer {
     if (!header.isBlank()) {
       out.append(header).append(System.lineSeparator());
     }
-    if (document.selection().includeBody() && !note.bodyText().isBlank()) {
-      out.append(note.bodyText()).append(System.lineSeparator());
+    if (document.selection().includeBody() && !note.bodyParagraphs().isEmpty()) {
+      for (ExportParagraph paragraph : note.bodyParagraphs()) {
+        if (paragraph.isImage()) {
+          out.append(paragraph.imagePath()).append(System.lineSeparator());
+        } else if (paragraph.isTable()) {
+          renderTable(out, paragraph);
+        } else {
+          out.append(paragraph.plainText()).append(System.lineSeparator());
+        }
+      }
     }
     if (document.selection().includeKeywords() && !note.keywords().isEmpty()) {
       out.append("Stichwörter:").append(System.lineSeparator());
@@ -62,6 +71,24 @@ public class ExportTextRenderer {
     if (document.selection().bibliographyPlacement() == BibliographyPlacement.AFTER_EACH_NOTE
         && note.bibliographyEntry() != null) {
       renderBibliography(out, note.bibliographyEntry());
+    }
+  }
+
+  private void renderTable(StringBuilder out, ExportParagraph paragraph) {
+    out.append("[Tabelle ")
+        .append(paragraph.table().rows())
+        .append(" x ")
+        .append(paragraph.table().columns())
+        .append("]")
+        .append(System.lineSeparator());
+    for (int row = 0; row < paragraph.table().rows(); row++) {
+      for (int column = 0; column < paragraph.table().columns(); column++) {
+        if (column > 0) {
+          out.append('\t');
+        }
+        out.append(paragraph.table().cell(row, column));
+      }
+      out.append(System.lineSeparator());
     }
   }
 

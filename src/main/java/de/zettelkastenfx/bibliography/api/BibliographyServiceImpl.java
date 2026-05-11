@@ -540,20 +540,7 @@ public class BibliographyServiceImpl implements BibliographyService {
   @Override
   public Optional<BibliographyReference> loadReference(int entryId) {
     Optional<DynamicBibliographyEntry> loaded = dynamicRepository.load(entryId);
-    if (loaded.isEmpty()) {
-      return Optional.empty();
-    }
-
-    DynamicBibliographyEntry entry = loaded.get();
-    String displayText = buildDisplayText(entry);
-
-    return Optional.of(new BibliographyReference(
-        Objects.requireNonNullElse(entry.getId(), entryId),
-        entry.getMediaTypeId(),
-        entry.getMediaTypeBibName(),
-        entry.getMediaTypeName(),
-        displayText
-    ));
+    return loaded.map(entry -> toReference(entry, entryId, Map.of()));
   }
 
   /**
@@ -833,14 +820,21 @@ public class BibliographyServiceImpl implements BibliographyService {
       mediaTypeId = mediaType.get().id();
     }
 
-    return dynamicRepository.searchEntryIdsByFieldValue(
-            mediaTypeId,
-            displayBibtexName,
-            query,
-            limit
-        ).stream()
-               .map(this::loadReference)
-               .flatMap(Optional::stream)
+    List<Integer> entryIds = dynamicRepository.searchEntryIdsByFieldValue(
+        mediaTypeId,
+        displayBibtexName,
+        query,
+        limit
+    );
+    if (entryIds.isEmpty()) {
+      return List.of();
+    }
+
+    Map<Integer, List<MediaAttributeDefinition>> attributesByMediaType =
+        metadataRepository.loadAllAttributesGroupedByMediaType();
+
+    return dynamicRepository.loadAll(entryIds).stream()
+               .map(entry -> toReference(entry, attributesByMediaType))
                .toList();
   }
 
@@ -883,6 +877,73 @@ public class BibliographyServiceImpl implements BibliographyService {
   }
 
   /**
+   * Wandelt einen vollstaendig geladenen Eintrag in die schlanke Referenzansicht.
+   *
+   * @param entry dynamischer Bibliographie-Eintrag
+   * @return Bibliographie-Referenz
+   */
+  private BibliographyReference toReference(DynamicBibliographyEntry entry) {
+    int fallbackEntryId = entry == null || entry.getId() == null ? 0 : entry.getId();
+    return toReference(entry, fallbackEntryId, Map.of());
+  }
+
+  /**
+   * Wandelt einen vollstaendig geladenen Eintrag mit vorbereiteten Attributen in die Referenzansicht.
+   *
+   * @param entry dynamischer Bibliographie-Eintrag
+   * @param attributesByMediaType Attribute nach Medientyp-ID
+   * @return Bibliographie-Referenz
+   */
+  private BibliographyReference toReference(DynamicBibliographyEntry entry,
+                                            Map<Integer, List<MediaAttributeDefinition>> attributesByMediaType) {
+    int fallbackEntryId = entry == null || entry.getId() == null ? 0 : entry.getId();
+    return toReference(entry, fallbackEntryId, attributesByMediaType);
+  }
+
+  /**
+   * Wandelt einen Eintrag mit expliziter Fallback-ID in die Referenzansicht.
+   *
+   * @param entry dynamischer Bibliographie-Eintrag
+   * @param fallbackEntryId Fallback-ID, falls der Eintrag keine ID traegt
+   * @param attributesByMediaType Attribute nach Medientyp-ID
+   * @return Bibliographie-Referenz
+   */
+  private BibliographyReference toReference(DynamicBibliographyEntry entry,
+                                            int fallbackEntryId,
+                                            Map<Integer, List<MediaAttributeDefinition>> attributesByMediaType) {
+    int referenceEntryId = entry == null || entry.getId() == null ? fallbackEntryId : entry.getId();
+    String displayText = buildDisplayText(entry, attributesFor(entry, attributesByMediaType));
+
+    return new BibliographyReference(
+        referenceEntryId,
+        entry == null ? null : entry.getMediaTypeId(),
+        entry == null ? "" : entry.getMediaTypeBibName(),
+        entry == null ? "" : entry.getMediaTypeName(),
+        displayText
+    );
+  }
+
+  /**
+   * Liefert die bekannten Attribute fuer den Medientyp eines Eintrags.
+   *
+   * @param entry dynamischer Bibliographie-Eintrag
+   * @param attributesByMediaType Attribute nach Medientyp-ID
+   * @return passende Attribute oder leere Liste
+   */
+  private List<MediaAttributeDefinition> attributesFor(
+      DynamicBibliographyEntry entry,
+      Map<Integer, List<MediaAttributeDefinition>> attributesByMediaType
+  ) {
+    if (entry == null || entry.getMediaTypeId() == null) {
+      return List.of();
+    }
+    if (attributesByMediaType == null || attributesByMediaType.isEmpty()) {
+      return metadataRepository.loadAttributesForMediaType(entry.getMediaTypeId());
+    }
+    return attributesByMediaType.getOrDefault(entry.getMediaTypeId(), List.of());
+  }
+
+  /**
    * Löst optional einen technischen Medientypnamen in eine Datenbank-ID auf.
    *
    * @param mediaTypeBibName technischer Medientypname
@@ -911,9 +972,24 @@ public class BibliographyServiceImpl implements BibliographyService {
    * @return kompakter Anzeigetext
    */
   private String buildDisplayText(DynamicBibliographyEntry entry) {
+    return buildDisplayText(entry, attributesFor(entry, Map.of()));
+  }
+
+  /**
+   * Baut den kompakten Referenztext mit bereits geladenen Medientypattributen.
+   *
+   * @param entry bibliographischer Eintrag
+   * @param mediaAttributes Attribute des Medientyps
+   * @return kompakter Anzeigetext
+   */
+  private String buildDisplayText(DynamicBibliographyEntry entry, List<MediaAttributeDefinition> mediaAttributes) {
+    if (entry == null) {
+      return "Unbenannter Eintrag";
+    }
+
     if (entry.getMediaTypeId() != null) {
       List<MediaAttributeDefinition> identifyAttributes =
-          metadataRepository.loadAttributesForMediaType(entry.getMediaTypeId()).stream()
+          (mediaAttributes == null ? List.<MediaAttributeDefinition>of() : mediaAttributes).stream()
               .filter(MediaAttributeDefinition::isIdentify)
               .toList();
 

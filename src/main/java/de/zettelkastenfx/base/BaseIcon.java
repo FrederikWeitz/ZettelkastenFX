@@ -59,7 +59,15 @@ public enum BaseIcon {
   DOCUMENT_PAGE_PREVIOUS("document_page_previous", "Zurück"),
   DOCUMENT_PAGE_NEXT("document_page_next", "Vor"),
 
+  FILTER_KEY("filter_key", "Medium-Schlagwörter"),
+
+  IMAGE("image", "Bild einfügen"),
+
   INFORMATION("information", "Info"),
+
+  INBOX_DOCUMENT_TEXT("inbox_document_text", "KI-Kontext"),
+
+  INSERT_CITATION("insert_citation", "Zitat einfügen"),
 
   KEY("key", "Schlagwörter"),
 
@@ -68,6 +76,8 @@ public enum BaseIcon {
 
   LINK_EDIT("link_edit", "Verweise"),
   LIST("list", "Liste"),
+  LOCK("lock", "Liste sperren"),
+  LOCK_OPEN("lock_open", "Liste freigeben"),
 
   MAGNIFY_LINK("magnify_link", "Verweise"),
 
@@ -88,6 +98,16 @@ public enum BaseIcon {
 
   TAG_BLUE_ADD("tag_blue_add", "Eigenschaft hinzufügen"),
   TAG_BLUE_DELETE("tag_blue_delete", "Eigenschaft entfernen"),
+
+  SEPARATOR("separator", "Trennlinie einfügen"),
+
+  TABLE("table", "Tabelle einfügen"),
+  TABLE_COLUMN_DELETE("table_column_delete", "Spalte löschen"),
+  TABLE_COLUMNS_INSERT_LEFT("table_columns_insert_left", "Spalte links einfügen"),
+  TABLE_COLUMNS_INSERT_RIGHT("table_columns_insert_right", "Spalte rechts einfügen"),
+  TABLE_ROW_DELETE("table_row_delete", "Zeile löschen"),
+  TABLE_ROWS_INSERT_ABOVE_WORD("table_rows_insert_above_word", "Zeile oberhalb einfügen"),
+  TABLE_ROWS_INSERT_BELOW_WORD("table_rows_insert_below_word", "Zeile unterhalb einfügen"),
 
   TEXT_ALIGN_CENTER("text_align_center", "Zentrieren"),
   TEXT_ALIGN_JUSTIFY("text_align_justify", "Blocksatz"),

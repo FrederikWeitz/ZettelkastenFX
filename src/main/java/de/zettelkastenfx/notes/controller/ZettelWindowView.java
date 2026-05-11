@@ -21,12 +21,19 @@ import javafx.scene.layout.*;
 import javafx.util.StringConverter;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * Baut und kapselt die JavaFX-View des Zettelfensters.
  */
 public class ZettelWindowView {
+
+  private static final double DEFAULT_SERVICE_AREA_WIDTH = 360.0;
+  private static final double DEFAULT_WORK_AREA_DIVIDER_WIDTH = 8.0;
+  private static final String KEY_CONTEXT_ROW_STYLE_CLASS = "zettel-key-context-row";
+  private static final String WORK_AREA_DIVIDER_HANDLER_KEY = "zettel-work-divider-handler-installed";
 
   private final BorderPane root;
 
@@ -55,6 +62,7 @@ public class ZettelWindowView {
 
   private final BottomToolbar bottomToolbar;
 
+  private final StackPane workAreaHost;
   private final SplitPane workAreaSplitPane;
 
   private final ToolBar serviceAreaToolBar;
@@ -89,6 +97,8 @@ public class ZettelWindowView {
   private final BorderPane keyPane;
   private final ToolBar keyToolBar;
   private final TextField keyFilterField;
+  private final ToggleButton keyMediumFilterButton;
+  private final ToggleButton keyAiContextFilterButton;
   private final TextField keyKeepField;
   private final ComboBox<String> keyReplaceField;
   private final Button keyReplaceButton;
@@ -102,6 +112,7 @@ public class ZettelWindowView {
   private final TableView<KeyHeaderRow> keyHeaderTable;
   private final TableColumn<KeyHeaderRow, Number> keyHeaderIdColumn;
   private final TableColumn<KeyHeaderRow, String> keyHeaderTitleColumn;
+  private Consumer<String> keyAltClickHandler = keyword -> {};
 
   private Integer pendingKeyEditRowId;
   private String pendingKeyEditText;
@@ -123,6 +134,7 @@ public class ZettelWindowView {
   private final ToolBar listToolBar;
   private final Button listPageKeyButton;
   private final Slider listDepthSlider;
+  private final ToggleButton listLockToggleButton;
   private final TextField listFilterField;
   private final ToggleButton listFullTextToggleButton;
   private final StackPane listContentHost;
@@ -500,6 +512,7 @@ public class ZettelWindowView {
     private final int keywordId;
     private final String keyword;
     private final int count;
+    private final boolean contextRow;
 
     /**
      * Erzeugt eine Tabellenzeile für das KEY-Fenster.
@@ -509,9 +522,22 @@ public class ZettelWindowView {
      * @param count Häufigkeit
      */
     public KeyTableRow(int keywordId, String keyword, int count) {
+      this(keywordId, keyword, count, false);
+    }
+
+    /**
+     * Erzeugt eine Tabellenzeile für das KEY-Fenster.
+     *
+     * @param keywordId ID des Schlagworts
+     * @param keyword Schlagworttext
+     * @param count Häufigkeit
+     * @param contextRow {@code true}, wenn die Zeile zur Zusatzliste gehört
+     */
+    public KeyTableRow(int keywordId, String keyword, int count, boolean contextRow) {
       this.keywordId = keywordId;
       this.keyword = keyword;
       this.count = count;
+      this.contextRow = contextRow;
     }
 
     /**
@@ -539,6 +565,15 @@ public class ZettelWindowView {
      */
     public int getCount() {
       return count;
+    }
+
+    /**
+     * Prüft, ob die Zeile in der hervorgehobenen Zusatzliste steht.
+     *
+     * @return {@code true}, wenn die Zeile zur Medium- oder KI-Kontextliste gehört
+     */
+    public boolean isContextRow() {
+      return contextRow;
     }
   }
 
@@ -630,6 +665,11 @@ public class ZettelWindowView {
    */
   private ServiceAreaMode activeServiceAreaMode;
   private double[] expandedDividerPositions = new double[] {0.33, 0.66};
+  private double lastExpandedNoteAreaWidth = 0.0;
+  private double lastExpandedKeywordAreaWidth = 0.0;
+  private double lastExpandedServiceAreaWidth = DEFAULT_SERVICE_AREA_WIDTH;
+  private double lastExpandedWorkAreaWidth = 0.0;
+  private double lastWorkAreaDividerWidth = DEFAULT_WORK_AREA_DIVIDER_WIDTH;
 
   private BookAuthorMode activeBookAuthorMode = BookAuthorMode.OFF;
 
@@ -940,6 +980,24 @@ public class ZettelWindowView {
   }
 
   /**
+   * Liefert den Button für die Medium-Schlagwortliste.
+   *
+   * @return Medium-Filterbutton des KEY-Fensters
+   */
+  public ToggleButton getKeyMediumFilterButton() {
+    return keyMediumFilterButton;
+  }
+
+  /**
+   * Liefert den Button für die KI-Kontext-Schlagwortliste.
+   *
+   * @return KI-Kontextbutton des KEY-Fensters
+   */
+  public ToggleButton getKeyAiContextFilterButton() {
+    return keyAiContextFilterButton;
+  }
+
+  /**
    * Liefert den Wert von {@code keyKeepField}.
    *
    * @return aktueller Wert von {@code keyKeepField}
@@ -1018,6 +1076,15 @@ public class ZettelWindowView {
    */
   public Slider getListDepthSlider() {
     return listDepthSlider;
+  }
+
+  /**
+   * Liefert den Sperrbutton der LIST-Ansicht.
+   *
+   * @return Sperrbutton
+   */
+  public ToggleButton getListLockToggleButton() {
+    return listLockToggleButton;
   }
 
   /**
@@ -1274,6 +1341,11 @@ public class ZettelWindowView {
     workAreaSplitPane = new SplitPane();
     workAreaSplitPane.setOrientation(Orientation.HORIZONTAL);
     workAreaSplitPane.getStyleClass().add("zettel-work-split");
+    workAreaSplitPane.setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE);
+
+    workAreaHost = new StackPane(workAreaSplitPane);
+    workAreaHost.getStyleClass().add("zettel-work-host");
+    StackPane.setAlignment(workAreaSplitPane, Pos.TOP_LEFT);
 
     noteEditorPane = new NoteEditorPane();
     noteEditorPane.getStyleClass().add("zettel-work-pane");
@@ -1403,6 +1475,17 @@ public class ZettelWindowView {
     keyFilterField.setPromptText("Schlagwörter suchen");
     keyFilterField.setPrefWidth(170);
 
+    keyMediumFilterButton = BaseIcon.FILTER_KEY.toggleButton("Medium-Schlagwörter einblenden");
+    keyMediumFilterButton.getStyleClass().add("zettel-key-context-toggle");
+    keyMediumFilterButton.setFocusTraversable(false);
+
+    keyAiContextFilterButton = BaseIcon.INBOX_DOCUMENT_TEXT.toggleButton("KI-Kontext-Schlagwörter einblenden");
+    keyAiContextFilterButton.getStyleClass().add("zettel-key-context-toggle");
+    keyAiContextFilterButton.setFocusTraversable(false);
+    keyAiContextFilterButton.setVisible(false);
+    keyAiContextFilterButton.setManaged(false);
+    keyAiContextFilterButton.setDisable(true);
+
     keyKeepField = new TextField();
     keyKeepField.getStyleClass().add("zettel-key-keep-field");
     keyKeepField.setPromptText("Beibehalten");
@@ -1433,10 +1516,8 @@ public class ZettelWindowView {
     keyToolBar.getItems().addAll(
         keyShowHeadersToggleButton,
         keyFilterField,
-        new Separator(Orientation.VERTICAL),
-        keyKeepField,
-        keyReplaceButton,
-        keyReplaceField
+        keyMediumFilterButton,
+        keyAiContextFilterButton
     );
 
     keyStatusLabel = new Label();
@@ -1465,13 +1546,33 @@ public class ZettelWindowView {
     keyCountColumn.setCellValueFactory(cellData ->
                                            new ReadOnlyIntegerWrapper(cellData.getValue().getCount())
     );
+    keyCountColumn.setCellFactory(column -> new TableCell<>() {
+      {
+        setAlignment(Pos.CENTER_RIGHT);
+      }
+
+      @Override
+      protected void updateItem(Number item, boolean empty) {
+        super.updateItem(item, empty);
+        setText(empty || item == null ? null : item.toString());
+      }
+    });
 
     keyTable.getColumns().addAll(keyKeywordColumn, keyCountColumn);
+    keyTable.setSortPolicy(this::sortKeyTablePreservingContextRows);
 
     keyTable.setRowFactory(table -> {
       TableRow<KeyTableRow> row = new TableRow<>();
+      row.itemProperty().addListener((obs, oldItem, newItem) -> applyKeyContextRowStyle(row, newItem));
+      row.emptyProperty().addListener((obs, wasEmpty, isEmpty) -> applyKeyContextRowStyle(row, row.getItem()));
       row.addEventFilter(MouseEvent.MOUSE_PRESSED, event -> {
         if (event.getButton() != MouseButton.PRIMARY || row.isEmpty()) {
+          return;
+        }
+
+        if (event.isAltDown()) {
+          keyAltClickHandler.accept(row.getItem().getKeyword());
+          event.consume();
           return;
         }
 
@@ -1636,6 +1737,7 @@ public class ZettelWindowView {
 
     bookMediaNoteCountColumn = new TableColumn<>("Zettel");
     bookMediaNoteCountColumn.setId("bookMediaNoteCountColumn");
+    bookMediaNoteCountColumn.setStyle("-fx-alignment: CENTER-RIGHT;");
     bookMediaNoteCountColumn.setCellValueFactory(cell ->
                                                      new ReadOnlyIntegerWrapper(cell.getValue().getNoteCount())
     );
@@ -1659,6 +1761,7 @@ public class ZettelWindowView {
 
     bookNotesIdColumn = new TableColumn<>("Zettel");
     bookNotesIdColumn.setId("bookNotesIdColumn");
+    bookNotesIdColumn.setStyle("-fx-alignment: CENTER-RIGHT;");
     bookNotesIdColumn.setCellValueFactory(cell ->
                                               new ReadOnlyIntegerWrapper(cell.getValue().getNoteId())
     );
@@ -1712,6 +1815,10 @@ public class ZettelWindowView {
     listDepthSlider.setShowTickLabels(true);
     listDepthSlider.setFocusTraversable(false);
 
+    listLockToggleButton = BaseIcon.LOCK_OPEN.toggleButton("Liste sperren");
+    listLockToggleButton.getStyleClass().add("zettel-list-lock-toggle");
+    listLockToggleButton.setFocusTraversable(false);
+
     listFilterField = new TextField();
     listFilterField.getStyleClass().add("zettel-list-filter-field");
     listFilterField.setPromptText("Überschriften filtern");
@@ -1731,8 +1838,8 @@ public class ZettelWindowView {
         listPageKeyButton,
         listDepthLabel,
         listDepthSlider,
+        listLockToggleButton,
         new Separator(Orientation.VERTICAL),
-        listSpacer,
         listFilterField,
         listFullTextToggleButton
     );
@@ -1812,12 +1919,16 @@ public class ZettelWindowView {
     listPane.setCenter(listContentHost);
 
     setListMode(ListMode.PAGE_KEY);
+    updateListLockIcon();
 
     serviceArea.setTop(serviceAreaToolBar);
     serviceArea.setCenter(serviceAreaContentHost);
 
     workAreaSplitPane.getItems().addAll(noteEditorPane, keywordsTablePane, serviceArea);
-    root.setCenter(workAreaSplitPane);
+    SplitPane.setResizableWithParent(noteEditorPane, false);
+    SplitPane.setResizableWithParent(keywordsTablePane, false);
+    SplitPane.setResizableWithParent(serviceArea, true);
+    root.setCenter(workAreaHost);
 
     setServiceAreaContent(magnifyLinkPane);
     setActiveServiceAreaMode(ServiceAreaMode.MAGNIFY_LINK);
@@ -2257,6 +2368,368 @@ public class ZettelWindowView {
   }
 
   /**
+   * Liefert die zuletzt bekannte Breite des rechten Arbeitsbereichs.
+   *
+   * @return aktuelle oder gespeicherte Service-Breite
+   */
+  public double getCurrentServiceAreaWidth() {
+    if (workAreaSplitPane.getItems().contains(serviceArea)) {
+      double measuredWidth = resolveNodeWidth(serviceArea, lastExpandedServiceAreaWidth);
+      if (measuredWidth > 1.0) {
+        lastExpandedServiceAreaWidth = measuredWidth;
+      }
+    }
+    return lastExpandedServiceAreaWidth <= 1.0 ? DEFAULT_SERVICE_AREA_WIDTH : lastExpandedServiceAreaWidth;
+  }
+
+  /**
+   * Liefert die Breite, um die das Fenster beim Aufklappen erweitert werden soll.
+   *
+   * @return bevorzugte Service-Breite
+   */
+  public double getPreferredServiceAreaWidth() {
+    return getCurrentServiceAreaWidth();
+  }
+
+  /**
+   * Liefert die gesamte Breite, um die das Fenster beim Ein- oder Ausklappen
+   * der Service-Area korrigiert werden muss.
+   * Diese Breite besteht aus der Service-Area selbst plus dem SplitPane-Teiler,
+   * der beim Entfernen des dritten Panels ebenfalls verschwindet.
+   *
+   * @return Servicebreite inklusive eines horizontalen SplitPane-Teilers
+   */
+  public double getServiceAreaToggleWidthDelta() {
+    double collapsedPrimaryWidth = getRememberedCollapsedPrimaryWidth();
+    double expandedWorkAreaWidth = getRememberedExpandedWorkAreaWidth();
+    if (collapsedPrimaryWidth > 1.0 && expandedWorkAreaWidth > collapsedPrimaryWidth) {
+      return expandedWorkAreaWidth - collapsedPrimaryWidth;
+    }
+
+    return WorkAreaSplitLayout.serviceAreaToggleWidthDelta(
+        getCurrentServiceAreaWidth(),
+        getWorkAreaDividerWidth(),
+        DEFAULT_SERVICE_AREA_WIDTH,
+        DEFAULT_WORK_AREA_DIVIDER_WIDTH
+    );
+  }
+
+  /**
+   * Merkt sich die aktuellen Pixelbreiten der drei Arbeitsbereiche.
+   */
+  public void rememberCurrentWorkAreaWidths() {
+    lastWorkAreaDividerWidth = getWorkAreaDividerWidth();
+
+    if (!serviceAreaCollapsed && workAreaSplitPane.getItems().contains(serviceArea)) {
+      lastExpandedNoteAreaWidth = resolveNodeWidth(noteEditorPane, lastExpandedNoteAreaWidth);
+      lastExpandedKeywordAreaWidth = resolveNodeWidth(keywordsTablePane, lastExpandedKeywordAreaWidth);
+      lastExpandedServiceAreaWidth = resolveNodeWidth(serviceArea, lastExpandedServiceAreaWidth);
+      lastExpandedWorkAreaWidth = resolveNodeWidth(workAreaSplitPane, lastExpandedWorkAreaWidth);
+    }
+
+    applyRememberedWorkAreaPreferredWidths();
+  }
+
+  /**
+   * Stellt die gespeicherten Arbeitsbereichsbreiten im naechsten Layout-Takt
+   * erneut her.
+   */
+  public void restoreRememberedWorkAreaWidthsAfterLayout() {
+    Platform.runLater(() -> {
+      restoreRememberedWorkAreaDividerPositions();
+      Platform.runLater(this::restoreRememberedWorkAreaDividerPositions);
+    });
+  }
+
+  /**
+   * Wendet die gespeicherten Breiten als bevorzugte Breiten der SplitPane-Kinder an.
+   */
+  private void applyRememberedWorkAreaPreferredWidths() {
+    applyPreferredWidth(noteEditorPane, lastExpandedNoteAreaWidth);
+    applyPreferredWidth(keywordsTablePane, lastExpandedKeywordAreaWidth);
+    applyPreferredWidth(serviceArea, lastExpandedServiceAreaWidth);
+  }
+
+  /**
+   * Fixiert die beiden primaeren Arbeitsbereiche auf ihre gemerkten Pixelbreiten.
+   */
+  private void lockPrimaryWorkAreaChildrenToRememberedWidths() {
+    applyFixedWidth(noteEditorPane, lastExpandedNoteAreaWidth);
+    applyFixedWidth(keywordsTablePane, lastExpandedKeywordAreaWidth);
+  }
+
+  /**
+   * Gibt die Breitenfixierung der primaeren Arbeitsbereiche fuer manuelles Ziehen frei.
+   */
+  private void releasePrimaryWorkAreaChildLocks() {
+    releaseFixedWidth(noteEditorPane, lastExpandedNoteAreaWidth);
+    releaseFixedWidth(keywordsTablePane, lastExpandedKeywordAreaWidth);
+  }
+
+  /**
+   * Setzt die bevorzugte Breite eines Bereichs, sofern ein belastbarer Wert
+   * vorliegt.
+   *
+   * @param region Arbeitsbereich
+   * @param width bevorzugte Breite
+   */
+  private void applyPreferredWidth(Region region, double width) {
+    if (region == null || width <= 1.0) {
+      return;
+    }
+
+    region.setPrefWidth(width);
+  }
+
+  /**
+   * Setzt Mindest-, bevorzugte und Maximalbreite eines Bereichs auf denselben Wert.
+   *
+   * @param region Arbeitsbereich
+   * @param width feste Breite
+   */
+  private void applyFixedWidth(Region region, double width) {
+    if (region == null || width <= 1.0) {
+      return;
+    }
+
+    region.setMinWidth(width);
+    region.setPrefWidth(width);
+    region.setMaxWidth(width);
+  }
+
+  /**
+   * Gibt eine zuvor feste Breite wieder frei und behaelt die bevorzugte Breite.
+   *
+   * @param region Arbeitsbereich
+   * @param preferredWidth bevorzugte Breite nach dem Freigeben
+   */
+  private void releaseFixedWidth(Region region, double preferredWidth) {
+    if (region == null) {
+      return;
+    }
+
+    region.setMinWidth(Region.USE_COMPUTED_SIZE);
+    region.setMaxWidth(Double.MAX_VALUE);
+    applyPreferredWidth(region, preferredWidth);
+  }
+
+  /**
+   * Stellt die gespeicherten SplitPane-Teiler fuer den aktuellen Klappzustand her.
+   */
+  private void restoreRememberedWorkAreaDividerPositions() {
+    applyRememberedWorkAreaPreferredWidths();
+    if (serviceAreaCollapsed) {
+      lockWorkAreaToRememberedPrimaryWidth();
+      restoreCollapsedDividerPositionFromWidths();
+    } else {
+      releaseWorkAreaWidthLock();
+      restoreExpandedDividerPositionsFromWidths();
+    }
+  }
+
+  /**
+   * Fixiert die SplitPane-Breite im eingeklappten Zustand auf die gespeicherten
+   * Breiten von Zettel- und Stichwortbereich plus einen sichtbaren Teiler.
+   * Ueberschuessige Fensterbreite bleibt dadurch ausserhalb der SplitPane und
+   * kann die Stichwortspalte nicht vergroessern.
+   */
+  private void lockWorkAreaToRememberedPrimaryWidth() {
+    double targetWidth = getRememberedCollapsedPrimaryWidth();
+    if (targetWidth <= 1.0) {
+      return;
+    }
+
+    lockPrimaryWorkAreaChildrenToRememberedWidths();
+    workAreaSplitPane.setMinWidth(targetWidth);
+    workAreaSplitPane.setPrefWidth(targetWidth);
+    workAreaSplitPane.setMaxWidth(targetWidth);
+  }
+
+  /**
+   * Liefert die gemerkte Zielbreite der eingeklappten Primaerbereiche.
+   *
+   * @return Breite von Zettelanzeige, Stichwortanzeige und einem sichtbaren Teiler
+   */
+  private double getRememberedCollapsedPrimaryWidth() {
+    return WorkAreaSplitLayout.collapsedPrimaryWidth(
+        lastExpandedNoteAreaWidth,
+        lastExpandedKeywordAreaWidth,
+        getStableWorkAreaDividerWidth()
+    );
+  }
+
+  /**
+   * Liefert eine belastbare aufgeklappte Arbeitsflaechenbreite.
+   *
+   * @return aktuelle oder zuletzt gemerkte Breite der aufgeklappten SplitPane
+   */
+  private double getRememberedExpandedWorkAreaWidth() {
+    double currentWidth = 0.0;
+    if (!serviceAreaCollapsed && workAreaSplitPane.getItems().contains(serviceArea)) {
+      currentWidth = resolveNodeWidth(workAreaSplitPane, lastExpandedWorkAreaWidth);
+    }
+    double resolvedWidth = WorkAreaSplitLayout.resolvePositiveWidth(currentWidth, lastExpandedWorkAreaWidth);
+    if (resolvedWidth > 1.0) {
+      lastExpandedWorkAreaWidth = resolvedWidth;
+    }
+    return lastExpandedWorkAreaWidth;
+  }
+
+  /**
+   * Liefert eine Teilerbreite, die fuer den Wechsel zwischen zwei und drei Panels stabil ist.
+   *
+   * @return stabile Teilerbreite
+   */
+  private double getStableWorkAreaDividerWidth() {
+    return Math.max(
+        WorkAreaSplitLayout.resolveDividerWidth(0.0, lastWorkAreaDividerWidth, DEFAULT_WORK_AREA_DIVIDER_WIDTH),
+        DEFAULT_WORK_AREA_DIVIDER_WIDTH
+    );
+  }
+
+  /**
+   * Gibt die SplitPane-Breite wieder frei, sobald die Service-Area sichtbar ist.
+   * Dann nimmt ausschliesslich die rechte Service-Area zusaetzliche Breite auf.
+   */
+  private void releaseWorkAreaWidthLock() {
+    workAreaSplitPane.setMinWidth(Region.USE_COMPUTED_SIZE);
+    workAreaSplitPane.setPrefWidth(Region.USE_COMPUTED_SIZE);
+    workAreaSplitPane.setMaxWidth(Double.MAX_VALUE);
+  }
+
+  /**
+   * Ermittelt eine nutzbare Breite eines Knotens mit Fallback.
+   *
+   * @param node zu messender Knoten
+   * @param fallback Fallback-Breite
+   * @return positive Breite oder Fallback
+   */
+  private double resolveNodeWidth(Node node, double fallback) {
+    if (node == null) {
+      return fallback;
+    }
+
+    double width = node.getBoundsInParent().getWidth();
+    if (width <= 1.0) {
+      width = node.getLayoutBounds().getWidth();
+    }
+    if (width <= 1.0) {
+      width = fallback;
+    }
+    return width;
+  }
+
+  /**
+   * Ermittelt die aktuelle Breite eines horizontalen SplitPane-Teilers.
+   *
+   * @return gemessene Teilerbreite oder stabiler Fallback
+   */
+  private double getWorkAreaDividerWidth() {
+    for (Node divider : workAreaSplitPane.lookupAll(".split-pane-divider")) {
+      double width = resolveNodeWidth(divider, 0.0);
+      double resolvedWidth = WorkAreaSplitLayout.resolveDividerWidth(
+          width,
+          lastWorkAreaDividerWidth,
+          DEFAULT_WORK_AREA_DIVIDER_WIDTH
+      );
+      if (resolvedWidth > 1.0) {
+        lastWorkAreaDividerWidth = resolvedWidth;
+        return resolvedWidth;
+      }
+    }
+
+    lastWorkAreaDividerWidth = WorkAreaSplitLayout.resolveDividerWidth(
+        0.0,
+        lastWorkAreaDividerWidth,
+        DEFAULT_WORK_AREA_DIVIDER_WIDTH
+    );
+    return lastWorkAreaDividerWidth;
+  }
+
+  /**
+   * Setzt die SplitPane-Teiler anhand der gespeicherten Pixelbreiten.
+   */
+  private void restoreExpandedDividerPositionsFromWidths() {
+    applyRememberedWorkAreaPreferredWidths();
+    lockPrimaryWorkAreaChildrenToRememberedWidths();
+    double totalWidth = workAreaSplitPane.getWidth();
+    if (totalWidth <= 1.0) {
+      double firstDivider = expandedDividerPositions.length > 0 ? expandedDividerPositions[0] : 0.33;
+      double secondDivider = expandedDividerPositions.length > 1 ? expandedDividerPositions[1] : 0.66;
+      workAreaSplitPane.setDividerPositions(firstDivider, secondDivider);
+      installWorkAreaDividerManualResizeHandlers();
+      return;
+    }
+
+    double noteWidth = WorkAreaSplitLayout.resolvePositiveWidth(lastExpandedNoteAreaWidth, totalWidth / 3.0);
+    double keywordWidth = WorkAreaSplitLayout.resolvePositiveWidth(lastExpandedKeywordAreaWidth, totalWidth / 3.0);
+    double dividerWidth = getStableWorkAreaDividerWidth();
+
+    double firstDivider = WorkAreaSplitLayout.firstExpandedDividerPosition(noteWidth, totalWidth, dividerWidth);
+    double secondDivider = WorkAreaSplitLayout.secondExpandedDividerPosition(
+        noteWidth,
+        keywordWidth,
+        totalWidth,
+        dividerWidth,
+        firstDivider
+    );
+
+    workAreaSplitPane.setDividerPositions(firstDivider, secondDivider);
+    installWorkAreaDividerManualResizeHandlers();
+  }
+
+  /**
+   * Setzt den Teiler im eingeklappten Zwei-Spalten-Zustand anhand der gespeicherten Breiten.
+   */
+  private void restoreCollapsedDividerPositionFromWidths() {
+    applyRememberedWorkAreaPreferredWidths();
+    double totalWidth = workAreaSplitPane.getWidth();
+    if (totalWidth <= 1.0) {
+      return;
+    }
+
+    double noteWidth = WorkAreaSplitLayout.resolvePositiveWidth(lastExpandedNoteAreaWidth, totalWidth / 2.0);
+    workAreaSplitPane.setDividerPositions(WorkAreaSplitLayout.collapsedDividerPosition(
+        noteWidth,
+        totalWidth,
+        getStableWorkAreaDividerWidth()
+    ));
+    installWorkAreaDividerManualResizeHandlers();
+  }
+
+  /**
+   * Installiert Handler, die bei manueller SplitPane-Bedienung die Breitenfixierung freigeben.
+   */
+  private void installWorkAreaDividerManualResizeHandlers() {
+    for (Node divider : workAreaSplitPane.lookupAll(".split-pane-divider")) {
+      if (divider.getProperties().containsKey(WORK_AREA_DIVIDER_HANDLER_KEY)) {
+        continue;
+      }
+      divider.getProperties().put(WORK_AREA_DIVIDER_HANDLER_KEY, Boolean.TRUE);
+      divider.addEventFilter(MouseEvent.MOUSE_PRESSED, event -> releasePrimaryWorkAreaChildLocks());
+      divider.addEventFilter(MouseEvent.MOUSE_RELEASED, event -> {
+        rememberVisiblePrimaryWorkAreaWidths();
+        lockPrimaryWorkAreaChildrenToRememberedWidths();
+        if (serviceAreaCollapsed) {
+          lockWorkAreaToRememberedPrimaryWidth();
+        }
+      });
+    }
+  }
+
+  /**
+   * Merkt sich die aktuell sichtbaren Primaerbreiten nach einer manuellen Divider-Aktion.
+   */
+  private void rememberVisiblePrimaryWorkAreaWidths() {
+    lastExpandedNoteAreaWidth = resolveNodeWidth(noteEditorPane, lastExpandedNoteAreaWidth);
+    lastExpandedKeywordAreaWidth = resolveNodeWidth(keywordsTablePane, lastExpandedKeywordAreaWidth);
+    if (!serviceAreaCollapsed && workAreaSplitPane.getItems().contains(serviceArea)) {
+      lastExpandedServiceAreaWidth = resolveNodeWidth(serviceArea, lastExpandedServiceAreaWidth);
+      lastExpandedWorkAreaWidth = resolveNodeWidth(workAreaSplitPane, lastExpandedWorkAreaWidth);
+    }
+  }
+
+  /**
    * Klappt den rechten Arbeitsbereich weg oder wieder auf.
    *
    * @param collapsed {@code true}, wenn der rechte Bereich verborgen werden soll
@@ -2268,32 +2741,24 @@ public class ZettelWindowView {
     }
 
     if (collapsed) {
+      rememberCurrentWorkAreaWidths();
       expandedDividerPositions = workAreaSplitPane.getDividerPositions();
       workAreaSplitPane.getItems().remove(serviceArea);
+      this.serviceAreaCollapsed = true;
+      lockWorkAreaToRememberedPrimaryWidth();
+      Platform.runLater(this::restoreCollapsedDividerPositionFromWidths);
     } else {
+      rememberCurrentWorkAreaWidths();
+      releaseWorkAreaWidthLock();
       if (!workAreaSplitPane.getItems().contains(serviceArea)) {
         workAreaSplitPane.getItems().add(serviceArea);
+        SplitPane.setResizableWithParent(serviceArea, true);
       }
 
-      double firstDivider = 0.33;
-      double secondDivider = 0.66;
-
-      if (expandedDividerPositions != null) {
-        if (expandedDividerPositions.length > 0) {
-          firstDivider = expandedDividerPositions[0];
-        }
-        if (expandedDividerPositions.length > 1) {
-          secondDivider = expandedDividerPositions[1];
-        }
-      }
-
-      final double restoredFirstDivider = firstDivider;
-      final double restoredSecondDivider = secondDivider;
-
-      Platform.runLater(() -> workAreaSplitPane.setDividerPositions(restoredFirstDivider, restoredSecondDivider));
+      this.serviceAreaCollapsed = false;
+      Platform.runLater(this::restoreExpandedDividerPositionsFromWidths);
     }
 
-    this.serviceAreaCollapsed = collapsed;
     updateServiceAreaToggleButton();
   }
 
@@ -2461,6 +2926,118 @@ public class ZettelWindowView {
   }
 
   /**
+   * Scrollt die aktuell sichtbare LIST-Ansicht an den Anfang.
+   */
+  public void scrollListToTop() {
+    Platform.runLater(() -> {
+      listPageKeyScrollPane.setVvalue(0.0);
+      listFilterTable.scrollTo(0);
+    });
+  }
+
+  /**
+   * Wendet die Hervorhebungsstyleklasse auf eine KEY-Zeile an.
+   *
+   * @param row Tabellenzeile
+   * @param item Datenzeile
+   */
+  private void applyKeyContextRowStyle(TableRow<KeyTableRow> row, KeyTableRow item) {
+    if (row == null) {
+      return;
+    }
+
+    row.getStyleClass().remove(KEY_CONTEXT_ROW_STYLE_CLASS);
+    if (!row.isEmpty() && item != null && item.isContextRow()) {
+      row.getStyleClass().add(KEY_CONTEXT_ROW_STYLE_CLASS);
+    }
+  }
+
+  /**
+   * Sortiert die KEY-Tabelle, ohne die hervorgehobene Zusatzliste mit der
+   * regulären Schlagwortliste zu vermischen.
+   *
+   * @param table KEY-Tabelle
+   * @return {@code true}, wenn die Sortierung verarbeitet wurde
+   */
+  private boolean sortKeyTablePreservingContextRows(TableView<KeyTableRow> table) {
+    if (table == null || table.getSortOrder().isEmpty() || table.getItems() == null) {
+      return true;
+    }
+
+    Comparator<KeyTableRow> comparator = createKeyTableComparator(table);
+    if (comparator == null) {
+      return true;
+    }
+
+    List<KeyTableRow> contextRows = table.getItems().stream()
+                                         .filter(KeyTableRow::isContextRow)
+                                         .sorted(comparator)
+                                         .toList();
+    List<KeyTableRow> regularRows = table.getItems().stream()
+                                         .filter(row -> !row.isContextRow())
+                                         .sorted(comparator)
+                                         .toList();
+
+    ObservableList<KeyTableRow> sortedRows = FXCollections.observableArrayList();
+    sortedRows.addAll(contextRows);
+    sortedRows.addAll(regularRows);
+    table.getItems().setAll(sortedRows);
+    clearTransientKeyTableFocus(table);
+    return true;
+  }
+
+  /**
+   * Entfernt die temporäre Fokus- und Auswahlmarkierung, die JavaFX nach
+   * Header-Sortierungen auf die erste Tabellenzeile setzen kann.
+   *
+   * @param table KEY-Tabelle
+   */
+  private void clearTransientKeyTableFocus(TableView<KeyTableRow> table) {
+    if (table == null) {
+      return;
+    }
+
+    table.getSelectionModel().clearSelection();
+    if (table.getFocusModel() != null) {
+      table.getFocusModel().focus(-1);
+    }
+    Platform.runLater(() -> {
+      table.getSelectionModel().clearSelection();
+      if (table.getFocusModel() != null) {
+        table.getFocusModel().focus(-1);
+      }
+    });
+  }
+
+  /**
+   * Erstellt den primären KEY-Comparator aus der aktuell sortierten Spalte.
+   *
+   * @param table KEY-Tabelle
+   * @return Comparator oder {@code null}, wenn keine Sortierspalte aktiv ist
+   */
+  private Comparator<KeyTableRow> createKeyTableComparator(TableView<KeyTableRow> table) {
+    if (table == null || table.getSortOrder().isEmpty()) {
+      return null;
+    }
+
+    TableColumn<KeyTableRow, ?> column = table.getSortOrder().getFirst();
+    Comparator<KeyTableRow> comparator = "count".equals(column.getId())
+        ? Comparator.comparingInt(KeyTableRow::getCount)
+        : Comparator.comparing(row -> row.getKeyword() == null ? "" : row.getKeyword(),
+                               String.CASE_INSENSITIVE_ORDER);
+
+    comparator = comparator.thenComparing(row -> row.getKeyword() == null ? "" : row.getKeyword(),
+                                          String.CASE_INSENSITIVE_ORDER)
+                           .thenComparingInt(KeyTableRow::getKeywordId);
+
+    if (column.getSortType() == TableColumn.SortType.DESCENDING) {
+      comparator = comparator.reversed();
+    }
+
+    return comparator;
+  }
+
+  /**
    * Setzt die Tabellenzeilen des KEY-Fensters neu.
    *
    * @param rows neue Tabellenzeilen
@@ -2565,6 +3142,28 @@ public class ZettelWindowView {
   }
 
   /**
+   * Setzt den Handler fuer Alt-Klicks auf KEY-Schlagwortzeilen.
+   *
+   * @param handler Handler
+   */
+  public void setKeyAltClickHandler(Consumer<String> handler) {
+    this.keyAltClickHandler = handler == null ? keyword -> {} : handler;
+  }
+
+  /**
+   * Aktualisiert das Icon des LIST-Sperrbuttons.
+   */
+  public void updateListLockIcon() {
+    if (listLockToggleButton.isSelected()) {
+      listLockToggleButton.setGraphic(BaseIcon.LOCK.imageView());
+      listLockToggleButton.setTooltip(new Tooltip("Liste freigeben"));
+    } else {
+      listLockToggleButton.setGraphic(BaseIcon.LOCK_OPEN.imageView());
+      listLockToggleButton.setTooltip(new Tooltip("Liste sperren"));
+    }
+  }
+
+  /**
    * Öffnet die Bearbeitung einer Tabellenzeile erneut und setzt dabei einen
    * vorgegebenen Bearbeitungstext.
    *
@@ -2607,6 +3206,7 @@ public class ZettelWindowView {
    */
   private final class KeyEditingTableCell extends TableCell<KeyTableRow, String> {
     private TextField textField;
+    private boolean committing;
 
     @Override
     public void startEdit() {
@@ -2673,7 +3273,7 @@ public class ZettelWindowView {
     }
 
     private void commitOrReject() {
-      if (!isEditing()) {
+      if (!isEditing() || committing) {
         return;
       }
 
@@ -2684,12 +3284,17 @@ public class ZettelWindowView {
       }
 
       String newValue = textField.getText();
-      boolean accepted = keyKeywordEditCommitHandler.handleCommit(row, newValue);
+      committing = true;
+      try {
+        boolean accepted = keyKeywordEditCommitHandler.handleCommit(row, newValue);
 
-      if (accepted) {
-        super.commitEdit(newValue);
-      } else {
-        Platform.runLater(() -> reopenKeyKeywordEdit(row.getKeywordId(), newValue));
+        if (accepted) {
+          super.commitEdit(newValue);
+        } else {
+          Platform.runLater(() -> reopenKeyKeywordEdit(row.getKeywordId(), newValue));
+        }
+      } finally {
+        committing = false;
       }
     }
   }

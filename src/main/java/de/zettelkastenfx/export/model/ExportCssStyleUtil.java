@@ -65,17 +65,38 @@ final class ExportCssStyleUtil {
    * @return linker Einzug in Pixeln
    */
   static int leftPaddingPixels(String css) {
+    return paddingPixels(css, 3);
+  }
+
+  /**
+   * Liest den oberen Padding-Wert aus einer CSS-Padding-Deklaration.
+   *
+   * @param css CSS-Text
+   * @return oberer Abstand in Pixeln
+   */
+  static int topPaddingPixels(String css) {
+    return paddingPixels(css, 0);
+  }
+
+  /**
+   * Liest einen Padding-Wert aus einer CSS-Padding-Deklaration.
+   *
+   * @param css CSS-Text
+   * @param index Position im vierteiligen Padding-Wert
+   * @return Padding in Pixeln
+   */
+  private static int paddingPixels(String css, int index) {
     String value = cssValue(css, "-fx-padding");
     if (value == null) {
       return 0;
     }
     String[] parts = value.split("\\s+");
-    if (parts.length != 4) {
+    if (parts.length != 4 || index < 0 || index >= parts.length) {
       return 0;
     }
-    String left = parts[3].toLowerCase(Locale.ROOT).replace("px", "").trim();
+    String part = parts[index].toLowerCase(Locale.ROOT).replace("px", "").trim();
     try {
-      return Math.max(0, Integer.parseInt(left));
+      return Math.max(0, Integer.parseInt(part));
     } catch (NumberFormatException ignored) {
       return 0;
     }

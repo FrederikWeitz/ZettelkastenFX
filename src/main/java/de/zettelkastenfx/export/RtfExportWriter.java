@@ -9,6 +9,8 @@ import de.zettelkastenfx.export.model.ExportParagraphStyle;
 import de.zettelkastenfx.export.model.ExportTextRun;
 import de.zettelkastenfx.export.model.ExportTextStyle;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -83,7 +85,7 @@ public class RtfExportWriter implements NoteExportWriter {
     if (!header.isBlank()) {
       appendPlainParagraph(rtf, header, true);
     }
-    if (document.selection().includeBody() && !note.bodyText().isBlank()) {
+    if (document.selection().includeBody() && !note.bodyParagraphs().isEmpty()) {
       for (ExportParagraph paragraph : note.bodyParagraphs()) {
         appendStyledParagraph(rtf, paragraph, colors, fonts);
       }
@@ -123,6 +125,14 @@ public class RtfExportWriter implements NoteExportWriter {
                                      ExportParagraph paragraph,
                                      ColorTable colors,
                                      FontTable fonts) {
+    if (paragraph.isImage()) {
+      appendImageParagraph(rtf, paragraph.imagePath());
+      return;
+    }
+    if (paragraph.isTable()) {
+      appendTable(rtf, paragraph);
+      return;
+    }
     appendParagraphPrefix(rtf, paragraph.style());
     for (ExportTextRun run : paragraph.runs()) {
       appendRun(rtf, run, paragraph.style(), colors, fonts);
@@ -131,6 +141,87 @@ public class RtfExportWriter implements NoteExportWriter {
       rtf.append("\\b0 ");
     }
     rtf.append("\\par\n");
+  }
+
+  /**
+   * Fuegt eine einfache RTF-Tabelle an.
+   *
+   * @param rtf Zielpuffer
+   * @param paragraph Tabellenabsatz
+   */
+  private void appendTable(StringBuilder rtf, ExportParagraph paragraph) {
+    int columns = paragraph.table().columns();
+    int cellWidth = Math.max(1, 9000 / columns);
+    for (int row = 0; row < paragraph.table().rows(); row++) {
+      rtf.append("\\trowd\\trgaph15");
+      for (int column = 1; column <= columns; column++) {
+        rtf.append("\\clbrdrt\\brdrs\\brdrw10")
+            .append("\\clbrdrl\\brdrs\\brdrw10")
+            .append("\\clbrdrb\\brdrs\\brdrw10")
+            .append("\\clbrdrr\\brdrs\\brdrw10")
+            .append("\\cellx").append(column * cellWidth);
+      }
+      for (int column = 0; column < columns; column++) {
+        rtf.append("\\intbl ")
+            .append(escape(paragraph.table().cell(row, column)))
+            .append("\\cell ");
+      }
+      rtf.append("\\row\n");
+    }
+    rtf.append("\\pard\\par\n");
+  }
+
+  /**
+   * Fuegt ein Bild als RTF-Picture ein, soweit RTF das Format direkt unterstuetzt.
+   *
+   * @param rtf Zielpuffer
+   * @param imagePath Bildpfad
+   */
+  private void appendImageParagraph(StringBuilder rtf, Path imagePath) {
+    if (imagePath == null || !Files.isRegularFile(imagePath)) {
+      return;
+    }
+    String blip = imageBlip(imagePath);
+    if (blip == null) {
+      appendPlainParagraph(rtf, imagePath.toString(), false);
+      return;
+    }
+    try {
+      byte[] bytes = Files.readAllBytes(imagePath);
+      BufferedImage image = ImageIO.read(imagePath.toFile());
+      int width = image == null ? 300 : image.getWidth();
+      int height = image == null ? 200 : image.getHeight();
+      rtf.append("\\pard {\\pict")
+          .append(blip)
+          .append("\\picw").append(width)
+          .append("\\pich").append(height)
+          .append("\\picwgoal").append(width * 15)
+          .append("\\pichgoal").append(height * 15)
+          .append('\n')
+          .append(hex(bytes))
+          .append("}\\par\n");
+    } catch (IOException e) {
+      appendPlainParagraph(rtf, imagePath.toString(), false);
+    }
+  }
+
+  private String imageBlip(Path imagePath) {
+    String name = imagePath.getFileName() == null ? "" : imagePath.getFileName().toString().toLowerCase();
+    if (name.endsWith(".png")) {
+      return "\\pngblip";
+    }
+    if (name.endsWith(".jpg") || name.endsWith(".jpeg")) {
+      return "\\jpegblip";
+    }
+    return null;
+  }
+
+  private String hex(byte[] bytes) {
+    StringBuilder hex = new StringBuilder(bytes.length * 2);
+    for (byte b : bytes) {
+      hex.append(String.format("%02x", b & 0xff));
+    }
+    return hex.toString();
   }
 
   /**
@@ -151,6 +242,9 @@ public class RtfExportWriter implements NoteExportWriter {
     }
     if (style.indentPixels() > 0) {
       rtf.append("\\li").append(style.indentPixels() * 15).append(' ');
+    }
+    if (style.spacingBeforePixels() > 0) {
+      rtf.append("\\sb").append(style.spacingBeforePixels() * 15).append(' ');
     }
     if (style.fontSizePixels() != null) {
       rtf.append("\\fs").append(style.fontSizePixels() * 2).append(' ');

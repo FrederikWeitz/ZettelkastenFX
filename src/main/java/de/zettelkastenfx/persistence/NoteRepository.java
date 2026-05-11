@@ -422,6 +422,99 @@ public class NoteRepository {
   }
 
   /**
+   * Lädt alle Schlagwörter der Zettel, die denselben bibliographischen Eintrag verwenden.
+   *
+   * @param bibliographyEntryId ID des bibliographischen Eintrags
+   * @return Schlagwortzeilen für die Medium-Zusatzliste
+   */
+  public List<KeywordUsageRow> loadKeywordUsageRowsForBibliographyEntry(int bibliographyEntryId) {
+    if (bibliographyEntryId <= 0) {
+      return List.of();
+    }
+
+    String sql = """
+        SELECT k.id, k.keyword, COUNT(DISTINCT nk.note_id) AS cnt
+        FROM keywords k
+        JOIN note_keywords nk ON nk.keyword_id = k.id
+        JOIN notes n ON n.id = nk.note_id
+        WHERE n.bibliography_ref_id = ?
+        GROUP BY k.id, k.keyword
+        ORDER BY k.keyword COLLATE NOCASE
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql)) {
+
+      ps.setInt(1, bibliographyEntryId);
+
+      try (ResultSet rs = ps.executeQuery()) {
+        List<KeywordUsageRow> out = new ArrayList<>();
+        while (rs.next()) {
+          out.add(new KeywordUsageRow(
+              rs.getInt("id"),
+              rs.getString("keyword"),
+              rs.getInt("cnt")
+          ));
+        }
+        return out;
+      }
+
+    } catch (SQLException e) {
+      throw new IllegalStateException("loadKeywordUsageRowsForBibliographyEntry fehlgeschlagen", e);
+    }
+  }
+
+  /**
+   * Lädt alle Schlagwörter der KI-Text-Zettel mit gleichem Nutzungskontext.
+   *
+   * @param aiContext Kontext der KI-Nutzung
+   * @return Schlagwortzeilen für die KI-Kontext-Zusatzliste
+   */
+  public List<KeywordUsageRow> loadKeywordUsageRowsForAiContext(String aiContext) {
+    String normalizedContext = aiContext == null ? "" : aiContext.trim();
+    if (normalizedContext.isBlank()) {
+      return List.of();
+    }
+
+    String sql = """
+        SELECT k.id, k.keyword, COUNT(DISTINCT nk.note_id) AS cnt
+        FROM keywords k
+        JOIN note_keywords nk ON nk.keyword_id = k.id
+        JOIN notes n ON n.id = nk.note_id
+        JOIN bibliography_entries be ON be.id = n.bibliography_ref_id
+        JOIN media_types mt ON mt.id = be.media_types_id
+        JOIN bibliography_entries_string bes ON bes.entries_id = be.id
+        JOIN bibtex_type bt ON bt.id = bes.bibtex_type_id
+        WHERE LOWER(TRIM(mt.bib_name)) = LOWER(TRIM('aitext'))
+          AND LOWER(TRIM(bt.bibtex_name)) = LOWER(TRIM('ai_context'))
+          AND LOWER(TRIM(COALESCE(bes.entry, ''))) = LOWER(TRIM(?))
+        GROUP BY k.id, k.keyword
+        ORDER BY k.keyword COLLATE NOCASE
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql)) {
+
+      ps.setString(1, normalizedContext);
+
+      try (ResultSet rs = ps.executeQuery()) {
+        List<KeywordUsageRow> out = new ArrayList<>();
+        while (rs.next()) {
+          out.add(new KeywordUsageRow(
+              rs.getInt("id"),
+              rs.getString("keyword"),
+              rs.getInt("cnt")
+          ));
+        }
+        return out;
+      }
+
+    } catch (SQLException e) {
+      throw new IllegalStateException("loadKeywordUsageRowsForAiContext fehlgeschlagen", e);
+    }
+  }
+
+  /**
    * Sucht Schlagwörter per case-insensitiver Enthält-Suche.
    *
    * @param text Suchtext
@@ -434,31 +527,88 @@ public class NoteRepository {
       return List.of();
     }
 
-    String sql = """
-        SELECT keyword
-        FROM keywords
-        WHERE lower(keyword) LIKE ?
-        ORDER BY keyword COLLATE NOCASE
-        LIMIT ?
-        """;
+    return searchKeywordsUnicodeAware(normalized, false, false, limit);
+  }
+
+  /**
+   * Sucht Schlagwoerter unicodefaehig und optional nur am Anfang oder nach allen Suchteilen.
+   *
+   * @param text Suchtext
+   * @param prefixOnly ob der Treffer am Zeichenkettenanfang liegen muss
+   * @param allTokens ob alle leerzeichengetrennten Suchteile enthalten sein muessen
+   * @param limit maximale Trefferzahl
+   * @return passende Schlagwoerter
+   */
+  public List<String> searchKeywordsUnicodeAware(String text, boolean prefixOnly, boolean allTokens, int limit) {
+    String normalized = text == null ? "" : text.trim();
+    if (normalized.isBlank()) {
+      return List.of();
+    }
+
+    String lowerNeedle = lowerKeyword(normalized);
+    List<String> tokens = Arrays.stream(lowerNeedle.split("\\s+"))
+                                .filter(token -> !token.isBlank())
+                                .toList();
+
+    return loadAllKeywordTexts().stream()
+                                .filter(keyword -> keywordMatches(keyword, lowerNeedle, tokens, prefixOnly, allTokens))
+                                .sorted(Comparator.comparing(this::lowerKeyword))
+                                .limit(Math.max(1, limit))
+                                .toList();
+  }
+
+  /**
+   * Laedt alle Schlagworttexte.
+   *
+   * @return Schlagworttexte
+   */
+  public List<String> loadAllKeywordTexts() {
+    String sql = "SELECT keyword FROM keywords ORDER BY keyword COLLATE NOCASE";
 
     try (Connection c = ds.getConnection();
-         PreparedStatement ps = c.prepareStatement(sql)) {
-
-      ps.setString(1, "%" + normalized.toLowerCase(Locale.ROOT) + "%");
-      ps.setInt(2, Math.max(1, limit));
-
-      try (ResultSet rs = ps.executeQuery()) {
-        List<String> out = new ArrayList<>();
-        while (rs.next()) {
-          out.add(rs.getString("keyword"));
-        }
-        return out;
+         PreparedStatement ps = c.prepareStatement(sql);
+         ResultSet rs = ps.executeQuery()) {
+      List<String> out = new ArrayList<>();
+      while (rs.next()) {
+        out.add(rs.getString("keyword"));
       }
+      return out;
 
     } catch (SQLException e) {
-      throw new IllegalStateException("searchKeywordsContainingIgnoreCase fehlgeschlagen", e);
+      throw new IllegalStateException("loadAllKeywordTexts fehlgeschlagen", e);
     }
+  }
+
+  /**
+   * Prueft, ob ein Schlagwort zur Suchanfrage passt.
+   *
+   * @param keyword Schlagwort
+   * @param lowerNeedle normalisierter Suchtext
+   * @param tokens normalisierte Suchteile
+   * @param prefixOnly ob nur der Anfang zaehlt
+   * @param allTokens ob alle Suchteile vorkommen muessen
+   * @return {@code true}, wenn das Schlagwort passt
+   */
+  private boolean keywordMatches(String keyword,
+                                 String lowerNeedle,
+                                 List<String> tokens,
+                                 boolean prefixOnly,
+                                 boolean allTokens) {
+    String source = lowerKeyword(keyword);
+    if (allTokens) {
+      return tokens.stream().allMatch(source::contains);
+    }
+    return prefixOnly ? source.startsWith(lowerNeedle) : source.contains(lowerNeedle);
+  }
+
+  /**
+   * Wandelt Stichworttext unicodefaehig in Kleinschreibung.
+   *
+   * @param value Rohwert
+   * @return normalisierter Wert
+   */
+  private String lowerKeyword(String value) {
+    return value == null ? "" : value.toLowerCase(Locale.GERMAN);
   }
 
   /**
@@ -758,6 +908,44 @@ public class NoteRepository {
       return out;
     } catch (SQLException e) {
       throw new IllegalStateException("loadBibliographyUsageRows fehlgeschlagen", e);
+    }
+  }
+
+  /**
+   * Laedt die Anzahl verknuepfter Zettel je bibliographischem Eintrag.
+   * Diese Abfrage ist fuer Uebersichtstabellen gedacht, die nur Zaehler
+   * benoetigen und nicht die einzelnen Zettelzeilen inklusive Titel laden
+   * muessen.
+   *
+   * @return Zuordnung Bibliographie-Eintrags-ID -> Anzahl referenzierender Zettel
+   */
+  public Map<Integer, Integer> loadBibliographyUsageCountsByEntryId() {
+    String sql = """
+        SELECT n.bibliography_ref_id,
+               COUNT(*) AS note_count
+        FROM notes n
+        WHERE n.bibliography_ref_id IS NOT NULL
+          AND n.bibliography_ref_id > 0
+        GROUP BY n.bibliography_ref_id
+        ORDER BY n.bibliography_ref_id ASC
+        """;
+
+    try (Connection c = ds.getConnection();
+         PreparedStatement ps = c.prepareStatement(sql);
+         ResultSet rs = ps.executeQuery()) {
+
+      Map<Integer, Integer> out = new LinkedHashMap<>();
+      while (rs.next()) {
+        int bibliographyEntryId = rs.getInt("bibliography_ref_id");
+        int noteCount = rs.getInt("note_count");
+        if (bibliographyEntryId <= 0 || noteCount <= 0) {
+          continue;
+        }
+        out.put(bibliographyEntryId, noteCount);
+      }
+      return out;
+    } catch (SQLException e) {
+      throw new IllegalStateException("loadBibliographyUsageCountsByEntryId fehlgeschlagen", e);
     }
   }
 

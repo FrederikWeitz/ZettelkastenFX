@@ -9,10 +9,14 @@ import de.zettelkastenfx.export.model.ExportParagraphStyle;
 import de.zettelkastenfx.export.model.ExportTextRun;
 import de.zettelkastenfx.export.model.ExportTextStyle;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -31,22 +35,26 @@ public class DocxExportWriter implements NoteExportWriter {
   public void write(ExportDocument document, Path outputPath) {
     try {
       Files.createDirectories(outputPath.toAbsolutePath().getParent());
+      Map<Path, EmbeddedImage> images = collectImages(document);
       try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(outputPath))) {
-        add(zip, "[Content_Types].xml", contentTypes());
+        add(zip, "[Content_Types].xml", contentTypes(images));
         add(zip, "_rels/.rels", rels());
-        add(zip, "word/_rels/document.xml.rels", documentRels());
-        add(zip, "word/document.xml", documentXml(document));
+        add(zip, "word/_rels/document.xml.rels", documentRels(images));
+        add(zip, "word/document.xml", documentXml(document, images));
         add(zip, "word/styles.xml", stylesXml());
+        for (EmbeddedImage image : images.values()) {
+          add(zip, "word/media/" + image.mediaName(), Files.readAllBytes(image.path()));
+        }
       }
     } catch (IOException e) {
       throw new IllegalStateException("DOCX-Export fehlgeschlagen: " + outputPath, e);
     }
   }
 
-  private String documentXml(ExportDocument document) {
+  private String documentXml(ExportDocument document, Map<Path, EmbeddedImage> images) {
     StringBuilder body = new StringBuilder();
     for (int i = 0; i < document.notes().size(); i++) {
-      renderNote(body, document.notes().get(i), document);
+      renderNote(body, document.notes().get(i), document, images);
       if (document.selection().blankLineBetweenNotes() && i < document.notes().size() - 1) {
         body.append(paragraph("", null));
       }
@@ -60,7 +68,11 @@ public class DocxExportWriter implements NoteExportWriter {
     }
     return """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+                    xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+                    xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+                    xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                    xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
           <w:body>
         """ + body + """
             <w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr>
@@ -76,14 +88,17 @@ public class DocxExportWriter implements NoteExportWriter {
    * @param note Exportzettel
    * @param document Exportdokument
    */
-  private void renderNote(StringBuilder body, ExportNote note, ExportDocument document) {
+  private void renderNote(StringBuilder body,
+                          ExportNote note,
+                          ExportDocument document,
+                          Map<Path, EmbeddedImage> images) {
     String header = headerText(note, document);
     if (!header.isBlank()) {
       body.append(paragraph(header, "Heading3"));
     }
-    if (document.selection().includeBody() && !note.bodyText().isBlank()) {
+    if (document.selection().includeBody() && !note.bodyParagraphs().isEmpty()) {
       for (ExportParagraph paragraph : note.bodyParagraphs()) {
-        body.append(paragraph(paragraph, null));
+        body.append(paragraph(paragraph, null, images));
       }
     }
     if (document.selection().includeKeywords() && !note.keywords().isEmpty()) {
@@ -118,6 +133,28 @@ public class DocxExportWriter implements NoteExportWriter {
    * @return XML-Absatz
    */
   private String paragraph(ExportParagraph paragraph, String style) {
+    return paragraph(paragraph, style, Map.of());
+  }
+
+  /**
+   * Erzeugt einen formatierten WordprocessingML-Absatz.
+   *
+   * @param paragraph Exportabsatz
+   * @param style optionaler Absatzstil
+   * @param images eingebettete Bilder nach Pfad
+   * @return XML-Absatz
+   */
+  private String paragraph(ExportParagraph paragraph, String style, Map<Path, EmbeddedImage> images) {
+    if (paragraph.isImage()) {
+      EmbeddedImage image = images.get(paragraph.imagePath());
+      if (image != null) {
+        return imageParagraph(image);
+      }
+      return paragraph(paragraph.imagePath().toString(), style);
+    }
+    if (paragraph.isTable()) {
+      return table(paragraph);
+    }
     StringBuilder xml = new StringBuilder("<w:p>");
     String paragraphProperties = paragraphProperties(paragraph.style(), style);
     if (!paragraphProperties.isBlank()) {
@@ -128,6 +165,91 @@ public class DocxExportWriter implements NoteExportWriter {
     }
     xml.append("</w:p>");
     return xml.toString();
+  }
+
+  /**
+   * Erzeugt eine einfache WordprocessingML-Tabelle.
+   *
+   * @param paragraph Tabellenabsatz
+   * @return XML-Tabelle
+   */
+  private String table(ExportParagraph paragraph) {
+    int columns = paragraph.table().columns();
+    int cellWidth = Math.max(1, 9000 / columns);
+    StringBuilder xml = new StringBuilder("<w:tbl><w:tblPr><w:tblBorders>")
+        .append("<w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>")
+        .append("<w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>")
+        .append("<w:bottom w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>")
+        .append("<w:right w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>")
+        .append("<w:insideH w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>")
+        .append("<w:insideV w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>")
+        .append("</w:tblBorders><w:tblCellMar>")
+        .append("<w:top w:w=\"15\" w:type=\"dxa\"/><w:left w:w=\"15\" w:type=\"dxa\"/>")
+        .append("<w:bottom w:w=\"15\" w:type=\"dxa\"/><w:right w:w=\"15\" w:type=\"dxa\"/>")
+        .append("</w:tblCellMar></w:tblPr><w:tblGrid>");
+    for (int column = 0; column < columns; column++) {
+      xml.append("<w:gridCol w:w=\"").append(cellWidth).append("\"/>");
+    }
+    xml.append("</w:tblGrid>");
+    for (int row = 0; row < paragraph.table().rows(); row++) {
+      xml.append("<w:tr>");
+      for (int column = 0; column < columns; column++) {
+        xml.append("<w:tc><w:tcPr><w:tcW w:w=\"")
+            .append(cellWidth)
+            .append("\" w:type=\"dxa\"/></w:tcPr>")
+            .append(cellParagraph(paragraph.table().cell(row, column)))
+            .append("</w:tc>");
+      }
+      xml.append("</w:tr>");
+    }
+    return xml.append("</w:tbl>").toString();
+  }
+
+  /**
+   * Erzeugt den Inhalt einer Word-Tabellenzelle.
+   *
+   * @param text Zelltext
+   * @return WordprocessingML-Absatz fuer die Zelle
+   */
+  private String cellParagraph(String text) {
+    if (text == null || text.isBlank()) {
+      return "<w:p/>";
+    }
+    return paragraph(text, null);
+  }
+
+  /**
+   * Erzeugt einen WordprocessingML-Bildabsatz.
+   *
+   * @param image eingebettetes Bild
+   * @return XML-Absatz mit DrawingML
+   */
+  private String imageParagraph(EmbeddedImage image) {
+    long widthEmu = image.widthPixels() * 9525L;
+    long heightEmu = image.heightPixels() * 9525L;
+    return """
+        <w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">
+          <wp:extent cx="%d" cy="%d"/>
+          <wp:docPr id="%d" name="%s"/>
+          <a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+            <pic:pic>
+              <pic:nvPicPr><pic:cNvPr id="%d" name="%s"/><pic:cNvPicPr/></pic:nvPicPr>
+              <pic:blipFill><a:blip r:embed="%s"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+              <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="%d" cy="%d"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>
+            </pic:pic>
+          </a:graphicData></a:graphic>
+        </wp:inline></w:drawing></w:r></w:p>
+        """.formatted(
+            widthEmu,
+            heightEmu,
+            image.index(),
+            escape(image.mediaName()),
+            image.index(),
+            escape(image.mediaName()),
+            image.relationshipId(),
+            widthEmu,
+            heightEmu
+        );
   }
 
   /**
@@ -147,6 +269,9 @@ public class DocxExportWriter implements NoteExportWriter {
     }
     if (paragraphStyle.indentPixels() > 0) {
       properties.append("<w:ind w:left=\"").append(paragraphStyle.indentPixels() * 15).append("\"/>");
+    }
+    if (paragraphStyle.spacingBeforePixels() > 0) {
+      properties.append("<w:spacing w:before=\"").append(paragraphStyle.spacingBeforePixels() * 15).append("\"/>");
     }
     return properties.toString();
   }
@@ -271,12 +396,25 @@ public class DocxExportWriter implements NoteExportWriter {
    *
    * @return Content-Types-XML
    */
-  private String contentTypes() {
+  private String contentTypes(Map<Path, EmbeddedImage> images) {
+    StringBuilder defaults = new StringBuilder();
+    Map<String, String> imageContentTypes = new LinkedHashMap<>();
+    for (EmbeddedImage image : images.values()) {
+      imageContentTypes.putIfAbsent(image.extension(), image.contentType());
+    }
+    for (Map.Entry<String, String> entry : imageContentTypes.entrySet()) {
+      defaults.append("  <Default Extension=\"")
+          .append(escape(entry.getKey()))
+          .append("\" ContentType=\"")
+          .append(escape(entry.getValue()))
+          .append("\"/>\n");
+    }
     return """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
           <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
           <Default Extension="xml" ContentType="application/xml"/>
+        """ + defaults + """
           <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
           <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
         </Types>
@@ -302,13 +440,82 @@ public class DocxExportWriter implements NoteExportWriter {
    *
    * @return Relationships-XML
    */
-  private String documentRels() {
+  private String documentRels(Map<Path, EmbeddedImage> images) {
+    StringBuilder relationships = new StringBuilder();
+    for (EmbeddedImage image : images.values()) {
+      relationships.append("  <Relationship Id=\"")
+          .append(image.relationshipId())
+          .append("\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/")
+          .append(escape(image.mediaName()))
+          .append("\"/>\n");
+    }
     return """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
           <Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+        """ + relationships + """
         </Relationships>
         """;
+  }
+
+  /**
+   * Sammelt alle existierenden Bildabsaetze eines Exportdokuments.
+   *
+   * @param document Exportdokument
+   * @return Bild-Mapping nach normalisiertem Pfad
+   * @throws IOException bei Dateizugriffsfehlern
+   */
+  private Map<Path, EmbeddedImage> collectImages(ExportDocument document) throws IOException {
+    Map<Path, EmbeddedImage> images = new LinkedHashMap<>();
+    for (ExportNote note : document.notes()) {
+      for (ExportParagraph paragraph : note.bodyParagraphs()) {
+        if (paragraph.isImage() && Files.isRegularFile(paragraph.imagePath()) && !images.containsKey(paragraph.imagePath())) {
+          int index = images.size() + 1;
+          images.put(paragraph.imagePath(), embeddedImage(paragraph.imagePath(), index));
+        }
+      }
+    }
+    return images;
+  }
+
+  private EmbeddedImage embeddedImage(Path path, int index) throws IOException {
+    String extension = extension(path);
+    String contentType = Files.probeContentType(path);
+    if (contentType == null || contentType.isBlank()) {
+      contentType = switch (extension) {
+        case "png" -> "image/png";
+        case "jpg", "jpeg" -> "image/jpeg";
+        case "gif" -> "image/gif";
+        case "bmp" -> "image/bmp";
+        default -> "application/octet-stream";
+      };
+    }
+    int width = 300;
+    int height = 200;
+    BufferedImage image = ImageIO.read(path.toFile());
+    if (image != null) {
+      width = image.getWidth();
+      height = image.getHeight();
+    }
+    return new EmbeddedImage(
+        path,
+        index,
+        "image" + index + "." + extension,
+        "rIdImage" + index,
+        extension,
+        contentType,
+        width,
+        height
+    );
+  }
+
+  private String extension(Path path) {
+    String name = path.getFileName() == null ? "image" : path.getFileName().toString();
+    int dot = name.lastIndexOf('.');
+    if (dot < 0 || dot == name.length() - 1) {
+      return "bin";
+    }
+    return name.substring(dot + 1).toLowerCase();
   }
 
   /**
@@ -345,6 +552,12 @@ public class DocxExportWriter implements NoteExportWriter {
     zip.closeEntry();
   }
 
+  private void add(ZipOutputStream zip, String name, byte[] content) throws IOException {
+    zip.putNextEntry(new ZipEntry(name));
+    zip.write(content);
+    zip.closeEntry();
+  }
+
   /**
    * Maskiert Text fuer WordprocessingML.
    *
@@ -356,5 +569,15 @@ public class DocxExportWriter implements NoteExportWriter {
       return "";
     }
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+  }
+
+  private record EmbeddedImage(Path path,
+                               int index,
+                               String mediaName,
+                               String relationshipId,
+                               String extension,
+                               String contentType,
+                               int widthPixels,
+                               int heightPixels) {
   }
 }

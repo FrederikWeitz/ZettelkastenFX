@@ -3,8 +3,11 @@ package de.zettelkastenfx.bibliography.ui;
 import de.zettelkastenfx.base.BaseIcon;
 import de.zettelkastenfx.bibliography.api.BibliographyService;
 import de.zettelkastenfx.bibliography.model.*;
+import javafx.animation.PauseTransition;
+import javafx.application.Platform;
 import javafx.beans.property.ObjectProperty;
 import javafx.beans.property.SimpleObjectProperty;
+import javafx.util.Duration;
 import javafx.geometry.Insets;
 import javafx.geometry.Side;
 import javafx.scene.Scene;
@@ -20,10 +23,10 @@ import javafx.scene.text.TextFlow;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
 
-import java.util.Comparator;
-import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
 /**
@@ -36,6 +39,9 @@ import java.util.function.Consumer;
  * - Medien aus dem Speicher löschen
  */
 public class MediaManagementDialog {
+
+  private static final int MEDIA_REFERENCE_SEARCH_LIMIT = 500;
+  private static final Duration SEARCH_DEBOUNCE_DURATION = Duration.millis(120);
 
   private enum Mode {
     BROWSE,
@@ -75,6 +81,20 @@ public class MediaManagementDialog {
 
   private Integer currentEntryId;
   private String currentDisplayText;
+  private volatile long searchRequestId;
+  private final PauseTransition searchDebounce = new PauseTransition(SEARCH_DEBOUNCE_DURATION);
+  private final ExecutorService searchExecutor = Executors.newSingleThreadExecutor(task -> {
+    Thread thread = new Thread(task, "zettelkasten-media-management-search");
+    thread.setDaemon(true);
+    return thread;
+  });
+  private final Map<Integer, ReferenceDisplay> referenceDisplayCache = new ConcurrentHashMap<>();
+  private final Map<Integer, DynamicBibliographyEntry> entryCache = new ConcurrentHashMap<>();
+  private final Map<Integer, List<MediaAttributeDefinition>> attributesByMediaTypeCache = new ConcurrentHashMap<>();
+
+  private record SearchRequest(long requestId, String mediaTypeBibName, String query) {}
+  private record SearchResult(long requestId, List<BibliographyReference> references) {}
+  private record ReferenceDisplay(String personText, String titleText) {}
 
   /**
    * Erzeugt das Medien-Popup.
@@ -223,6 +243,9 @@ public class MediaManagementDialog {
    * Verdrahtet alle Interaktionen des Dialogs.
    */
   private void initializeBehavior() {
+    searchDebounce.setOnFinished(event -> requestAsyncSearch());
+    dialogStage.setOnHidden(event -> searchExecutor.shutdownNow());
+
     btnAdd.setOnAction(e -> {
       if (!btnAdd.isSelected()) {
         btnAdd.setSelected(true);
@@ -451,16 +474,112 @@ public class MediaManagementDialog {
    * Führt die Mediensuche anhand des linken Medientypfelds und des Suchtexts aus.
    */
   private void runSearch() {
+    searchDebounce.playFromStart();
+  }
+
+  /**
+   * Fordert eine Mediensuche im Hintergrund an.
+   */
+  private void requestAsyncSearch() {
     String mediaTypeBibName = leftSelectedMediaType == null ? "" : leftSelectedMediaType.bibName();
     String query = searchField.getText() == null ? "" : searchField.getText().trim();
+    SearchRequest request = new SearchRequest(++searchRequestId, mediaTypeBibName, query);
 
+    try {
+      searchExecutor.execute(() -> {
+        SearchResult result = loadSearchResult(request);
+        Platform.runLater(() -> applySearchResult(result));
+      });
+    } catch (RuntimeException ignored) {
+      // Beim Schliessen des Dialogs kann der Executor bereits beendet sein.
+    }
+  }
+
+  /**
+   * Laedt die Mediensuche und berechnet die Trefferanzeige abseits des JavaFX-Threads.
+   *
+   * @param request Suchanfrage
+   * @return Suchergebnis
+   */
+  private SearchResult loadSearchResult(SearchRequest request) {
     List<BibliographyReference> hits = bibliographyService.searchMediaReferences(
-        mediaTypeBibName,
-        query,
-        100
+        request.mediaTypeBibName(),
+        request.query(),
+        MEDIA_REFERENCE_SEARCH_LIMIT
     );
 
-    resultList.getItems().setAll(hits);
+    return new SearchResult(request.requestId(), hits == null ? List.of() : hits);
+  }
+
+  /**
+   * Wendet ein fertiges Suchergebnis auf die Trefferliste an, sofern es aktuell ist.
+   *
+   * @param result Suchergebnis
+   */
+  private void applySearchResult(SearchResult result) {
+    if (result == null || result.requestId() != searchRequestId) {
+      return;
+    }
+
+    resultList.getItems().setAll(result.references());
+    preloadReferenceDisplaysAsync(result.requestId(), result.references());
+  }
+
+  /**
+   * Berechnet Anzeigeinformationen fuer Treffer gesammelt im Hintergrund vor,
+   * ohne das erste Anzeigen der Trefferliste zu blockieren.
+   *
+   * @param requestId Suchanfragen-ID
+   * @param references Trefferreferenzen
+   */
+  private void preloadReferenceDisplaysAsync(long requestId, List<BibliographyReference> references) {
+    if (references == null || references.isEmpty()) {
+      return;
+    }
+
+    try {
+      searchExecutor.execute(() -> {
+        for (BibliographyReference reference : references) {
+          if (reference == null || reference.entryId() <= 0 || requestId != searchRequestId) {
+            continue;
+          }
+          referenceDisplayCache.computeIfAbsent(reference.entryId(), entryId -> createReferenceDisplay(reference));
+        }
+        Platform.runLater(() -> {
+          if (requestId == searchRequestId) {
+            resultList.refresh();
+          }
+        });
+      });
+    } catch (RuntimeException ignored) {
+      // Beim Schliessen des Dialogs kann der Executor bereits beendet sein.
+    }
+  }
+
+  /**
+   * Berechnet eine schnelle Fallback-Anzeige nur aus dem bereits vorhandenen Referenztext.
+   *
+   * @param reference Trefferreferenz
+   * @return Fallback-Anzeige
+   */
+  private ReferenceDisplay createFallbackReferenceDisplay(BibliographyReference reference) {
+    String displayText = safeTrim(reference == null ? "" : reference.displayText());
+    if (displayText.isBlank()) {
+      return new ReferenceDisplay("", "");
+    }
+
+    for (String separator : List.of(": ", " | ")) {
+      int separatorIndex = displayText.indexOf(separator);
+      if (separatorIndex > 0) {
+        String firstPart = safeTrim(displayText.substring(0, separatorIndex));
+        String secondPart = safeTrim(displayText.substring(separatorIndex + separator.length()));
+        if (!secondPart.isBlank()) {
+          return new ReferenceDisplay(firstPart, secondPart);
+        }
+      }
+    }
+
+    return new ReferenceDisplay("", displayText);
   }
 
   /**
@@ -472,11 +591,12 @@ public class MediaManagementDialog {
    * @return grafische Darstellung für die Trefferliste
    */
   private TextFlow buildReferenceCellGraphic(BibliographyReference reference) {
+    ReferenceDisplay display = displayFor(reference);
     String personText = showPersonCheckBox.isSelected()
-                            ? safeLoadPrimaryPersonDisplay(reference)
+                            ? display.personText()
                             : "";
 
-    String titleText = resolveListTitle(reference, personText);
+    String titleText = display.titleText();
 
     TextFlow flow = new TextFlow();
     flow.setMaxWidth(Double.MAX_VALUE);
@@ -505,34 +625,6 @@ public class MediaManagementDialog {
    * @param personText bereits aufgelöste Person oder leerer String
    * @return anzuzeigender Titeltext
    */
-  private String resolveListTitle(BibliographyReference reference, String personText) {
-    if (reference == null) {
-      return "";
-    }
-
-    String entryTitle = safeLoadEntryTitle(reference.entryId());
-    if (!entryTitle.isBlank()) {
-      return entryTitle;
-    }
-
-    String fallbackText = safeTrim(reference.displayText());
-    if (fallbackText.isBlank()) {
-      return "";
-    }
-
-    if (!personText.isBlank()) {
-      String prefix = personText + ": ";
-      if (fallbackText.startsWith(prefix)) {
-        String stripped = safeTrim(fallbackText.substring(prefix.length()));
-        if (!stripped.isBlank()) {
-          return stripped;
-        }
-      }
-    }
-
-    return fallbackText;
-  }
-
   /**
    * Baut einen kompakten Anzeigetext für einen bereits geladenen Treffer.
    * Die Darstellung folgt derselben Logik wie die Trefferliste:
@@ -546,8 +638,9 @@ public class MediaManagementDialog {
       return "";
     }
 
-    String personText = safeLoadPrimaryPersonDisplay(reference);
-    String titleText = resolveListTitle(reference, personText);
+    ReferenceDisplay display = displayFor(reference);
+    String personText = display.personText();
+    String titleText = display.titleText();
 
     if (!personText.isBlank() && !titleText.isBlank()) {
       return personText + ": " + titleText;
@@ -563,29 +656,143 @@ public class MediaManagementDialog {
   }
 
   /**
-   * Lädt das echte Titelfeld eines bibliographischen Eintrags fehlertolerant.
+   * Baut einen Anzeigetext direkt aus dem Cache fuer einen Eintrag.
    *
-   * @param entryId Datenbank-ID des Eintrags
-   * @return Titel oder leerer String
+   * @param entryId Eintrags-ID
+   * @return Anzeigetext oder leerer String
    */
-  private String safeLoadEntryTitle(int entryId) {
-    if (entryId <= 0) {
+  private String displayTextForEntryId(int entryId) {
+    ReferenceDisplay display = referenceDisplayCache.get(entryId);
+    if (display == null) {
       return "";
     }
 
-    try {
-      return bibliographyService.loadEntry(entryId)
-        .flatMap(entry -> entry.findValue("title"))
+    if (!display.personText().isBlank() && !display.titleText().isBlank()) {
+      return display.personText() + ": " + display.titleText();
+    }
+    if (!display.titleText().isBlank()) {
+      return display.titleText();
+    }
+    return display.personText();
+  }
+
+  /**
+   * Liefert die vorbereitete Trefferanzeige oder berechnet sie als Fallback.
+   *
+   * @param reference Trefferreferenz
+   * @return Anzeigeinformationen
+   */
+  private ReferenceDisplay displayFor(BibliographyReference reference) {
+    if (reference == null || reference.entryId() <= 0) {
+      return new ReferenceDisplay("", "");
+    }
+
+    ReferenceDisplay display = referenceDisplayCache.get(reference.entryId());
+    return display == null ? createFallbackReferenceDisplay(reference) : display;
+  }
+
+  /**
+   * Berechnet die Trefferanzeige aus einem einmal geladenen Eintrag.
+   *
+   * @param reference Trefferreferenz
+   * @return Anzeigeinformationen
+   */
+  private ReferenceDisplay createReferenceDisplay(BibliographyReference reference) {
+    DynamicBibliographyEntry entry = loadCachedEntry(reference == null ? null : reference.entryId()).orElse(null);
+    String personText = "";
+    String titleText = "";
+
+    if (entry != null) {
+      Integer mediaTypeId = entry.getMediaTypeId() != null ? entry.getMediaTypeId() : reference.mediaTypeId();
+      personText = mediaTypeId == null ? "" : extractPrimaryPersonDisplay(entry, mediaTypeId);
+      titleText = resolveEntryTitle(entry);
+    }
+
+    if (titleText.isBlank()) {
+      titleText = resolveReferenceFallbackTitle(reference, personText);
+    }
+
+    return new ReferenceDisplay(safeTrim(personText), safeTrim(titleText));
+  }
+
+  /**
+   * Laedt einen Eintrag ueber den Dialog-Cache.
+   *
+   * @param entryId Eintrags-ID
+   * @return geladener Eintrag
+   */
+  private Optional<DynamicBibliographyEntry> loadCachedEntry(Integer entryId) {
+    if (entryId == null || entryId <= 0) {
+      return Optional.empty();
+    }
+
+    DynamicBibliographyEntry cached = entryCache.get(entryId);
+    if (cached != null) {
+      return Optional.of(cached);
+    }
+
+    Optional<DynamicBibliographyEntry> loaded = bibliographyService.loadEntry(entryId);
+    loaded.ifPresent(entry -> entryCache.put(entryId, entry));
+    return loaded;
+  }
+
+  /**
+   * Ermittelt den fachlichen Titel aus einem bereits geladenen Eintrag.
+   *
+   * @param entry bibliographischer Eintrag
+   * @return Titel oder leerer String
+   */
+  private String resolveEntryTitle(DynamicBibliographyEntry entry) {
+    if (entry == null) {
+      return "";
+    }
+
+    return entry.findValue("title")
         .filter(StringBibValue.class::isInstance)
         .map(StringBibValue.class::cast)
         .map(StringBibValue::value)
         .map(this::safeTrim)
         .orElse("");
-    } catch (Exception ex) {
-      return "";
-    }
   }
 
+  /**
+   * Ermittelt einen Titel-Fallback aus dem kompakten Referenztext.
+   *
+   * @param reference Trefferreferenz
+   * @param personText bereits ermittelte Person
+   * @return Titel-Fallback
+   */
+  private String resolveReferenceFallbackTitle(BibliographyReference reference, String personText) {
+    if (reference == null) {
+      return "";
+    }
+
+    String fallbackText = safeTrim(reference.displayText());
+    if (fallbackText.isBlank()) {
+      return "";
+    }
+
+    if (!personText.isBlank()) {
+      for (String separator : List.of(": ", " | ")) {
+        String prefix = personText + separator;
+        if (fallbackText.startsWith(prefix)) {
+          String stripped = safeTrim(fallbackText.substring(prefix.length()));
+          if (!stripped.isBlank()) {
+            return stripped;
+          }
+        }
+      }
+    }
+
+    return fallbackText;
+  }
+
+  /**
+   * Lädt das echte Titelfeld eines bibliographischen Eintrags fehlertolerant.
+   *
+   * @param entryId Datenbank-ID des Eintrags
+   * @return Titel oder leerer String
+   */
   /**
    * Lädt die Personenanzeige fehlertolerant. Probleme in Altbeständen oder
    * inkonsistente Metadaten dürfen nicht dazu führen, dass eine Trefferzeile
@@ -594,18 +801,6 @@ public class MediaManagementDialog {
    * @param reference Trefferreferenz
    * @return formatierte Person oder leerer String
    */
-  private String safeLoadPrimaryPersonDisplay(BibliographyReference reference) {
-    if (reference == null || reference.entryId() <= 0) {
-      return "";
-    }
-
-    try {
-      return safeTrim(loadPrimaryPersonDisplay(reference.entryId(), reference.mediaTypeId()));
-    } catch (Exception ex) {
-      return "";
-    }
-  }
-
   /**
    * Lädt die erste Person des wichtigsten Personenfeldes eines Eintrags.
    * Bevorzugt werden Personenfelder mit Modus {@code identify}, danach
@@ -616,22 +811,6 @@ public class MediaManagementDialog {
    * @param fallbackMediaTypeId Medientyp-ID aus der Referenz als Fallback
    * @return formatierte Person oder leerer String
    */
-  private String loadPrimaryPersonDisplay(int entryId, Integer fallbackMediaTypeId) {
-    Optional<DynamicBibliographyEntry> loadedEntry = bibliographyService.loadEntry(entryId);
-    if (loadedEntry.isEmpty()) {
-      return "";
-    }
-
-    DynamicBibliographyEntry entry = loadedEntry.get();
-    Integer mediaTypeId = entry.getMediaTypeId() != null ? entry.getMediaTypeId() : fallbackMediaTypeId;
-
-    if (mediaTypeId == null || mediaTypeId <= 0) {
-      return "";
-    }
-
-    return extractPrimaryPersonDisplay(entry, mediaTypeId);
-  }
-
   /**
    * Ermittelt für einen dynamischen Eintrag das wichtigste Personenfeld und
    * liefert daraus die erste Person in Listenform.
@@ -645,7 +824,10 @@ public class MediaManagementDialog {
       return "";
     }
 
-    List<MediaAttributeDefinition> attributes = bibliographyService.listAttributesForMediaType(mediaTypeId);
+    List<MediaAttributeDefinition> attributes = attributesByMediaTypeCache.computeIfAbsent(
+        mediaTypeId,
+        bibliographyService::listAttributesForMediaType
+    );
     if (attributes == null || attributes.isEmpty()) {
       return "";
     }
@@ -758,7 +940,7 @@ public class MediaManagementDialog {
       return;
     }
 
-    DynamicBibliographyEntry loaded = bibliographyService.loadEntry(entryId).orElse(null);
+    DynamicBibliographyEntry loaded = loadCachedEntry(entryId).orElse(null);
     if (loaded == null) {
       return;
     }
@@ -777,7 +959,7 @@ public class MediaManagementDialog {
     currentEntryId = entryId;
     currentDisplayText = bibliographyService.loadReference(entryId)
                              .map(this::buildReferenceDisplayText)
-                             .orElse(null);
+                             .orElseGet(() -> displayTextForEntryId(entryId));
 
     btnEdit.setDisable(false);
     switchMode(Mode.EDIT);
@@ -816,12 +998,14 @@ public class MediaManagementDialog {
     }
 
     currentEntryId = entryId;
+    entryCache.remove(entryId);
+    referenceDisplayCache.remove(entryId);
     currentDisplayText = bibliographyService.loadReference(entryId)
                              .map(this::buildReferenceDisplayText)
                              .filter(text -> text != null && !text.isBlank())
                              .orElse("Medium #" + entryId);
 
-    DynamicBibliographyEntry reloaded = bibliographyService.loadEntry(entryId).orElse(null);
+    DynamicBibliographyEntry reloaded = loadCachedEntry(entryId).orElse(null);
     if (reloaded != null) {
       shellHost.setCenter(shellBundle.shell().getRoot());
       shellBundle.shell().showDynamicEntry(reloaded, true);
@@ -868,7 +1052,10 @@ public class MediaManagementDialog {
     }
 
     try {
+      Integer deletedEntryId = currentEntryId;
       bibliographyService.deleteEntry(currentEntryId);
+      entryCache.remove(deletedEntryId);
+      referenceDisplayCache.remove(deletedEntryId);
       clearLoadedEntryState();
       resultList.getSelectionModel().clearSelection();
       shellBundle.shell().clearEditorView();

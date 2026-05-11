@@ -15,6 +15,13 @@ import java.util.regex.Pattern;
 
 public final class InlineCssStyleUtil {
 
+  private static final String BULLET_PREFIX = "\u2022 ";
+  private static final Pattern NUMBER_PREFIX_PATTERN = Pattern.compile("^(\\d+)\\.\\s");
+  private static final int CITATION_INDENT_PIXELS = 12;
+  private static final int CITATION_VERTICAL_PADDING_PIXELS = 3;
+  private static final String CITATION_BACKGROUND_COLOR = "#eeeeee";
+  private static final int SEPARATOR_TOP_PADDING_PIXELS = 3;
+
   private static final java.util.Map<Character, Character> SUPER = java.util.Map.ofEntries(
       java.util.Map.entry('0', '⁰'), java.util.Map.entry('1', '¹'), java.util.Map.entry('2', '²'),
       java.util.Map.entry('3', '³'), java.util.Map.entry('4', '⁴'), java.util.Map.entry('5', '⁵'),
@@ -60,6 +67,60 @@ public final class InlineCssStyleUtil {
       updated = upsertCssProperty(updated, "-fx-font-weight", "bold");
       updated = upsertCssProperty(updated, "-fx-font-size", fontSizePx + "px");
       area.setParagraphStyle(p, updated);
+    });
+  }
+
+  /**
+   * Formatiert die betroffenen Absaetze als eingeruecktes Zitat.
+   * Bestehende Absatzmarkierungen werden entfernt, die Ausrichtung bleibt erhalten.
+   *
+   * @param area Editorbereich
+   */
+  public static void applyCitationForSelection(InlineCssTextArea area) {
+    Objects.requireNonNull(area, "area");
+
+    forEachSelectedParagraph(area, p -> {
+      String current = normalize(area.getParagraph(p).getParagraphStyle());
+      String alignment = readCssProperty(current, "-fx-text-alignment");
+
+      String updated = "";
+      if (alignment != null && !alignment.isBlank()) {
+        updated = upsertCssProperty(updated, "-fx-text-alignment", alignment);
+      }
+      updated = upsertCssProperty(
+          updated,
+          "-fx-padding",
+          CITATION_VERTICAL_PADDING_PIXELS + " 2 " + CITATION_VERTICAL_PADDING_PIXELS + " " + CITATION_INDENT_PIXELS
+      );
+      updated = upsertCssProperty(updated, "-fx-background-color", CITATION_BACKGROUND_COLOR);
+
+      area.setParagraphStyle(p, updated);
+      removeListPrefixIfPresent(area, p);
+    });
+  }
+
+  /**
+   * Formatiert die betroffenen Absaetze als Separator.
+   * Bestehende Absatzmarkierungen werden entfernt, die Ausrichtung bleibt erhalten.
+   *
+   * @param area Editorbereich
+   */
+  public static void applySeparatorForSelection(InlineCssTextArea area) {
+    Objects.requireNonNull(area, "area");
+
+    forEachSelectedParagraph(area, p -> {
+      String current = normalize(area.getParagraph(p).getParagraphStyle());
+      String alignment = readCssProperty(current, "-fx-text-alignment");
+
+      String updated = "";
+      if (alignment != null && !alignment.isBlank()) {
+        updated = upsertCssProperty(updated, "-fx-text-alignment", alignment);
+      }
+      updated = upsertCssProperty(updated, "-fx-font-weight", "bold");
+      updated = upsertCssProperty(updated, "-fx-padding", SEPARATOR_TOP_PADDING_PIXELS + " 0 0 0");
+
+      area.setParagraphStyle(p, updated);
+      removeListPrefixIfPresent(area, p);
     });
   }
 
@@ -118,6 +179,41 @@ public final class InlineCssStyleUtil {
     StyleSpansBuilder<String> builder = new StyleSpansBuilder<>();
     builder.add("", selection.getLength());
     area.setStyleSpans(selection.getStart(), builder.create());
+  }
+
+  /**
+   * Behandelt Enter innerhalb einer Textliste.
+   *
+   * @param area Editorbereich
+   * @return {@code true}, wenn ein Listen-Enter eingefuegt wurde
+   */
+  public static boolean handleListEnter(InlineCssTextArea area) {
+    Objects.requireNonNull(area, "area");
+
+    IndexRange selection = area.getSelection();
+    if (selection != null && selection.getLength() > 0) {
+      return false;
+    }
+
+    int paragraphIndex = area.getCurrentParagraph();
+    String paragraphText = area.getParagraph(paragraphIndex).getText();
+
+    if (paragraphText.startsWith(BULLET_PREFIX)) {
+      area.insertText(area.getCaretPosition(), "\n" + BULLET_PREFIX);
+      return true;
+    }
+
+    Integer number = leadingListNumber(paragraphText);
+    if (number == null) {
+      return false;
+    }
+
+    int insertedParagraphIndex = paragraphIndex + 1;
+    area.insertText(area.getCaretPosition(), "\n" + (number + 1) + ". ");
+    int caretAfterInsertedPrefix = area.getCaretPosition();
+    renumberFollowingNumberedParagraphs(area, insertedParagraphIndex + 1, number + 2);
+    area.moveTo(caretAfterInsertedPrefix);
+    return true;
   }
 
   public static TriState selectionHeadingTriState(InlineCssTextArea area, int fontSizePx) {
@@ -250,7 +346,7 @@ public final class InlineCssStyleUtil {
 
     for (int p = range[0]; p <= range[1]; p++) {
       String text = area.getParagraph(p).getText();
-      if (!text.startsWith("• ")) {
+      if (!text.startsWith(BULLET_PREFIX)) {
         allAreBullets = false;
         break;
       }
@@ -263,7 +359,7 @@ public final class InlineCssStyleUtil {
     } else {
       for (int p = range[0]; p <= range[1]; p++) {
         removeAnyListPrefix(area, p);
-        insertPrefix(area, p, "• ");
+        insertPrefix(area, p, BULLET_PREFIX);
       }
     }
   }
@@ -276,7 +372,7 @@ public final class InlineCssStyleUtil {
 
     for (int p = range[0]; p <= range[1]; p++) {
       String text = area.getParagraph(p).getText();
-      if (!text.matches("^\\d+\\.\\s.*")) {
+      if (leadingListNumber(text) == null) {
         allAreNumbers = false;
         break;
       }
@@ -383,6 +479,20 @@ public final class InlineCssStyleUtil {
     area.insertText(start, prefix);
   }
 
+  /**
+   * Liest die fuehrende Nummer eines nummerierten Listenabsatzes.
+   *
+   * @param text Absatztext
+   * @return Nummer oder {@code null}
+   */
+  private static Integer leadingListNumber(String text) {
+    var matcher = NUMBER_PREFIX_PATTERN.matcher(text == null ? "" : text);
+    if (!matcher.find()) {
+      return null;
+    }
+    return Integer.parseInt(matcher.group(1));
+  }
+
   static String normalize(String style) {
     return style == null ? "" : style;
   }
@@ -394,11 +504,11 @@ public final class InlineCssStyleUtil {
 
   private static void removeBulletPrefix(InlineCssTextArea area, int paragraphIndex) {
     String text = area.getParagraph(paragraphIndex).getText();
-    if (!text.startsWith("• ")) {
+    if (!text.startsWith(BULLET_PREFIX)) {
       return;
     }
     int start = area.getAbsolutePosition(paragraphIndex, 0);
-    area.deleteText(start, start + 2);
+    area.deleteText(start, start + BULLET_PREFIX.length());
   }
 
   private static String removeCssProperty(String style, String property) {
@@ -411,12 +521,12 @@ public final class InlineCssStyleUtil {
     String text = area.getParagraph(paragraphIndex).getText();
     int paragraphStart = area.getAbsolutePosition(paragraphIndex, 0);
 
-    if (text.startsWith("• ")) {
-      area.deleteText(paragraphStart, paragraphStart + 2);
+    if (text.startsWith(BULLET_PREFIX)) {
+      area.deleteText(paragraphStart, paragraphStart + BULLET_PREFIX.length());
       return;
     }
 
-    var matcher = Pattern.compile("^\\d+\\.\\s").matcher(text);
+    var matcher = NUMBER_PREFIX_PATTERN.matcher(text);
     if (matcher.find()) {
       area.deleteText(paragraphStart, paragraphStart + matcher.group(0).length());
     }
@@ -439,9 +549,32 @@ public final class InlineCssStyleUtil {
     return a.equalsIgnoreCase(b);
   }
 
+  /**
+   * Nummeriert den zusammenhaengenden nummerierten Listenblock ab einem Absatz neu.
+   *
+   * @param area Editorbereich
+   * @param startParagraph erster zu pruefender Absatz
+   * @param nextNumber erste zu setzende Nummer
+   */
+  private static void renumberFollowingNumberedParagraphs(InlineCssTextArea area, int startParagraph, int nextNumber) {
+    for (int p = startParagraph; p < area.getParagraphs().size(); p++) {
+      String text = area.getParagraph(p).getText();
+      var matcher = NUMBER_PREFIX_PATTERN.matcher(text);
+      if (!matcher.find()) {
+        return;
+      }
+
+      String prefix = matcher.group(0);
+      String replacement = nextNumber + ". ";
+      int paragraphStart = area.getAbsolutePosition(p, 0);
+      area.replaceText(paragraphStart, paragraphStart + prefix.length(), replacement);
+      nextNumber++;
+    }
+  }
+
   private static void removeNumberPrefix(InlineCssTextArea area, int paragraphIndex) {
     String text = area.getParagraph(paragraphIndex).getText();
-    var matcher = Pattern.compile("^\\d+\\.\\s").matcher(text);
+    var matcher = NUMBER_PREFIX_PATTERN.matcher(text);
     if (!matcher.find()) {
       return;
     }

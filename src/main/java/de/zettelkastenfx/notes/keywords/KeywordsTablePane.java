@@ -4,9 +4,12 @@ import javafx.beans.property.SimpleStringProperty;
 import javafx.beans.property.StringProperty;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
+import javafx.geometry.Pos;
 import javafx.geometry.Side;
+import javafx.scene.Node;
 import javafx.scene.control.*;
 import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseButton;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.Region;
@@ -25,7 +28,20 @@ public class KeywordsTablePane extends BorderPane {
 
   private final TableColumn<Row, String> colKeyword = new TableColumn<>();
   private final TableColumn<Row, String> colCount = new TableColumn<>();
-  private Function<String, List<String>> keywordSuggestionProvider = text -> List.of();
+  private Function<KeywordSuggestionRequest, List<String>> keywordSuggestionProvider = request -> List.of();
+  private boolean prefixSearchMode;
+  private boolean tokenAndSearchMode;
+  private int pendingEditorTextRow = -1;
+  private String pendingEditorText = "";
+
+  /**
+   * Beschreibt eine Suchanfrage fuer Stichwortvorschlaege.
+   *
+   * @param text Eingabetext
+   * @param prefixOnly ob nur am Zeichenkettenanfang gesucht wird
+   * @param allTokens ob alle Suchteile enthalten sein muessen
+    */
+  public record KeywordSuggestionRequest(String text, boolean prefixOnly, boolean allTokens) {}
 
   private Runnable onKeywordsCommitted = () -> {}; // für sofortiges Update der Keywords nach Anlegen
 
@@ -68,6 +84,10 @@ public class KeywordsTablePane extends BorderPane {
 
     // zweite Spalte erstmal leer lassen (später: Anzahl Zettel)
     colCount.setCellFactory(tc -> new TableCell<>() {
+      {
+        setAlignment(Pos.CENTER_RIGHT);
+      }
+
       @Override
       protected void updateItem(String item, boolean empty) {
         super.updateItem(item, empty);
@@ -184,7 +204,9 @@ public class KeywordsTablePane extends BorderPane {
   private class SingleClickEditCell extends TableCell<Row, String> {
     private TextField textField;
     private ContextMenu suggestionMenu;
-
+    private List<String> displayedSuggestions = List.of();
+    private int selectedSuggestionIndex = -1;
+    private boolean splitNextSuggestionAction;
     public SingleClickEditCell() {
       setOnMouseClicked(e -> {
         if (e.getButton() == MouseButton.PRIMARY && e.getClickCount() == 1 && !isEmpty()) {
@@ -204,48 +226,45 @@ public class KeywordsTablePane extends BorderPane {
 
         suggestionMenu = new ContextMenu();
         suggestionMenu.setAutoHide(true);
+        suggestionMenu.setHideOnEscape(false);
+        suggestionMenu.addEventFilter(KeyEvent.KEY_PRESSED, this::handleSuggestionMenuKeyPressed);
 
-        textField.textProperty().addListener((obs, oldValue, newValue) ->
-                                                 refreshSuggestions(newValue)
-        );
+        textField.textProperty().addListener((obs, oldValue, newValue) -> {
+          if (!Objects.equals(oldValue, newValue)) {
+            selectedSuggestionIndex = -1;
+          }
+          refreshSuggestions(newValue);
+        });
 
         // Enter commit
         textField.setOnAction(e -> {
-          suggestionMenu.hide();
+          hideSuggestions();
           commitEdit(textField.getText());
         });
 
         // Klick woanders hin / Fokus weg => commit (statt cancel)
         textField.focusedProperty().addListener((obs, old, now) -> {
           if (!now) {
-            suggestionMenu.hide();
+            hideSuggestions();
             if (isEditing()) {
               commitEdit(textField.getText());
             }
           }
         });
 
-        textField.setOnKeyPressed(e -> {
-          if (e.getCode() == KeyCode.ESCAPE) {
-            suggestionMenu.hide();
-            cancelEdit();
-          }
-          if (e.getCode() == KeyCode.TAB) {
-            suggestionMenu.hide();
-            boolean backwards = e.isShiftDown();
-            commitEdit(textField.getText());
-            e.consume();
-            javafx.application.Platform.runLater(() -> editRelative(backwards ? -1 : 1));
-          }
-        });
+        textField.addEventFilter(KeyEvent.KEY_PRESSED, this::handleEditorKeyPressed);
       }
 
-      textField.setText(getItem());
+      tokenAndSearchMode = false;
+      textField.setText(editorTextForRow(getIndex(), getItem()));
+      updateEditorSearchModeStyle();
       setGraphic(textField);
       setText(null);
 
       javafx.application.Platform.runLater(() -> {
         textField.requestFocus();
+        textField.setText(editorTextForRow(getIndex(), textField.getText()));
+        clearPendingEditorText(getIndex());
         textField.selectAll();
         refreshSuggestions(textField.getText());
       });
@@ -255,7 +274,7 @@ public class KeywordsTablePane extends BorderPane {
     public void cancelEdit() {
       super.cancelEdit();
       if (suggestionMenu != null) {
-        suggestionMenu.hide();
+        hideSuggestions();
       }
       setText(getItem());
       setGraphic(null);
@@ -264,7 +283,7 @@ public class KeywordsTablePane extends BorderPane {
     @Override
     public void commitEdit(String newValue) {
       if (suggestionMenu != null) {
-        suggestionMenu.hide();
+        hideSuggestions();
       }
       super.commitEdit(newValue);
       setGraphic(null);
@@ -277,7 +296,7 @@ public class KeywordsTablePane extends BorderPane {
 
       if (empty) {
         if (suggestionMenu != null) {
-          suggestionMenu.hide();
+          hideSuggestions();
         }
         setText(null);
         setGraphic(null);
@@ -286,13 +305,13 @@ public class KeywordsTablePane extends BorderPane {
 
       if (isEditing()) {
         if (textField != null) {
-          textField.setText(item);
+          textField.setText(editorTextForRow(getIndex(), item));
         }
         setText(null);
         setGraphic(textField);
       } else {
         if (suggestionMenu != null) {
-          suggestionMenu.hide();
+          hideSuggestions();
         }
         setText(item);
         setGraphic(null);
@@ -311,17 +330,20 @@ public class KeywordsTablePane extends BorderPane {
 
       String normalized = normalizeKeyword(typedText);
       if (normalized.isBlank()) {
-        suggestionMenu.hide();
+        hideSuggestions();
         return;
       }
 
-      List<String> suggestions = keywordSuggestionProvider.apply(normalized);
+      List<String> suggestions = keywordSuggestionProvider.apply(
+          new KeywordSuggestionRequest(normalized, prefixSearchMode, tokenAndSearchMode)
+      );
       if (suggestions == null || suggestions.isEmpty()) {
-        suggestionMenu.hide();
+        hideSuggestions();
         return;
       }
 
       List<MenuItem> items = new ArrayList<>();
+      List<String> visibleSuggestions = new ArrayList<>();
       for (String keyword : suggestions) {
         if (keyword == null || keyword.isBlank()) {
           continue;
@@ -329,22 +351,30 @@ public class KeywordsTablePane extends BorderPane {
 
         Label label = new Label(keyword);
         label.setMinWidth(Region.USE_PREF_SIZE);
+        label.addEventFilter(KeyEvent.KEY_PRESSED, this::handleSuggestionNodeKeyPressed);
+        label.addEventFilter(KeyEvent.KEY_PRESSED, this::armSplitSuggestionAction);
 
         CustomMenuItem item = new CustomMenuItem(label, true);
+        item.addEventFilter(KeyEvent.KEY_PRESSED, this::handleSuggestionNodeKeyPressed);
+        item.addEventHandler(KeyEvent.KEY_PRESSED, this::armSplitSuggestionAction);
         item.setOnAction(e -> {
-          textField.setText(keyword);
-          textField.positionCaret(keyword.length());
-          suggestionMenu.hide();
+          acceptSuggestion(keyword, consumeSplitSuggestionAction());
         });
         items.add(item);
+        visibleSuggestions.add(keyword);
       }
 
       if (items.isEmpty()) {
-        suggestionMenu.hide();
+        hideSuggestions();
         return;
       }
 
+      displayedSuggestions = List.copyOf(visibleSuggestions);
+      if (selectedSuggestionIndex >= displayedSuggestions.size()) {
+        selectedSuggestionIndex = displayedSuggestions.size() - 1;
+      }
       suggestionMenu.getItems().setAll(items);
+      updateSuggestionFocusStyle();
 
       if (textField.getScene() == null
               || textField.getScene().getWindow() == null
@@ -352,10 +382,352 @@ public class KeywordsTablePane extends BorderPane {
         return;
       }
 
-      if (suggestionMenu.isShowing()) {
+      if (!suggestionMenu.isShowing()) {
+        suggestionMenu.show(textField, Side.BOTTOM, 0, 0);
+      }
+      updateSuggestionFocusStyle();
+    }
+
+    /**
+     * Behandelt Tastaturbefehle fuer Vorschlaege und Suchmodi.
+     *
+     * @param event Tastaturereignis
+     */
+    private void handleEditorKeyPressed(KeyEvent event) {
+      if (event.getCode() == KeyCode.HOME) {
+        prefixSearchMode = !prefixSearchMode;
+        updateEditorSearchModeStyle();
+        refreshSuggestions(textField.getText());
+        event.consume();
+        return;
+      }
+      if (event.isAltDown() && event.getCode() == KeyCode.DOWN) {
+        toggleTokenAndSearchMode();
+        event.consume();
+        return;
+      }
+      if (event.getCode() == KeyCode.DOWN) {
+        if (acceptOnlyVisibleSuggestion()) {
+          event.consume();
+          return;
+        }
+
+        List<String> suggestions = currentSuggestions();
+        if (!suggestions.isEmpty()) {
+          if (suggestionMenu != null && !suggestionMenu.isShowing()) {
+            refreshSuggestions(textField.getText());
+          }
+          focusSuggestion(Math.min(focusedSuggestionIndex() + 1, suggestions.size() - 1));
+        }
+        event.consume();
+        return;
+      }
+      if (event.getCode() == KeyCode.UP && focusedSuggestionIndex() >= 0) {
+        focusSuggestion(Math.max(0, focusedSuggestionIndex() - 1));
+        event.consume();
+        return;
+      }
+      if ((event.getCode() == KeyCode.ENTER || event.getCode() == KeyCode.TAB) && focusedSuggestionIndex() >= 0) {
+        acceptSuggestion(currentSuggestions().get(focusedSuggestionIndex()), event.isShiftDown() && event.getCode() == KeyCode.ENTER);
+        event.consume();
+        return;
+      }
+      if (event.getCode() == KeyCode.ESCAPE) {
+        if (suggestionMenu != null && suggestionMenu.isShowing()) {
+          leaveSuggestionSelection();
+        } else {
+          cancelEdit();
+        }
+        event.consume();
+        return;
+      }
+      if (event.getCode() == KeyCode.TAB) {
+        hideSuggestions();
+        boolean backwards = event.isShiftDown();
+        commitEdit(textField.getText());
+        event.consume();
+        javafx.application.Platform.runLater(() -> editRelative(backwards ? -1 : 1));
+      }
+    }
+
+    /**
+     * Behandelt Tastaturbefehle, die JavaFX direkt an das geoeffnete
+     * Vorschlagsmenue schickt.
+     *
+     * @param event Tastaturereignis im Vorschlagsmenue
+     */
+    private void handleSuggestionMenuKeyPressed(KeyEvent event) {
+      if (event.isAltDown() && event.getCode() == KeyCode.DOWN) {
+        toggleTokenAndSearchMode();
+        event.consume();
+        return;
+      }
+      if (event.getCode() == KeyCode.ESCAPE) {
+        leaveSuggestionSelection();
+        event.consume();
+        return;
+      }
+      if (event.isShiftDown() && event.getCode() == KeyCode.ENTER) {
+        splitNextSuggestionAction = true;
+        if (acceptFocusedSuggestion(true)) {
+          event.consume();
+        }
+        return;
+      }
+      if (event.getCode() == KeyCode.DOWN && acceptOnlyVisibleSuggestion()) {
+        event.consume();
+      }
+    }
+
+    /**
+     * Behandelt Tastaturbefehle, die direkt auf einem Vorschlagsknoten landen.
+     *
+     * @param event Tastaturereignis
+     */
+    private void handleSuggestionNodeKeyPressed(KeyEvent event) {
+      if (event.isAltDown() && event.getCode() == KeyCode.DOWN) {
+        toggleTokenAndSearchMode();
+        event.consume();
+        return;
+      }
+      if (event.getCode() == KeyCode.ESCAPE) {
+        leaveSuggestionSelection();
+        event.consume();
+      }
+    }
+
+    /**
+     * Verlaesst nur die Auswahl im sichtbaren Dropdown, ohne das Dropdown zu
+     * schliessen. Falls JavaFX das Popup trotzdem automatisch schliesst, wird es
+     * im naechsten UI-Takt wieder fuer die aktuelle Eingabe geoeffnet.
+     */
+    private void leaveSuggestionSelection() {
+      clearSuggestionFocus();
+      javafx.application.Platform.runLater(() -> {
+        if (isEditing()
+                && textField != null
+                && suggestionMenu != null
+                && !normalizeKeyword(textField.getText()).isBlank()) {
+          refreshSuggestions(textField.getText());
+        }
+      });
+    }
+
+    /**
+     * Schaltet die Mehrwort-UND-Suche um, ohne die normale Dropdown-Navigation
+     * der Pfeil-runter-Taste auszufuehren.
+     */
+    private void toggleTokenAndSearchMode() {
+      tokenAndSearchMode = !tokenAndSearchMode;
+      clearSuggestionFocus();
+      updateEditorSearchModeStyle();
+      refreshSuggestions(textField.getText());
+    }
+
+    /**
+     * Merkt fuer die folgende Menue-Action vor, dass die aktuelle Eingabe in die
+     * naechste Zeile kopiert werden soll.
+     *
+     * @param event Tastaturereignis
+     */
+    private void armSplitSuggestionAction(KeyEvent event) {
+      if (event.isShiftDown() && event.getCode() == KeyCode.ENTER) {
+        splitNextSuggestionAction = true;
+      }
+    }
+
+    /**
+     * Liefert und loescht die Vormerkung fuer eine Shift-Enter-Menueaktion.
+     *
+     * @return {@code true}, wenn die folgende Uebernahme den Eingabetext kopieren soll
+     */
+    private boolean consumeSplitSuggestionAction() {
+      boolean split = splitNextSuggestionAction;
+      splitNextSuggestionAction = false;
+      return split;
+    }
+
+    /**
+     * Uebernimmt den aktuell markierten Dropdown-Vorschlag.
+     *
+     * @param splitCurrentInput ob die bisherige Eingabe in die Folgezeile soll
+     * @return {@code true}, wenn ein markierter Vorschlag uebernommen wurde
+     */
+    private boolean acceptFocusedSuggestion(boolean splitCurrentInput) {
+      int index = focusedSuggestionIndex();
+      if (displayedSuggestions == null || index < 0 || index >= displayedSuggestions.size()) {
+        return false;
+      }
+
+      acceptSuggestion(displayedSuggestions.get(index), splitCurrentInput);
+      return true;
+    }
+
+    /**
+     * Uebernimmt den einzigen sichtbaren Dropdown-Vorschlag.
+     *
+     * @return {@code true}, wenn genau ein sichtbarer Vorschlag uebernommen wurde
+     */
+    private boolean acceptOnlyVisibleSuggestion() {
+      if (displayedSuggestions == null || displayedSuggestions.size() != 1) {
+        return false;
+      }
+
+      acceptSuggestion(displayedSuggestions.getFirst(), false);
+      return true;
+    }
+
+    /**
+     * Uebernimmt einen Vorschlag und wechselt danach in die naechste leere Zeile.
+     *
+     * @param suggestion Vorschlag
+     * @param splitCurrentInput ob der bisherige Eingabetext in die Folgezeile soll
+     */
+    private void acceptSuggestion(String suggestion, boolean splitCurrentInput) {
+      String previousInput = normalizeKeyword(textField.getText());
+      hideSuggestions();
+      commitEdit(suggestion);
+      javafx.application.Platform.runLater(() -> {
+        normalizeRows();
+        int row = items.size() - 1;
+        if (splitCurrentInput && !previousInput.isBlank() && !previousInput.equals(suggestion)) {
+          setPendingEditorText(row, previousInput);
+        }
+        table.getSelectionModel().clearAndSelect(row, colKeyword);
+        table.scrollTo(row);
+        table.edit(row, colKeyword);
+      });
+    }
+
+    /**
+     * Liefert die aktuellen Vorschlaege.
+     *
+     * @return Vorschlagsliste
+     */
+    private List<String> currentSuggestions() {
+      String normalized = normalizeKeyword(textField.getText());
+      if (normalized.isBlank()) {
+        return List.of();
+      }
+      if (displayedSuggestions == null || displayedSuggestions.isEmpty()) {
+        refreshSuggestions(normalized);
+      }
+      return displayedSuggestions == null ? List.of() : displayedSuggestions;
+    }
+
+    /**
+     * Markiert einen Vorschlag optisch.
+     *
+     * @param index Vorschlagsindex
+     */
+    private void focusSuggestion(int index) {
+      selectedSuggestionIndex = index;
+      updateSuggestionFocusStyle();
+    }
+
+    /**
+     * Liefert den markierten Vorschlagsindex.
+     *
+     * @return Index oder {@code -1}
+     */
+    private int focusedSuggestionIndex() {
+      return selectedSuggestionIndex;
+    }
+
+    /**
+     * Entfernt die optische Vorschlagsmarkierung.
+     */
+    private void clearSuggestionFocus() {
+      selectedSuggestionIndex = -1;
+      updateSuggestionFocusStyle();
+    }
+
+    /**
+     * Aktualisiert die optische Vorschlagsmarkierung anhand des gespeicherten Index.
+     */
+    private void updateSuggestionFocusStyle() {
+      if (suggestionMenu == null) {
+        return;
+      }
+      for (int i = 0; i < suggestionMenu.getItems().size(); i++) {
+        MenuItem item = suggestionMenu.getItems().get(i);
+        item.getStyleClass().remove("focused");
+        Node content = item instanceof CustomMenuItem customItem ? customItem.getContent() : null;
+        if (content != null) {
+          content.setStyle("");
+        }
+        if (i == selectedSuggestionIndex) {
+          item.getStyleClass().add("focused");
+          if (content != null) {
+            content.setStyle("-fx-background-color: #dbeafe; -fx-text-fill: #111827; -fx-padding: 3 8 3 8;");
+          }
+        }
+      }
+    }
+
+    /**
+     * Blendet die Vorschlagsliste aus und setzt ihren Navigationszustand zurueck.
+     */
+    private void hideSuggestions() {
+      selectedSuggestionIndex = -1;
+      displayedSuggestions = List.of();
+      splitNextSuggestionAction = false;
+      if (suggestionMenu != null) {
         suggestionMenu.hide();
       }
-      suggestionMenu.show(textField, Side.BOTTOM, 0, 0);
+    }
+
+    /**
+     * Merkt den Text vor, der beim Oeffnen einer Tabellenzeile direkt in deren
+     * Editor eingetragen werden soll.
+     *
+     * @param rowIndex Zielzeile
+     * @param text Text fuer das Eingabefeld
+     */
+    private void setPendingEditorText(int rowIndex, String text) {
+      pendingEditorTextRow = rowIndex;
+      pendingEditorText = normalizeKeyword(text);
+    }
+
+    /**
+     * Liefert einen vorgemerkten Editortext fuer die angefragte Zeile.
+     *
+     * @param rowIndex angefragte Zeile
+     * @param fallback Standardwert der Tabellenzeile
+     * @return vorgemerkter Text oder Standardwert
+     */
+    private String editorTextForRow(int rowIndex, String fallback) {
+      if (rowIndex != pendingEditorTextRow) {
+        return fallback;
+      }
+
+      return pendingEditorText;
+    }
+
+    /**
+     * Loescht den vorgemerkten Editortext, falls er fuer die angegebene Zeile
+     * verbraucht wurde.
+     *
+     * @param rowIndex Zeile, deren Vormerkung geloescht werden soll
+     */
+    private void clearPendingEditorText(int rowIndex) {
+      if (rowIndex != pendingEditorTextRow) {
+        return;
+      }
+
+      pendingEditorTextRow = -1;
+      pendingEditorText = "";
+    }
+
+    /**
+     * Markiert das Eingabefeld bei aktiven Suchmodi.
+     */
+    private void updateEditorSearchModeStyle() {
+      if (tokenAndSearchMode) {
+        textField.setStyle("-fx-control-inner-background: #e7f6df;");
+        return;
+      }
+      textField.setStyle(prefixSearchMode ? "-fx-control-inner-background: #fff0d6;" : "");
     }
 
     private void editRelative(int delta) {
@@ -375,8 +747,8 @@ public class KeywordsTablePane extends BorderPane {
    * @param provider Callback, der zur aktuell eingegebenen Zeichenkette passende
    *                 Schlagwörter liefert
    */
-  public void setKeywordSuggestionProvider(Function<String, List<String>> provider) {
-    this.keywordSuggestionProvider = (provider == null) ? text -> List.of() : provider;
+  public void setKeywordSuggestionProvider(Function<KeywordSuggestionRequest, List<String>> provider) {
+    this.keywordSuggestionProvider = (provider == null) ? request -> List.of() : provider;
   }
 
   public void setOnKeywordsCommitted(Runnable r) {

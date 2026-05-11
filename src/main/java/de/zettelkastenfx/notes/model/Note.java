@@ -157,6 +157,7 @@ public class Note {
 
   public void captureFrom(NoteEditorPane editor,
                           KeywordsTablePane keywordsPane) {
+    editor.commitBodySourceViewIfActive();
     setTitle(editor.getTitleEditorArea().getText());
     captureBodyFrom(editor.getBodyArea());
 
@@ -166,8 +167,10 @@ public class Note {
 
   public void applyTo(NoteEditorPane editor,
                       KeywordsTablePane keywordsPane) {
+    editor.discardBodySourceView();
     editor.getTitleEditorArea().setText(getTitle());
     applyBodyTo(editor.getBodyArea());
+    editor.refreshImageReferences();
     keywordsPane.setKeywords(getKeywords());
     editor.setHeaderNoteNumber(id);
     editor.setHeaderCreatedAt(createdAt);

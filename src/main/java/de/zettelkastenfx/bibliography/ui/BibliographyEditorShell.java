@@ -68,6 +68,7 @@ public class BibliographyEditorShell {
   private Integer inlineOriginalEntryId;
   private String inlineOriginalMediaTypeBibName = "";
   private boolean inlineMediaTypeSwitchInProgress;
+  private boolean suppressInlineOriginalTracking;
 
   private final Map<String, Map<String, Node>> dynamicFieldNodesByMediaType = new LinkedHashMap<>();
   private final Map<String, Map<String, BibtexFieldDefinition>> additionalFieldDefinitionsByMediaType =
@@ -516,7 +517,7 @@ public class BibliographyEditorShell {
     Region spacer = new Region();
     HBox.setHgrow(spacer, Priority.ALWAYS);
 
-    toggleEdit.setOnAction(event -> setEditMode(true));
+    toggleEdit.setOnAction(event -> handleEditToggleAction());
 
     typeField.visibleProperty().bind(toggleEdit.selectedProperty());
     typeField.managedProperty().bind(toggleEdit.selectedProperty());
@@ -525,6 +526,20 @@ public class BibliographyEditorShell {
 
     header.getChildren().addAll(toggleEdit, typeField, spacer, btnDelete);
     return header;
+  }
+
+  /**
+   * Behandelt den Bearbeitungstoggle.
+   * Im Zettelkontext schließt ein aktives Wegschalten den Editor zurück in die
+   * kompakte Vorschau; außerhalb bleibt der Editor dauerhaft im Bearbeitungsmodus.
+   */
+  private void handleEditToggleAction() {
+    if (noteLinkingContext && !toggleEdit.isSelected()) {
+      onCloseEditor.run();
+      return;
+    }
+
+    setEditMode(true);
   }
 
   /**
@@ -848,6 +863,7 @@ public class BibliographyEditorShell {
           "title".equals(normalizeBibtexName(attribute.fieldDefinition().bibtexName()))
               || "ai_provider".equals(normalizeBibtexName(attribute.fieldDefinition().bibtexName()))
               || "ai_model".equals(normalizeBibtexName(attribute.fieldDefinition().bibtexName()))
+              || "ai_context".equals(normalizeBibtexName(attribute.fieldDefinition().bibtexName()))
               || "ai_used_at".equals(normalizeBibtexName(attribute.fieldDefinition().bibtexName()))
       );
 
@@ -931,6 +947,7 @@ public class BibliographyEditorShell {
             "title".equals(bibtexName)
                 || "ai_provider".equals(bibtexName)
                 || "ai_model".equals(bibtexName)
+                || "ai_context".equals(bibtexName)
                 || "ai_used_at".equals(bibtexName)
         );
 
@@ -1248,8 +1265,10 @@ public class BibliographyEditorShell {
     setAutoFilled(mediaTypeBibName, false);
 
     if (noteLinkingContext) {
-      inlineOriginalEntryId = entry.getId();
-      inlineOriginalMediaTypeBibName = mediaTypeBibName;
+      if (!suppressInlineOriginalTracking) {
+        inlineOriginalEntryId = entry.getId();
+        inlineOriginalMediaTypeBibName = mediaTypeBibName;
+      }
       inlineMediaTypeSwitchInProgress = false;
     }
 
@@ -3191,11 +3210,17 @@ public class BibliographyEditorShell {
         }
 
         bibliographyService.loadEntry(entryId).ifPresent(entry -> {
-          BibliographyEditorShell.this.showDynamicEntry(entry, true);
-          BibliographyEditorShell.this.setSelectedEntryId(mediaTypeBibName, entryId);
-          BibliographyEditorShell.this.setSourceEntryId(mediaTypeBibName, entryId);
-          BibliographyEditorShell.this.setAutoFillLocked(mediaTypeBibName, false);
-          BibliographyEditorShell.this.setAutoFilled(mediaTypeBibName, markAsAutoFill);
+          suppressInlineOriginalTracking = true;
+          try {
+            BibliographyEditorShell.this.showDynamicEntry(entry, true);
+            BibliographyEditorShell.this.setSelectedEntryId(mediaTypeBibName, entryId);
+            BibliographyEditorShell.this.setSourceEntryId(mediaTypeBibName, entryId);
+            BibliographyEditorShell.this.setAutoFillLocked(mediaTypeBibName, false);
+            BibliographyEditorShell.this.setAutoFilled(mediaTypeBibName, markAsAutoFill);
+          } finally {
+            suppressInlineOriginalTracking = false;
+          }
+          updateSaveButtonState();
         });
       }
     };
@@ -3917,22 +3942,38 @@ public class BibliographyEditorShell {
 
   /**
    * Aktualisiert den Aktivierungszustand des Speichern-Buttons.
-   * Auch im normalen Medien-Popup darf nur gespeichert werden, wenn das
-   * Formular lokal gültig ist. Im Zettelkontext bleibt zusätzlich der Fall
-   * erlaubt, dass bereits ein bestehender Eintrag selektiert ist.
+   * Gespeichert werden darf erst, wenn der Editor geändert wurde und der
+   * sichtbare Formularzustand lokal gültig ist.
    */
   private void updateSaveButtonState() {
     boolean locallyValid = isCurrentEntryLocallyValidForSave();
+    boolean selectedDifferentExistingEntry =
+        noteLinkingContext && !dirty && locallyValid && pointsToNewlySelectedExistingEntry();
+    btnAdd.setDisable(!((dirty && locallyValid) || selectedDifferentExistingEntry));
+  }
 
-    if (!noteLinkingContext) {
-      btnAdd.setDisable(!(dirty && locallyValid));
-      return;
+  /**
+   * Prueft, ob im Zettelkontext ein vorhandener Eintrag neu ausgewaehlt wurde,
+   * statt nur den bereits verknuepften Ursprungseintrag unveraendert zu oeffnen.
+   *
+   * @return {@code true}, wenn ein vorhandener Eintrag neu verknuepft werden darf
+   */
+  private boolean pointsToNewlySelectedExistingEntry() {
+    String mediaTypeBibName = getSelectedMediaTypeBibName();
+    if (mediaTypeBibName.isBlank()) {
+      return false;
     }
 
-    boolean hasExistingSelection = hasExistingSelectionInCurrentForm();
-    boolean validNewEntry = dirty && locallyValid;
+    Integer selectedEntryId = getSelectedEntryId(mediaTypeBibName);
+    if (selectedEntryId == null || selectedEntryId <= 0) {
+      selectedEntryId = getSourceEntryId(mediaTypeBibName);
+    }
 
-    btnAdd.setDisable(!(hasExistingSelection || validNewEntry));
+    if (selectedEntryId == null || selectedEntryId <= 0) {
+      return false;
+    }
+
+    return !Objects.equals(selectedEntryId, inlineOriginalEntryId);
   }
 
   /**
@@ -3948,27 +3989,6 @@ public class BibliographyEditorShell {
    */
   private void refreshDirtyState() {
     setDirty(!Objects.equals(baselineSignature, buildCurrentStateSignature()));
-  }
-
-  /**
-   * Prüft, ob im aktuell sichtbaren Formular bereits ein bestehender
-   * bibliographischer Eintrag referenziert wird.
-   *
-   * @return {@code true}, wenn eine bestehende Eintrags-ID vorliegt
-   */
-  private boolean hasExistingSelectionInCurrentForm() {
-    String mediaTypeBibName = getSelectedMediaTypeBibName();
-    if (mediaTypeBibName.isBlank()) {
-      return false;
-    }
-
-    Integer selectedEntryId = getSelectedEntryId(mediaTypeBibName);
-    if (selectedEntryId != null && selectedEntryId > 0) {
-      return true;
-    }
-
-    Integer sourceEntryId = getSourceEntryId(mediaTypeBibName);
-    return sourceEntryId != null && sourceEntryId > 0;
   }
 
   /**

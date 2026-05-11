@@ -83,6 +83,49 @@ public class DynamicBibliographyRepository {
   }
 
   /**
+   * Laedt mehrere bibliographische Eintraege ueber eine gemeinsame Verbindung.
+   * Die Reihenfolge der Rueckgabe folgt der Reihenfolge der uebergebenen IDs;
+   * doppelte, leere und nicht vorhandene IDs werden defensiv uebersprungen.
+   *
+   * @param entryIds Datenbank-IDs der Eintraege
+   * @return vollstaendig geladene Eintraege
+   */
+  public List<DynamicBibliographyEntry> loadAll(Collection<Integer> entryIds) {
+    if (entryIds == null || entryIds.isEmpty()) {
+      return List.of();
+    }
+
+    LinkedHashSet<Integer> normalizedEntryIds = new LinkedHashSet<>();
+    for (Integer entryId : entryIds) {
+      if (entryId != null && entryId > 0) {
+        normalizedEntryIds.add(entryId);
+      }
+    }
+    if (normalizedEntryIds.isEmpty()) {
+      return List.of();
+    }
+
+    try (Connection c = ds.getConnection()) {
+      List<DynamicBibliographyEntry> entries = new ArrayList<>();
+      for (Integer entryId : normalizedEntryIds) {
+        Optional<DynamicBibliographyEntry> loaded = loadBaseEntry(c, entryId);
+        if (loaded.isEmpty()) {
+          continue;
+        }
+
+        DynamicBibliographyEntry entry = loaded.get();
+        loadStringValues(c, entry);
+        loadIntegerAndRelatedValues(c, entry);
+        loadPersonValues(c, entry);
+        entries.add(entry);
+      }
+      return entries;
+    } catch (SQLException ex) {
+      throw new IllegalStateException("Dynamische Bibliographie-Eintraege konnten nicht gebuendelt geladen werden.", ex);
+    }
+  }
+
+  /**
    * Erzeugt ein leeres Laufzeitobjekt für einen vorhandenen Medientyp.
    *
    * @param mediaTypeId Datenbank-ID des Medientyps
@@ -266,29 +309,34 @@ public class DynamicBibliographyRepository {
                                                   String displayBibtexName,
                                                   String query,
                                                   int limit) {
+    String normalizedQuery = normalizeNullable(query);
+    if (normalizedQuery == null || normalizedQuery.isBlank()) {
+      return searchEntryIdsByTitle(mediaTypeId, "", limit);
+    }
+
     String normalizedDisplayBibtexName = sanitize(displayBibtexName);
     if (normalizedDisplayBibtexName.isBlank()) {
-      return searchEntryIdsByTitle(mediaTypeId, query, limit);
+      return searchEntryIdsByTitle(mediaTypeId, normalizedQuery, limit);
     }
 
     Optional<BibtexFieldDefinition> fieldDefinition =
         metadataRepository.loadBibtexTypeByBibName(normalizedDisplayBibtexName);
 
     if (fieldDefinition.isEmpty()) {
-      return searchEntryIdsByTitle(mediaTypeId, query, limit);
+      return searchEntryIdsByTitle(mediaTypeId, normalizedQuery, limit);
     }
 
     String datatype = sanitize(fieldDefinition.get().datatype());
 
     if (isPersonDatatype(datatype)) {
-      return searchEntryIdsByPersonField(mediaTypeId, fieldDefinition.get().id(), query, limit);
+      return searchEntryIdsByPersonField(mediaTypeId, fieldDefinition.get().id(), normalizedQuery, limit);
     }
 
     if (isIntegerDatatype(datatype)) {
       return List.of();
     }
 
-    return searchEntryIdsByStringField(mediaTypeId, fieldDefinition.get().id(), query, limit);
+    return searchEntryIdsByStringField(mediaTypeId, fieldDefinition.get().id(), normalizedQuery, limit);
   }
 
   /**

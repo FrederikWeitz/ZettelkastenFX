@@ -9,11 +9,16 @@ import javafx.geometry.Bounds;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Node;
+import javafx.scene.Scene;
 import javafx.scene.control.*;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.*;
 import javafx.scene.shape.Rectangle;
+import javafx.stage.Modality;
 import javafx.stage.Popup;
 import javafx.stage.Stage;
+import javafx.stage.StageStyle;
 import javafx.util.Duration;
 
 import java.util.ArrayList;
@@ -85,8 +90,8 @@ public class StartWindowController {
    * Laufzeitdaten eines aktuell geöffneten Zettelkastens.
    */
   private static final class ZettelkastenEntry {
-    private final String name;
-    private final String color;
+    private String name;
+    private String color;
     private Stage stage;
 
     /**
@@ -96,6 +101,17 @@ public class StartWindowController {
      * @param color optionale Akzentfarbe
      */
     private ZettelkastenEntry(String name, String color) {
+      this.name = (name == null || name.isBlank()) ? "Zettel" : name;
+      this.color = (color == null || color.isBlank()) ? null : color;
+    }
+
+    /**
+     * Aktualisiert Anzeigename und Akzentfarbe des Eintrags.
+     *
+     * @param name neuer Anzeigename
+     * @param color neue Akzentfarbe
+     */
+    private void applyProfile(String name, String color) {
       this.name = (name == null || name.isBlank()) ? "Zettel" : name;
       this.color = (color == null || color.isBlank()) ? null : color;
     }
@@ -1039,7 +1055,203 @@ public class StartWindowController {
       unlockOverlayInteractionIfNoPopupShowing();
     });
 
-    window.show(newStage, entry.name, entry.color);
+    ZettelWindow.ZettelWindowHandle handle = window.show(newStage, entry.name, entry.color);
+    showCreateZettelkastenDialog(entry, handle);
+  }
+
+  /**
+   * Zeigt den modalen Anlege-Dialog direkt ueber dem geoeffneten Zettelfenster.
+   *
+   * @param entry Laufzeitdaten des Zettelkastens
+   * @param handle Handle des geoeffneten Zettelfensters
+   */
+  private void showCreateZettelkastenDialog(ZettelkastenEntry entry, ZettelWindow.ZettelWindowHandle handle) {
+    if (entry == null || handle == null || entry.stage == null) {
+      return;
+    }
+
+    Stage dialogStage = new Stage(StageStyle.UTILITY);
+    dialogStage.initOwner(entry.stage);
+    dialogStage.initModality(Modality.WINDOW_MODAL);
+    dialogStage.setTitle("Zettelkasten");
+    dialogStage.setResizable(false);
+
+    TextField nameField = new TextField(entry.name);
+    nameField.setPromptText("Name");
+    ToggleGroup dialogColorToggleGroup = new ToggleGroup();
+    HBox colorRow = createDialogColorRow(dialogColorToggleGroup, entry.color);
+
+    Button okButton = new Button("Anlegen");
+    okButton.setDefaultButton(true);
+    okButton.setMinWidth(88);
+    okButton.setPrefWidth(88);
+
+    Region okSpacer = new Region();
+    HBox.setHgrow(okSpacer, Priority.ALWAYS);
+    HBox okRow = new HBox(8, okSpacer, okButton);
+    okRow.setAlignment(Pos.CENTER_RIGHT);
+
+    HBox nameRow = new HBox(6, new Label("Name:"), nameField);
+    nameRow.setAlignment(Pos.CENTER_LEFT);
+    HBox.setHgrow(nameField, Priority.ALWAYS);
+
+    VBox root = new VBox(12, new Label("Zettelkasten"), nameRow, colorRow, okRow);
+    root.setPadding(new Insets(12));
+    root.setPrefWidth(320);
+    applyPopupContainerStyle(root);
+
+    Runnable confirm = () -> {
+      applyZettelkastenDialogResult(entry, handle, nameField.getText(), getSelectedColor(dialogColorToggleGroup));
+      dialogStage.close();
+    };
+
+    okButton.setOnAction(event -> confirm.run());
+    root.addEventFilter(KeyEvent.KEY_PRESSED, event -> handleCreateDialogKeyPress(event, dialogStage, confirm));
+
+    dialogStage.setScene(new Scene(root));
+    dialogStage.setOnShown(event -> {
+      centerDialogOverOwner(dialogStage, entry.stage);
+      nameField.requestFocus();
+      nameField.selectAll();
+    });
+
+    dialogStage.showAndWait();
+  }
+
+  /**
+   * Behandelt Tastaturaktionen im modalen Anlege-Dialog.
+   *
+   * @param event Tastaturereignis
+   * @param dialogStage Stage des Dialogs
+   * @param confirm Bestaetigungsaktion
+   */
+  private void handleCreateDialogKeyPress(KeyEvent event, Stage dialogStage, Runnable confirm) {
+    if (event.getCode() == KeyCode.ENTER || event.getCode() == KeyCode.TAB) {
+      confirm.run();
+      event.consume();
+      return;
+    }
+
+    if (event.getCode() == KeyCode.ESCAPE) {
+      dialogStage.close();
+      event.consume();
+    }
+  }
+
+  /**
+   * Uebernimmt die Eingaben aus dem Anlege-Dialog in Fenster und Startmenue.
+   *
+   * @param entry Laufzeitdaten des Zettelkastens
+   * @param handle Handle des Zettelfensters
+   * @param name eingegebener Name
+   * @param color gewaehlte Akzentfarbe
+   */
+  private void applyZettelkastenDialogResult(ZettelkastenEntry entry,
+                                             ZettelWindow.ZettelWindowHandle handle,
+                                             String name,
+                                             String color) {
+    entry.applyProfile(name, color);
+    handle.applyWindowProfile(entry.name, entry.color);
+    rebuildZettelkastenPopupContent();
+  }
+
+  /**
+   * Erzeugt die Farbauswahl fuer den modalen Anlege-Dialog.
+   *
+   * @param toggleGroup ToggleGroup der Farbbuttons
+   * @param selectedColor aktuell gewaehlte Farbe
+   * @return Zeile mit Farbbuttons
+   */
+  private HBox createDialogColorRow(ToggleGroup toggleGroup, String selectedColor) {
+    HBox colorRow = new HBox(8);
+
+    String[] colors = {
+        "#ffd6d6",
+        "#d6f5f0",
+        "#e0d6ff",
+        "#fff3cd",
+        "#d6ffe6",
+        "#d6e4ff",
+        "#f8d6ff",
+        "#ffe4d6"
+    };
+
+    for (String color : colors) {
+      ToggleButton button = createDialogColorButton(color, toggleGroup);
+      if (color.equals(selectedColor)) {
+        button.setSelected(true);
+      }
+      colorRow.getChildren().add(button);
+    }
+
+    return colorRow;
+  }
+
+  /**
+   * Erzeugt einen einzelnen Farbbutton fuer den modalen Anlege-Dialog.
+   *
+   * @param color CSS-Farbe
+   * @param toggleGroup ToggleGroup der Farbauswahl
+   * @return ToggleButton fuer die Farbe
+   */
+  private ToggleButton createDialogColorButton(String color, ToggleGroup toggleGroup) {
+    ToggleButton button = new ToggleButton();
+    button.setToggleGroup(toggleGroup);
+    button.setUserData(color);
+    button.setMinSize(22, 22);
+    button.setMaxSize(22, 22);
+    applyDialogColorButtonStyle(button, color, false);
+
+    button.selectedProperty().addListener((obs, oldValue, selected) ->
+        applyDialogColorButtonStyle(button, color, selected)
+    );
+
+    return button;
+  }
+
+  /**
+   * Aktualisiert die Darstellung eines Farbbuttons.
+   *
+   * @param button Farbbutton
+   * @param color CSS-Farbe
+   * @param selected ob die Farbe ausgewaehlt ist
+   */
+  private void applyDialogColorButtonStyle(ToggleButton button, String color, boolean selected) {
+    button.setStyle(
+        "-fx-background-color: " + color + ";" +
+            "-fx-background-radius: 6;" +
+            "-fx-border-color: " + (selected ? "#ffffff" : "#888") + ";" +
+            "-fx-border-width: " + (selected ? "2" : "1") + ";" +
+            "-fx-border-radius: 6;"
+    );
+  }
+
+  /**
+   * Gibt die aktuell gewaehlte Farbe einer ToggleGroup zurueck.
+   *
+   * @param toggleGroup ToggleGroup der Farbauswahl
+   * @return CSS-Farbe oder {@code null}
+   */
+  private String getSelectedColor(ToggleGroup toggleGroup) {
+    if (toggleGroup == null || toggleGroup.getSelectedToggle() == null) {
+      return null;
+    }
+    return (String) toggleGroup.getSelectedToggle().getUserData();
+  }
+
+  /**
+   * Zentriert den modalen Dialog ueber dem zugehoerigen Zettelfenster.
+   *
+   * @param dialogStage Dialog-Stage
+   * @param ownerStage Owner-Stage
+   */
+  private void centerDialogOverOwner(Stage dialogStage, Stage ownerStage) {
+    if (dialogStage == null || ownerStage == null) {
+      return;
+    }
+
+    dialogStage.setX(ownerStage.getX() + (ownerStage.getWidth() - dialogStage.getWidth()) / 2.0);
+    dialogStage.setY(ownerStage.getY() + (ownerStage.getHeight() - dialogStage.getHeight()) / 2.0);
   }
 
   /**
@@ -1059,9 +1271,10 @@ public class StartWindowController {
     StartMenuItem createItem = new StartMenuItem("Zettelkasten anlegen");
     applyPopupMenuItemStyle(createItem);
     createItem.setOnMouseClicked(event -> {
-      showCreateZettelkastenPopup();
       hideZettelkastenPopup();
       hideWindowMenuPopup();
+      unlockOverlayInteractionIfNoPopupShowing();
+      openZettelkasten(new ZettelkastenEntry(null, null));
     });
 
     zettelkastenPopupContent.getChildren().add(createItem);
