@@ -23,6 +23,8 @@ import java.util.Map;
  */
 public class RtfExportWriter implements NoteExportWriter {
 
+  private static final int DEFAULT_FONT_SIZE_HALF_POINTS = 20;
+
   /**
    * Schreibt ein Exportdokument als RTF.
    *
@@ -51,7 +53,7 @@ public class RtfExportWriter implements NoteExportWriter {
     StringBuilder rtf = new StringBuilder("{\\rtf1\\ansi\\deff0\n");
     rtf.append(fonts.rtfFontTable());
     rtf.append(colors.rtfColorTable());
-    rtf.append("{\\stylesheet{\\s3\\b\\fs28 heading 3;}}\n");
+    rtf.append("{\\stylesheet{\\s1\\b\\fs40 heading 1;}{\\s2\\b\\fs32 heading 2;}{\\s3\\b\\fs28 heading 3;}}\n");
     for (int i = 0; i < document.notes().size(); i++) {
       renderNote(rtf, document.notes().get(i), document, colors, fonts);
       if (document.selection().blankLineBetweenNotes() && i < document.notes().size() - 1) {
@@ -110,9 +112,13 @@ public class RtfExportWriter implements NoteExportWriter {
    * @param heading ob Ueberschrift 3 genutzt wird
    */
   private void appendPlainParagraph(StringBuilder rtf, String text, boolean heading) {
-    rtf.append(heading ? "\\s3\\b\\fs28 " : "\\pard ");
+    if (heading) {
+      rtf.append("\\pard\\plain\\s3\\b\\fs28 ");
+    } else {
+      rtf.append("\\pard\\plain\\fs").append(DEFAULT_FONT_SIZE_HALF_POINTS).append(' ');
+    }
     rtf.append(escape(text));
-    rtf.append(heading ? "\\b0\\fs22\\par\n" : "\\par\n");
+    rtf.append(heading ? "\\b0\\fs" + DEFAULT_FONT_SIZE_HALF_POINTS + "\\par\n" : "\\par\n");
   }
 
   /**
@@ -133,14 +139,66 @@ public class RtfExportWriter implements NoteExportWriter {
       appendTable(rtf, paragraph);
       return;
     }
-    appendParagraphPrefix(rtf, paragraph.style());
+    if (paragraph.style().isHeading()) {
+      appendHeadingParagraph(rtf, paragraph, colors, fonts);
+      return;
+    }
+    if (paragraph.style().isListItem()) {
+      appendListParagraph(rtf, paragraph, colors, fonts);
+      return;
+    }
+    appendParagraphPrefix(rtf, paragraph.style(), colors);
     for (ExportTextRun run : paragraph.runs()) {
       appendRun(rtf, run, paragraph.style(), colors, fonts);
     }
     if (paragraph.style().bold()) {
       rtf.append("\\b0 ");
     }
+    if (paragraph.style().backgroundColor() != null) {
+      rtf.append("\\highlight0 ");
+    }
     rtf.append("\\par\n");
+  }
+
+  private void appendHeadingParagraph(StringBuilder rtf,
+                                      ExportParagraph paragraph,
+                                      ColorTable colors,
+                                      FontTable fonts) {
+    int level = paragraph.style().headingLevel();
+    int size = level == 1 ? 40 : 32;
+    rtf.append("\\pard\\plain\\s").append(level).append("\\b\\fs").append(size).append(' ');
+    for (ExportTextRun run : paragraph.runs()) {
+      appendRun(rtf, run, paragraph.style(), colors, fonts);
+    }
+    rtf.append("\\b0\\fs").append(DEFAULT_FONT_SIZE_HALF_POINTS).append("\\par\n");
+  }
+
+  private void appendListParagraph(StringBuilder rtf,
+                                   ExportParagraph paragraph,
+                                   ColorTable colors,
+                                   FontTable fonts) {
+    boolean ordered = "ol".equals(paragraph.style().listType());
+    rtf.append("\\pard\\plain");
+    if (ordered) {
+      int number = Math.max(1, paragraph.style().listNumber());
+      rtf.append("{\\pn\\pnlvlbody\\pnf0\\pnstart")
+          .append(number)
+          .append("\\pndec{\\pntxta .}}")
+          .append("\\fi-360\\li720\\fs")
+          .append(DEFAULT_FONT_SIZE_HALF_POINTS)
+          .append(" {\\pntext ")
+          .append(number)
+          .append(".\\tab}");
+    } else {
+      rtf.append("{\\pn\\pnlvlblt\\pnf0{\\pntxtb\\u8226?}}")
+          .append("\\fi-360\\li720\\fs")
+          .append(DEFAULT_FONT_SIZE_HALF_POINTS)
+          .append(" {\\pntext\\u8226?\\tab}");
+    }
+    for (ExportTextRun run : paragraph.runs()) {
+      appendRun(rtf, run, paragraph.style(), colors, fonts);
+    }
+    rtf.append("\\par\n\\pard\\plain\\fs").append(DEFAULT_FONT_SIZE_HALF_POINTS).append('\n');
   }
 
   /**
@@ -151,15 +209,17 @@ public class RtfExportWriter implements NoteExportWriter {
    */
   private void appendTable(StringBuilder rtf, ExportParagraph paragraph) {
     int columns = paragraph.table().columns();
-    int cellWidth = Math.max(1, 9000 / columns);
+    var cellWidths = paragraph.table().columnWidths(9000);
     for (int row = 0; row < paragraph.table().rows(); row++) {
       rtf.append("\\trowd\\trgaph15");
-      for (int column = 1; column <= columns; column++) {
+      int cellEnd = 0;
+      for (int column = 0; column < columns; column++) {
+        cellEnd += cellWidths.get(column);
         rtf.append("\\clbrdrt\\brdrs\\brdrw10")
             .append("\\clbrdrl\\brdrs\\brdrw10")
             .append("\\clbrdrb\\brdrs\\brdrw10")
             .append("\\clbrdrr\\brdrs\\brdrw10")
-            .append("\\cellx").append(column * cellWidth);
+            .append("\\cellx").append(cellEnd);
       }
       for (int column = 0; column < columns; column++) {
         rtf.append("\\intbl ")
@@ -168,7 +228,7 @@ public class RtfExportWriter implements NoteExportWriter {
       }
       rtf.append("\\row\n");
     }
-    rtf.append("\\pard\\par\n");
+    rtf.append("\\pard\\plain\\fs").append(DEFAULT_FONT_SIZE_HALF_POINTS).append("\\par\n");
   }
 
   /**
@@ -230,8 +290,8 @@ public class RtfExportWriter implements NoteExportWriter {
    * @param rtf Zielpuffer
    * @param style Absatzstil
    */
-  private void appendParagraphPrefix(StringBuilder rtf, ExportParagraphStyle style) {
-    rtf.append("\\pard ");
+  private void appendParagraphPrefix(StringBuilder rtf, ExportParagraphStyle style, ColorTable colors) {
+    rtf.append("\\pard\\plain ");
     if (style.alignment() != null) {
       rtf.append(switch (style.alignment()) {
         case "center" -> "\\qc ";
@@ -246,11 +306,14 @@ public class RtfExportWriter implements NoteExportWriter {
     if (style.spacingBeforePixels() > 0) {
       rtf.append("\\sb").append(style.spacingBeforePixels() * 15).append(' ');
     }
-    if (style.fontSizePixels() != null) {
-      rtf.append("\\fs").append(style.fontSizePixels() * 2).append(' ');
-    }
+    rtf.append("\\fs")
+        .append(style.fontSizePixels() == null ? DEFAULT_FONT_SIZE_HALF_POINTS : style.fontSizePixels() * 2)
+        .append(' ');
     if (style.bold()) {
       rtf.append("\\b ");
+    }
+    if (style.backgroundColor() != null) {
+      rtf.append("\\highlight").append(colors.indexOf(style.backgroundColor())).append(' ');
     }
   }
 
@@ -287,9 +350,25 @@ public class RtfExportWriter implements NoteExportWriter {
     if (style.backgroundColor() != null) {
       rtf.append("\\highlight").append(colors.indexOf(style.backgroundColor())).append(' ');
     }
+    if (style.subscript()) {
+      rtf.append("\\sub ");
+    }
+    if (style.superscript()) {
+      rtf.append("\\super ");
+    }
     rtf.append(escape(run.text()));
+    if (style.subscript() || style.superscript()) {
+      rtf.append("\\nosupersub ");
+    }
     if (style.backgroundColor() != null) {
-      rtf.append("\\highlight0 ");
+      if (paragraphStyle.backgroundColor() != null) {
+        rtf.append("\\highlight").append(colors.indexOf(paragraphStyle.backgroundColor())).append(' ');
+      } else {
+        rtf.append("\\highlight0 ");
+      }
+    }
+    if (style.fontFamily() != null) {
+      rtf.append("\\f0 ");
     }
     if (style.textColor() != null) {
       rtf.append("\\cf0 ");
@@ -402,6 +481,7 @@ public class RtfExportWriter implements NoteExportWriter {
             add(indexes, run.style().textColor());
             add(indexes, run.style().backgroundColor());
           }
+          add(indexes, paragraph.style().backgroundColor());
         }
       }
       return new ColorTable(indexes);

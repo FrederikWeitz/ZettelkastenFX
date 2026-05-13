@@ -122,7 +122,7 @@ class NoteEditorPaneFormattingMenuTest {
       Tooltip tooltip = ((Control) firstRow.getChildren().get(12)).getTooltip();
 
       assertNotNull(tooltip);
-      assertEquals("Trennlinie einfügen", tooltip.getText());
+      assertEquals("Zwischenüberschrift", tooltip.getText());
     });
   }
 

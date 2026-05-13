@@ -61,10 +61,10 @@ class NoteRepositoryBookUsageTest {
     try (Connection connection = dataSource.getConnection();
          Statement statement = connection.createStatement()) {
       statement.executeUpdate("""
-          CREATE TABLE notes(
+          CREATE TABLE notes_web(
             id INTEGER PRIMARY KEY,
             title TEXT,
-            content_blob BLOB,
+            content_text TEXT,
             content_codec TEXT,
             bibliography_ref_id INTEGER,
             created_at TEXT,
@@ -83,12 +83,12 @@ class NoteRepositoryBookUsageTest {
   private static void insertNotes(SQLiteDataSource dataSource) throws SQLException {
     try (Connection connection = dataSource.getConnection();
          Statement statement = connection.createStatement()) {
-      statement.executeUpdate("INSERT INTO notes(id, title, bibliography_ref_id) VALUES(1, 'A', 5)");
-      statement.executeUpdate("INSERT INTO notes(id, title, bibliography_ref_id) VALUES(2, 'B', 5)");
-      statement.executeUpdate("INSERT INTO notes(id, title, bibliography_ref_id) VALUES(3, 'C', 7)");
-      statement.executeUpdate("INSERT INTO notes(id, title, bibliography_ref_id) VALUES(4, 'D', NULL)");
-      statement.executeUpdate("INSERT INTO notes(id, title, bibliography_ref_id) VALUES(5, 'E', 0)");
-      statement.executeUpdate("INSERT INTO notes(id, title, bibliography_ref_id) VALUES(6, 'F', -1)");
+      statement.executeUpdate("INSERT INTO notes_web(id, title, bibliography_ref_id) VALUES(1, 'A', 5)");
+      statement.executeUpdate("INSERT INTO notes_web(id, title, bibliography_ref_id) VALUES(2, 'B', 5)");
+      statement.executeUpdate("INSERT INTO notes_web(id, title, bibliography_ref_id) VALUES(3, 'C', 7)");
+      statement.executeUpdate("INSERT INTO notes_web(id, title, bibliography_ref_id) VALUES(4, 'D', NULL)");
+      statement.executeUpdate("INSERT INTO notes_web(id, title, bibliography_ref_id) VALUES(5, 'E', 0)");
+      statement.executeUpdate("INSERT INTO notes_web(id, title, bibliography_ref_id) VALUES(6, 'F', -1)");
     }
   }
 

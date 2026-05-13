@@ -9,8 +9,9 @@ import java.util.List;
  * @param rows Zeilenanzahl
  * @param columns Spaltenanzahl
  * @param cells Zelltexte
+ * @param columnWeights relative Spaltenbreiten
  */
-public record ExportTable(int rows, int columns, List<List<String>> cells) {
+public record ExportTable(int rows, int columns, List<List<String>> cells, List<Integer> columnWeights) {
 
   /**
    * Erzeugt eine Tabelle mit validierter Groesse.
@@ -33,6 +34,18 @@ public record ExportTable(int rows, int columns, List<List<String>> cells) {
       normalized.add(List.copyOf(targetRow));
     }
     cells = List.copyOf(normalized);
+    columnWeights = normalizeColumnWeights(columnWeights, columns);
+  }
+
+  /**
+   * Erzeugt eine Tabelle ohne explizite Spaltenbreiten.
+   *
+   * @param rows Zeilenanzahl
+   * @param columns Spaltenanzahl
+   * @param cells Zelltexte
+   */
+  public ExportTable(int rows, int columns, List<List<String>> cells) {
+    this(rows, columns, cells, List.of());
   }
 
   /**
@@ -42,7 +55,7 @@ public record ExportTable(int rows, int columns, List<List<String>> cells) {
    * @param columns Spaltenanzahl
    */
   public ExportTable(int rows, int columns) {
-    this(rows, columns, List.of());
+    this(rows, columns, List.of(), List.of());
   }
 
   /**
@@ -54,5 +67,36 @@ public record ExportTable(int rows, int columns, List<List<String>> cells) {
    */
   public String cell(int row, int column) {
     return cells.get(row).get(column);
+  }
+
+  /**
+   * Berechnet konkrete Spaltenbreiten aus den relativen Spaltengewichten.
+   *
+   * @param totalWidth gesamte Tabellenbreite
+   * @return Spaltenbreiten, deren Summe {@code totalWidth} ergibt
+   */
+  public List<Integer> columnWidths(int totalWidth) {
+    int normalizedTotal = Math.max(columns, totalWidth);
+    int weightSum = columnWeights.stream().mapToInt(Integer::intValue).sum();
+    List<Integer> widths = new ArrayList<>();
+    int assigned = 0;
+    for (int column = 0; column < columns; column++) {
+      int width = column == columns - 1
+          ? normalizedTotal - assigned
+          : Math.max(1, normalizedTotal * columnWeights.get(column) / weightSum);
+      widths.add(width);
+      assigned += width;
+    }
+    return List.copyOf(widths);
+  }
+
+  private static List<Integer> normalizeColumnWeights(List<Integer> weights, int columns) {
+    List<Integer> normalized = new ArrayList<>();
+    List<Integer> source = weights == null ? List.of() : weights;
+    for (int column = 0; column < columns; column++) {
+      int weight = column < source.size() && source.get(column) != null ? source.get(column) : 1;
+      normalized.add(Math.max(1, weight));
+    }
+    return List.copyOf(normalized);
   }
 }

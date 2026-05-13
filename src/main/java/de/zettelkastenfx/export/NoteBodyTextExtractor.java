@@ -8,6 +8,7 @@ import de.zettelkastenfx.export.model.ExportTextStyle;
 import de.zettelkastenfx.notes.editor.media.EditorImageAssetService;
 import de.zettelkastenfx.notes.editor.table.EditorTableService;
 import de.zettelkastenfx.notes.model.Note;
+import de.zettelkastenfx.persistence.HtmlBodyCodec;
 import de.zettelkastenfx.persistence.InlineCssRtfxBlobCodec;
 import org.fxmisc.richtext.model.Paragraph;
 import org.fxmisc.richtext.model.StyledDocument;
@@ -21,6 +22,8 @@ import java.util.List;
  * Wandelt gespeicherte Zettelinhalte in lesbaren Klartext fuer den Export.
  */
 public class NoteBodyTextExtractor {
+
+  private final HtmlBodyExportParser htmlBodyParser = new HtmlBodyExportParser();
 
   /**
    * Dekodiert den Inhalt eines Zettels.
@@ -40,6 +43,10 @@ public class NoteBodyTextExtractor {
 
     if ("plain".equalsIgnoreCase(codec) || "text/plain".equalsIgnoreCase(codec)) {
       return removeTrailingBlankLines(new String(note.getBodyBlob(), StandardCharsets.UTF_8));
+    }
+
+    if (HtmlBodyCodec.CODEC_NAME.equals(codec)) {
+      return removeTrailingBlankLines(plainTextFromParagraphs(htmlBodyParser.parse(new String(note.getBodyBlob(), StandardCharsets.UTF_8))));
     }
 
     return removeTrailingBlankLines(new String(note.getBodyBlob(), StandardCharsets.UTF_8));
@@ -62,7 +69,50 @@ public class NoteBodyTextExtractor {
     }
 
     String text = new String(note.getBodyBlob(), StandardCharsets.UTF_8);
+    if (HtmlBodyCodec.CODEC_NAME.equals(codec)) {
+      return removeTrailingBlankParagraphs(htmlBodyParser.parse(text));
+    }
     return removeTrailingBlankParagraphs(plainParagraphs(text));
+  }
+
+  private String plainTextFromParagraphs(List<ExportParagraph> paragraphs) {
+    StringBuilder text = new StringBuilder();
+    for (ExportParagraph paragraph : paragraphs) {
+      if (text.length() > 0) {
+        text.append('\n');
+      }
+      if (paragraph.isImage()) {
+        text.append(paragraph.imagePath());
+      } else if (paragraph.isTable()) {
+        appendTablePlainText(text, paragraph.table());
+      } else if (paragraph.style().isListItem()) {
+        text.append(listPrefix(paragraph)).append(paragraph.plainText());
+      } else {
+        text.append(paragraph.plainText());
+      }
+    }
+    return text.toString();
+  }
+
+  private String listPrefix(ExportParagraph paragraph) {
+    if ("ol".equals(paragraph.style().listType())) {
+      return Math.max(1, paragraph.style().listNumber()) + ". ";
+    }
+    return "\u2022 ";
+  }
+
+  private void appendTablePlainText(StringBuilder text, ExportTable table) {
+    for (int row = 0; row < table.rows(); row++) {
+      if (row > 0) {
+        text.append('\n');
+      }
+      for (int column = 0; column < table.columns(); column++) {
+        if (column > 0) {
+          text.append('\t');
+        }
+        text.append(table.cell(row, column));
+      }
+    }
   }
 
   /**

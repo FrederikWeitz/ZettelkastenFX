@@ -12,12 +12,14 @@ import de.zettelkastenfx.export.ui.ManualExportDialog;
 import de.zettelkastenfx.notes.controller.ZettelWindowView.KeyTableRow;
 import de.zettelkastenfx.notes.editor.NoteEditorPane;
 import de.zettelkastenfx.notes.editor.format.InlineCssStyleUtil;
+import de.zettelkastenfx.notes.editor.web.TinyMceContextMenuEvent;
 import de.zettelkastenfx.notes.keywords.KeywordsTablePane;
 import de.zettelkastenfx.notes.model.LinkType;
 import de.zettelkastenfx.notes.model.Note;
 import de.zettelkastenfx.notes.model.NoteLink;
 import de.zettelkastenfx.notes.model.NoteReferenceInfo;
 import de.zettelkastenfx.persistence.InlineCssRtfxBlobCodec;
+import de.zettelkastenfx.persistence.HtmlBodyCodec;
 import de.zettelkastenfx.persistence.NoteRepository;
 import javafx.animation.PauseTransition;
 import javafx.application.Platform;
@@ -29,6 +31,7 @@ import javafx.scene.control.*;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.TextField;
+import javafx.scene.input.ContextMenuEvent;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseButton;
@@ -40,6 +43,7 @@ import javafx.util.Duration;
 
 import java.awt.*;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -1391,7 +1395,6 @@ public class ZettelWindowController {
     editor.getTitleEditorArea().setOnKeyPressed(event -> {
       if (event.getCode() == KeyCode.ENTER || event.getCode() == KeyCode.TAB) {
         commitTitle(editor);
-        InlineCssStyleUtil.clearHeadingForSelection(editor.getBodyArea());
         focusBodyForEditing(editor);
         event.consume();
       } else if (event.getCode() == KeyCode.ESCAPE) {
@@ -1404,29 +1407,25 @@ public class ZettelWindowController {
   private void wireBodyEditingAndContextMenu(NoteEditorPane editor) {
     editor.getBodyArea().setEditable(false);
 
-    editor.getBodyArea().addEventHandler(MouseEvent.MOUSE_PRESSED, _ -> {
+    editor.getBodyContainer().addEventHandler(MouseEvent.MOUSE_PRESSED, _ -> {
       if (!editor.getBodyContainer().getStyleClass().contains("note-body-active")) {
         editor.getBodyContainer().getStyleClass().add("note-body-active");
       }
-
-      editor.getBodyArea().setEditable(true);
-      editor.getBodyArea().requestFocus();
+      editor.requestBodyEditorFocus();
     });
 
-    editor.getBodyArea().focusedProperty().addListener((_, _, newFocused) -> {
+    editor.getWebBodyEditor().getWebView().focusedProperty().addListener((_, _, newFocused) -> {
       if (newFocused) {
         if (!editor.getBodyContainer().getStyleClass().contains("note-body-active")) {
           editor.getBodyContainer().getStyleClass().add("note-body-active");
         }
-        editor.getBodyArea().setEditable(true);
       } else {
         editor.getBodyContainer().getStyleClass().remove("note-body-active");
-        editor.getBodyArea().setEditable(false);
         editor.getFormattingContextMenu().hide();
       }
     });
 
-    editor.getBodyArea().addEventFilter(KeyEvent.KEY_PRESSED, event -> {
+    editor.getWebBodyEditor().getWebView().addEventFilter(KeyEvent.KEY_PRESSED, event -> {
       if (event.getCode() == KeyCode.X
           && event.isAltDown()
           && !event.isControlDown()
@@ -1437,33 +1436,47 @@ public class ZettelWindowController {
         event.consume();
         return;
       }
-
-      if (event.getCode() == KeyCode.ENTER
-              && !event.isAltDown()
-              && !event.isControlDown()
-              && !event.isMetaDown()
-              && !event.isShiftDown()
-              && InlineCssStyleUtil.handleListEnter(editor.getBodyArea())) {
-        event.consume();
-      }
     });
 
-    editor.getBodyArea().setOnContextMenuRequested(event -> {
-      if (editor.getFormattingContextMenu().isShowing()) {
-        editor.getFormattingContextMenu().hide();
-      } else {
-        editor.prepareBodyFormattingContext();
-        editor.getFormattingContextMenu().show(editor.getBodyArea(), event.getScreenX(), event.getScreenY());
-      }
-
+    editor.getWebBodyEditor().addEventHandler(TinyMceContextMenuEvent.TINY_MCE_CONTEXT_MENU, event -> {
+      toggleBodyFormattingContextMenu(editor, event.getScreenX(), event.getScreenY());
       event.consume();
     });
 
-    editor.getBodyArea().addEventFilter(MouseEvent.MOUSE_PRESSED, event -> {
+    editor.getWebBodyEditor().getWebView().addEventFilter(ContextMenuEvent.CONTEXT_MENU_REQUESTED, event -> {
+      toggleBodyFormattingContextMenu(editor, event.getScreenX(), event.getScreenY());
+      event.consume();
+    });
+
+    editor.getBodyContainer().addEventFilter(ContextMenuEvent.CONTEXT_MENU_REQUESTED, event -> {
+      toggleBodyFormattingContextMenu(editor, event.getScreenX(), event.getScreenY());
+      event.consume();
+    });
+
+    editor.getBodyContainer().addEventFilter(MouseEvent.MOUSE_PRESSED, event -> {
       if (event.isPrimaryButtonDown()) {
         editor.getFormattingContextMenu().hide();
       }
     });
+  }
+
+  /**
+   * Oeffnet oder schliesst das gemeinsame Formatierungsfenster fuer den Body-Editor.
+   *
+   * @param editor Zettel-Editor
+   * @param screenX Bildschirm-X-Position
+   * @param screenY Bildschirm-Y-Position
+   */
+  private void toggleBodyFormattingContextMenu(NoteEditorPane editor, double screenX, double screenY) {
+    if (!editor.getBodyContainer().getStyleClass().contains("note-body-active")) {
+      editor.getBodyContainer().getStyleClass().add("note-body-active");
+    }
+    if (editor.getFormattingContextMenu().isShowing()) {
+      editor.getFormattingContextMenu().hide();
+      return;
+    }
+    editor.prepareBodyFormattingContext();
+    editor.getFormattingContextMenu().show(editor.getWebBodyEditor(), screenX, screenY);
   }
 
   private void wireGlobalBodyDeactivateHandlers(NoteEditorPane editor) {
@@ -1482,7 +1495,7 @@ public class ZettelWindowController {
       }
 
       newScene.addEventFilter(MouseEvent.MOUSE_PRESSED, event -> {
-        if (!editor.getBodyArea().isEditable()) {
+        if (!editor.getBodyContainer().getStyleClass().contains("note-body-active")) {
           return;
         }
 
@@ -2339,7 +2352,6 @@ public class ZettelWindowController {
 
   private void deactivateBody(NoteEditorPane editor) {
     editor.getBodyContainer().getStyleClass().remove("note-body-active");
-    editor.getBodyArea().setEditable(false);
     editor.getFormattingContextMenu().hide();
     saveCurrentIfValid();
   }
@@ -2659,7 +2671,7 @@ public class ZettelWindowController {
     var editor = view.getNoteEditorPane();
 
     String title = normalize(editor.getTitleEditorArea().getText());
-    String bodyPlain = normalize(editor.getBodyArea().getText());
+    String bodyPlain = normalize(editor.getBodyPlainText());
 
     if (title.isEmpty() || bodyPlain.isEmpty()) {
       return;
@@ -2687,7 +2699,6 @@ public class ZettelWindowController {
     maxNoteId = Math.max(maxNoteId, savedId);
 
     applyCurrentNoteToUi();
-    InlineCssStyleUtil.clearHeadingForSelection(editor.getBodyArea());
 
     refreshKeywordCounts();
     syncBottomToolbar(currentNote);
@@ -2723,7 +2734,6 @@ public class ZettelWindowController {
     currentNote = newNote;
 
     applyCurrentNoteToUi();
-    InlineCssStyleUtil.clearHeadingForSelection(view.getNoteEditorPane().getBodyArea());
 
     setNoteIdField(currentNote.getId());
     updateHistoryButtons();
@@ -2783,7 +2793,6 @@ public class ZettelWindowController {
     suppressInvalidCleanupOnce = true;
 
     applyCurrentNoteToUi();
-    InlineCssStyleUtil.clearHeadingForSelection(view.getNoteEditorPane().getBodyArea());
 
     Platform.runLater(() -> suppressInvalidCleanupOnce = false);
   }
@@ -2898,7 +2907,7 @@ public class ZettelWindowController {
     var editor = view.getNoteEditorPane();
 
     String title = editor.getTitleEditorArea().getText() == null ? "" : editor.getTitleEditorArea().getText().trim();
-    String bodyPlain = editor.getBodyArea().getText() == null ? "" : editor.getBodyArea().getText().trim();
+    String bodyPlain = editor.getBodyPlainText() == null ? "" : editor.getBodyPlainText().trim();
 
     if (title.isEmpty() || bodyPlain.isEmpty()) {
       return;
@@ -2949,7 +2958,7 @@ public class ZettelWindowController {
     var editor = view.getNoteEditorPane();
 
     String title = editor.getTitleEditorArea().getText() == null ? "" : editor.getTitleEditorArea().getText().trim();
-    String bodyPlain = editor.getBodyArea().getText() == null ? "" : editor.getBodyArea().getText().trim();
+    String bodyPlain = editor.getBodyPlainText() == null ? "" : editor.getBodyPlainText().trim();
 
     if (title.isEmpty() || bodyPlain.isEmpty()) {
       handleInvalidCurrentNoteBeforeLeave();
@@ -2982,8 +2991,7 @@ public class ZettelWindowController {
     if (!editor.getBodyContainer().getStyleClass().contains("note-body-active")) {
       editor.getBodyContainer().getStyleClass().add("note-body-active");
     }
-    editor.getBodyArea().setEditable(true);
-    editor.getBodyArea().requestFocus();
+    editor.requestBodyEditorFocus();
   }
 
   /**
@@ -5953,15 +5961,32 @@ public class ZettelWindowController {
       return "";
     }
 
-    if (!InlineCssRtfxBlobCodec.CODEC_NAME.equals(note.bodyCodec)) {
-      return "";
-    }
-
     try {
-      return InlineCssRtfxBlobCodec.decodeFromGzipToPlainText(note.bodyBlob);
+      if (HtmlBodyCodec.CODEC_NAME.equals(note.bodyCodec)) {
+        return htmlToPlainText(new String(note.bodyBlob, StandardCharsets.UTF_8));
+      }
+      if (InlineCssRtfxBlobCodec.CODEC_NAME.equals(note.bodyCodec)) {
+        return InlineCssRtfxBlobCodec.decodeFromGzipToPlainText(note.bodyBlob);
+      }
+      return "";
     } catch (Exception ex) {
       return "";
     }
+  }
+
+  private String htmlToPlainText(String html) {
+    if (html == null || html.isBlank()) {
+      return "";
+    }
+    return html.replaceAll("(?is)<(script|style)[^>]*>.*?</\\1>", " ")
+               .replaceAll("(?i)<br\\s*/?>", "\n")
+               .replaceAll("(?i)</(p|div|li|tr|h[1-6])>", "\n")
+               .replaceAll("(?s)<[^>]+>", " ")
+               .replace("&nbsp;", " ")
+               .replace("&lt;", "<")
+               .replace("&gt;", ">")
+               .replace("&amp;", "&")
+               .trim();
   }
 
   /**

@@ -6,6 +6,8 @@ import de.zettelkastenfx.notes.editor.format.NoteFormattingMenuContent;
 import de.zettelkastenfx.notes.editor.format.RichTextSourceCodec;
 import de.zettelkastenfx.notes.editor.media.EditorImageAssetService;
 import de.zettelkastenfx.notes.editor.table.EditorTableService;
+import de.zettelkastenfx.notes.editor.web.TinyMceContextMenuEvent;
+import de.zettelkastenfx.notes.editor.web.TinyMceEditorPane;
 import de.zettelkastenfx.notes.model.NoteReferenceInfo;
 import javafx.beans.binding.Bindings;
 import javafx.collections.FXCollections;
@@ -20,6 +22,7 @@ import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.input.*;
 import javafx.scene.layout.*;
+import javafx.stage.FileChooser;
 import javafx.stage.Popup;
 import org.fxmisc.flowless.VirtualizedScrollPane;
 import org.fxmisc.richtext.InlineCssTextArea;
@@ -47,6 +50,7 @@ public class NoteEditorPane extends VBox {
 
   private final InlineCssTextArea bodyArea;
   private final VirtualizedScrollPane<InlineCssTextArea> bodyScrollPane;
+  private final TinyMceEditorPane webBodyEditor;
 
   private final ContextMenu formattingContextMenu;
   private final HBox formattingBarContainer;
@@ -183,7 +187,11 @@ public class NoteEditorPane extends VBox {
     bodyScrollPane = new VirtualizedScrollPane<>(bodyArea);
     bodyScrollPane.getStyleClass().add("note-body-scroll");
 
-    bodyContainer = new StackPane(bodyScrollPane);
+    webBodyEditor = new TinyMceEditorPane();
+    webBodyEditor.setOnContentChanged(this::refreshOpenInfoPopup);
+    webBodyEditor.setOnSourceModeChanged(sourceMode -> bodySourceMode = sourceMode);
+
+    bodyContainer = new StackPane(webBodyEditor);
     bodyContainer.getStyleClass().add("note-body-container");
 
     bibliographyHost = new VBox();
@@ -202,8 +210,10 @@ public class NoteEditorPane extends VBox {
     formattingBarContainer.setPrefHeight(Region.USE_COMPUTED_SIZE);
 
     formattingMenuContent = new NoteFormattingMenuContent(bodyArea);
+    webBodyEditor.setOnTableContextChanged(formattingMenuContent::setTableControlsVisible);
     formattingMenuContent.setOnImageDropPopupRequested(this::showImageDropPopup);
     formattingMenuContent.setOnTableActionRequested(this::handleTableAction);
+    formattingMenuContent.setOnFormatCommandRequested(this::handleWebFormatCommand);
     formattingMenuContent.setOnFormattingApplied(this::persistActiveTableCell);
     formattingDragHandle = new Region();
     formattingDragHandle.getStyleClass().add("note-formatting-drag-handle");
@@ -219,6 +229,15 @@ public class NoteEditorPane extends VBox {
     formattingContextMenu.setOnShowing(e -> formattingMenuContent.syncFromSelection());
 
     getChildren().addAll(headerBar, titleStack, bodyContainer, bibliographyHost);
+  }
+
+  /**
+   * Liefert den WebView-basierten Body-Editor.
+   *
+   * @return TinyMCE-Editor
+   */
+  public TinyMceEditorPane getWebBodyEditor() {
+    return webBodyEditor;
   }
 
   /**
@@ -357,48 +376,62 @@ public class NoteEditorPane extends VBox {
    * Schaltet zwischen normaler RichText-Anzeige und editierbarer Quelltextanzeige um.
    */
   public void toggleBodySourceMode() {
-    if (bodySourceMode) {
-      commitBodySourceViewIfActive();
+    if (useLegacyBodyAreaForCompatibility()) {
+      if (bodySourceMode) {
+        commitBodySourceViewIfActive();
+        return;
+      }
+
+      persistActiveTableCell();
+      clearSelectedImageParagraph();
+      clearActiveTableCell();
+      formattingContextMenu.hide();
+      bodyArea.setParagraphGraphicFactory(null);
+      String source = RichTextSourceCodec.encode(bodyArea);
+      bodyArea.clear();
+      bodyArea.replaceText(source);
+      bodyArea.setStyle(0, bodyArea.getLength(), "");
+      bodySourceMode = true;
+      bodyArea.requestFocus();
       return;
     }
-
-    persistActiveTableCell();
-    clearSelectedImageParagraph();
-    clearActiveTableCell();
-    formattingContextMenu.hide();
-    bodyArea.setParagraphGraphicFactory(null);
-    String source = RichTextSourceCodec.encode(bodyArea);
-    bodyArea.clear();
-    bodyArea.replaceText(source);
-    bodyArea.setStyle(0, bodyArea.getLength(), "");
-    bodySourceMode = true;
-    bodyArea.requestFocus();
+    webBodyEditor.toggleSourceMode();
+    bodySourceMode = webBodyEditor.isSourceMode();
   }
 
   /**
    * Wendet eine aktive Quelltextansicht auf den RichText-Editor an.
    */
   public void commitBodySourceViewIfActive() {
-    if (!bodySourceMode) {
+    if (useLegacyBodyAreaForCompatibility()) {
+      if (!bodySourceMode) {
+        return;
+      }
+      String source = bodyArea.getText();
+      bodyArea.setParagraphGraphicFactory(this::structuralGraphicForParagraph);
+      RichTextSourceCodec.decodeInto(bodyArea, source);
+      bodySourceMode = false;
+      refreshImageReferences();
+      bodyArea.requestFocus();
       return;
     }
-    String source = bodyArea.getText();
-    bodyArea.setParagraphGraphicFactory(this::structuralGraphicForParagraph);
-    RichTextSourceCodec.decodeInto(bodyArea, source);
+    webBodyEditor.commitSourceViewIfActive();
     bodySourceMode = false;
-    refreshImageReferences();
-    bodyArea.requestFocus();
   }
 
   /**
    * Verlaesst die Quelltextansicht ohne den angezeigten Quelltext anzuwenden.
    */
   public void discardBodySourceView() {
-    if (!bodySourceMode) {
+    if (useLegacyBodyAreaForCompatibility()) {
+      if (!bodySourceMode) {
+        return;
+      }
+      bodySourceMode = false;
+      bodyArea.setParagraphGraphicFactory(this::structuralGraphicForParagraph);
       return;
     }
     bodySourceMode = false;
-    bodyArea.setParagraphGraphicFactory(this::structuralGraphicForParagraph);
   }
 
   /**
@@ -407,15 +440,108 @@ public class NoteEditorPane extends VBox {
    * @return {@code true}, wenn die Quelltextansicht aktiv ist
    */
   public boolean isBodySourceMode() {
-    return bodySourceMode;
+    return bodySourceMode || webBodyEditor.isSourceMode();
+  }
+
+  private boolean useLegacyBodyAreaForCompatibility() {
+    return bodyArea.getLength() > 0 || bodySourceMode;
   }
 
   /**
    * Bereitet das gemeinsame Formatierungsmenue fuer normalen Fliesstext vor.
    */
   public void prepareBodyFormattingContext() {
-    clearActiveTableCell();
+    if (useLegacyBodyAreaForCompatibility()) {
+      clearActiveTableCell();
+    } else {
+      formattingMenuContent.setTableControlsVisible(webBodyEditor.isTableContextActive());
+    }
     formattingMenuContent.syncFromSelection();
+  }
+
+  /**
+   * Setzt den gespeicherten HTML-Body in TinyMCE.
+   *
+   * @param html HTML-Bodyfragment
+   */
+  public void setBodyHtml(String html) {
+    webBodyEditor.setHtmlContent(html);
+  }
+
+  /**
+   * Liefert den aktuellen HTML-Body aus TinyMCE.
+   *
+   * @return HTML-Bodyfragment
+   */
+  public String getBodyHtml() {
+    return webBodyEditor.getHtmlContent();
+  }
+
+  /**
+   * Liefert den aktuellen Klartext fuer Validierung und Suche.
+   *
+   * @return Klartext
+   */
+  public String getBodyPlainText() {
+    return webBodyEditor.getPlainText();
+  }
+
+  /**
+   * Fokussiert den WebView-Editor.
+   */
+  public void requestBodyEditorFocus() {
+    webBodyEditor.requestEditorFocus();
+  }
+
+  /**
+   * Nimmt einen Formatierbefehl aus dem JavaFX-Formatierfenster entgegen.
+   *
+   * @param command Befehlsname
+   * @param value optionaler Wert
+   */
+  private boolean handleWebFormatCommand(String command, String value) {
+    if (useLegacyBodyAreaForCompatibility() || activeTableCellArea != null) {
+      return false;
+    }
+    if ("image".equals(command)) {
+      insertImageViaFileChooser();
+      return true;
+    }
+    if ("insertTable".equals(command)) {
+      String[] parts = value == null ? new String[] {"1", "1"} : value.split("x", 2);
+      int rows = parsePositiveInt(parts.length > 0 ? parts[0] : "1", 1);
+      int columns = parsePositiveInt(parts.length > 1 ? parts[1] : "1", 1);
+      webBodyEditor.insertTable(rows, columns);
+      return true;
+    }
+    webBodyEditor.executeCommand(command, value);
+    return true;
+  }
+
+  private int parsePositiveInt(String value, int fallback) {
+    try {
+      return Math.max(1, Integer.parseInt(value));
+    } catch (RuntimeException ex) {
+      return fallback;
+    }
+  }
+
+  private void insertImageViaFileChooser() {
+    FileChooser chooser = new FileChooser();
+    chooser.setTitle("Bild auswählen");
+    chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter(
+        "Bilddateien",
+        "*.png", "*.jpg", "*.jpeg", "*.gif", "*.bmp", "*.webp", "*.tif", "*.tiff"
+    ));
+    java.io.File selected = chooser.showOpenDialog(getScene() == null ? null : getScene().getWindow());
+    if (selected == null) {
+      return;
+    }
+    Path imagePath = selected.toPath().toAbsolutePath().normalize();
+    if (!EditorImageAssetService.isSupportedImageFile(imagePath)) {
+      return;
+    }
+    webBodyEditor.insertImage(imagePath.toUri().toString());
   }
 
   /**
@@ -727,6 +853,10 @@ public class NoteEditorPane extends VBox {
    * @param action Tabellenaktion
    */
   private void handleTableAction(NoteFormattingMenuContent.TableAction action) {
+    if (!useLegacyBodyAreaForCompatibility() && webBodyEditor.isTableContextActive()) {
+      webBodyEditor.executeCommand("tableAction", action.name());
+      return;
+    }
     if (activeTableParagraph == null
         || activeTableRow == null
         || activeTableColumn == null

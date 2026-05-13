@@ -42,6 +42,7 @@ public class DocxExportWriter implements NoteExportWriter {
         add(zip, "word/_rels/document.xml.rels", documentRels(images));
         add(zip, "word/document.xml", documentXml(document, images));
         add(zip, "word/styles.xml", stylesXml());
+        add(zip, "word/numbering.xml", numberingXml());
         for (EmbeddedImage image : images.values()) {
           add(zip, "word/media/" + image.mediaName(), Files.readAllBytes(image.path()));
         }
@@ -155,8 +156,9 @@ public class DocxExportWriter implements NoteExportWriter {
     if (paragraph.isTable()) {
       return table(paragraph);
     }
+    String resolvedStyle = paragraph.style().isHeading() ? "Heading" + paragraph.style().headingLevel() : style;
     StringBuilder xml = new StringBuilder("<w:p>");
-    String paragraphProperties = paragraphProperties(paragraph.style(), style);
+    String paragraphProperties = paragraphProperties(paragraph.style(), resolvedStyle);
     if (!paragraphProperties.isBlank()) {
       xml.append("<w:pPr>").append(paragraphProperties).append("</w:pPr>");
     }
@@ -175,7 +177,7 @@ public class DocxExportWriter implements NoteExportWriter {
    */
   private String table(ExportParagraph paragraph) {
     int columns = paragraph.table().columns();
-    int cellWidth = Math.max(1, 9000 / columns);
+    var cellWidths = paragraph.table().columnWidths(9000);
     StringBuilder xml = new StringBuilder("<w:tbl><w:tblPr><w:tblBorders>")
         .append("<w:top w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>")
         .append("<w:left w:val=\"single\" w:sz=\"4\" w:space=\"0\" w:color=\"000000\"/>")
@@ -188,14 +190,14 @@ public class DocxExportWriter implements NoteExportWriter {
         .append("<w:bottom w:w=\"15\" w:type=\"dxa\"/><w:right w:w=\"15\" w:type=\"dxa\"/>")
         .append("</w:tblCellMar></w:tblPr><w:tblGrid>");
     for (int column = 0; column < columns; column++) {
-      xml.append("<w:gridCol w:w=\"").append(cellWidth).append("\"/>");
+      xml.append("<w:gridCol w:w=\"").append(cellWidths.get(column)).append("\"/>");
     }
     xml.append("</w:tblGrid>");
     for (int row = 0; row < paragraph.table().rows(); row++) {
       xml.append("<w:tr>");
       for (int column = 0; column < columns; column++) {
         xml.append("<w:tc><w:tcPr><w:tcW w:w=\"")
-            .append(cellWidth)
+            .append(cellWidths.get(column))
             .append("\" w:type=\"dxa\"/></w:tcPr>")
             .append(cellParagraph(paragraph.table().cell(row, column)))
             .append("</w:tc>");
@@ -264,6 +266,11 @@ public class DocxExportWriter implements NoteExportWriter {
     if (style != null) {
       properties.append("<w:pStyle w:val=\"").append(style).append("\"/>");
     }
+    if (paragraphStyle.isListItem()) {
+      properties.append("<w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"")
+          .append("ol".equals(paragraphStyle.listType()) ? "2" : "1")
+          .append("\"/></w:numPr>");
+    }
     if (paragraphStyle.alignment() != null) {
       properties.append("<w:jc w:val=\"").append(wordAlignment(paragraphStyle.alignment())).append("\"/>");
     }
@@ -272,6 +279,11 @@ public class DocxExportWriter implements NoteExportWriter {
     }
     if (paragraphStyle.spacingBeforePixels() > 0) {
       properties.append("<w:spacing w:before=\"").append(paragraphStyle.spacingBeforePixels() * 15).append("\"/>");
+    }
+    if (paragraphStyle.backgroundColor() != null) {
+      properties.append("<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"")
+          .append(wordColor(paragraphStyle.backgroundColor()))
+          .append("\"/>");
     }
     return properties.toString();
   }
@@ -330,6 +342,12 @@ public class DocxExportWriter implements NoteExportWriter {
           .append(wordColor(style.backgroundColor()))
           .append("\"/>");
     }
+    if (style.subscript()) {
+      properties.append("<w:vertAlign w:val=\"subscript\"/>");
+    }
+    if (style.superscript()) {
+      properties.append("<w:vertAlign w:val=\"superscript\"/>");
+    }
     return properties.toString();
   }
 
@@ -386,8 +404,31 @@ public class DocxExportWriter implements NoteExportWriter {
     return """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:rPr><w:b/><w:sz w:val="40"/></w:rPr></w:style>
+          <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>
           <w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/><w:rPr><w:b/><w:sz w:val="28"/></w:rPr></w:style>
         </w:styles>
+        """;
+  }
+
+  /**
+   * Erzeugt die Word-Nummerierungsdefinitionen fuer Bullet- und Zahlenlisten.
+   *
+   * @return Nummerierungs-XML
+   */
+  private String numberingXml() {
+    return """
+        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:abstractNum w:abstractNumId="1">
+            <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="•"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl>
+          </w:abstractNum>
+          <w:abstractNum w:abstractNumId="2">
+            <w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl>
+          </w:abstractNum>
+          <w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>
+          <w:num w:numId="2"><w:abstractNumId w:val="2"/></w:num>
+        </w:numbering>
         """;
   }
 
@@ -417,6 +458,7 @@ public class DocxExportWriter implements NoteExportWriter {
         """ + defaults + """
           <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
           <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+          <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
         </Types>
         """;
   }
@@ -453,6 +495,7 @@ public class DocxExportWriter implements NoteExportWriter {
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
           <Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+          <Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>
         """ + relationships + """
         </Relationships>
         """;

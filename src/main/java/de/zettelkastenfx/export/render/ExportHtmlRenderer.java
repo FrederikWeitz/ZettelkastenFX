@@ -30,8 +30,12 @@ public class ExportHtmlRenderer {
           <meta charset="UTF-8" />
           <style>
             body { font-family: sans-serif; font-size: 11pt; line-height: 1.35; }
+            h1 { font-size: 1.82em; margin: 0.67em 0; font-weight: bold; }
+            h2 { font-size: 1.5em; margin: 0.83em 0; font-weight: bold; }
             h3 { font-size: 1.17em; margin: 0 0 0.7em 0; font-weight: bold; }
             p { margin: 0 0 0.7em 0; }
+            ul, ol { margin: 0 0 0.7em 1.6em; padding-left: 1.2em; }
+            li { margin: 0 0 0.2em 0; }
             .keywords-title, .bibliography-line { margin-top: 0.7em; }
             .keyword { margin-left: 2em; }
           </style>
@@ -74,13 +78,36 @@ public class ExportHtmlRenderer {
       html.append("<h3>").append(escape(header)).append("</h3>");
     }
     if (document.selection().includeBody() && !note.bodyParagraphs().isEmpty()) {
+      String openList = null;
       for (ExportParagraph paragraph : note.bodyParagraphs()) {
+        if (!paragraph.style().isListItem()) {
+          openList = closeOpenList(html, openList);
+        }
         if (paragraph.isImage()) {
           renderImageParagraph(html, paragraph);
           continue;
         }
         if (paragraph.isTable()) {
           renderTable(html, paragraph);
+          continue;
+        }
+        if (paragraph.style().isListItem()) {
+          String listType = paragraph.style().listType();
+          if (!listType.equals(openList)) {
+            openList = closeOpenList(html, openList);
+            html.append("<").append(listType).append(">");
+            openList = listType;
+          }
+          html.append("<li>");
+          renderRuns(html, paragraph);
+          html.append("</li>");
+          continue;
+        }
+        if (paragraph.style().isHeading()) {
+          String tag = "h" + paragraph.style().headingLevel();
+          html.append("<").append(tag).append(">");
+          renderRuns(html, paragraph);
+          html.append("</").append(tag).append(">");
           continue;
         }
         html.append("<p");
@@ -92,6 +119,7 @@ public class ExportHtmlRenderer {
         renderRuns(html, paragraph);
         html.append("</p>");
       }
+      closeOpenList(html, openList);
     }
     if (document.selection().includeKeywords() && !note.keywords().isEmpty()) {
       html.append("<p class=\"keywords-title\">Stichwörter:</p>");
@@ -103,6 +131,13 @@ public class ExportHtmlRenderer {
         && note.bibliographyEntry() != null) {
       renderBibliography(html, note.bibliographyEntry());
     }
+  }
+
+  private String closeOpenList(StringBuilder html, String openList) {
+    if (openList != null) {
+      html.append("</").append(openList).append(">");
+    }
+    return null;
   }
 
   /**
@@ -214,6 +249,12 @@ public class ExportHtmlRenderer {
     if (style.backgroundColor() != null) {
       css.append("background-color:").append(style.backgroundColor()).append(";");
     }
+    if (style.subscript()) {
+      css.append("vertical-align:sub;font-size:smaller;");
+    }
+    if (style.superscript()) {
+      css.append("vertical-align:super;font-size:smaller;");
+    }
     return css.toString();
   }
 
@@ -239,6 +280,9 @@ public class ExportHtmlRenderer {
     }
     if (style.bold()) {
       css.append("font-weight:bold;");
+    }
+    if (style.backgroundColor() != null) {
+      css.append("background-color:").append(style.backgroundColor()).append(";");
     }
     return css.toString();
   }

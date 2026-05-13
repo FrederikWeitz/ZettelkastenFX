@@ -82,6 +82,7 @@ public final class NoteFormattingMenuContent {
   private BaseIcon currentAlignIcon = BaseIcon.TEXT_ALIGN_LEFT;
   private Consumer<Point2D> onImageDropPopupRequested;
   private Consumer<TableAction> onTableActionRequested;
+  private FormatCommandHandler onFormatCommandRequested;
   private boolean suppressNextImageAction;
 
   private enum HeadingKind {NONE, H1, H2, MIXED}
@@ -95,6 +96,11 @@ public final class NoteFormattingMenuContent {
     INSERT_ROW_BELOW,
     DELETE_ROW,
     DELETE_COLUMN
+  }
+
+  @FunctionalInterface
+  public interface FormatCommandHandler {
+    boolean handle(String command, String value);
   }
 
   public NoteFormattingMenuContent(InlineCssTextArea area) {
@@ -139,13 +145,19 @@ public final class NoteFormattingMenuContent {
     numbers = iconButton(BaseIcon.TEXT_LIST_NUMBERS);
 
     backgroundIndicator = new Rectangle(14, 14, Color.TRANSPARENT);
-    backgroundColorMenu = colorMenu("Hintergrundfarbe", backgroundIndicator, color -> {
+    backgroundColorMenu = colorMenu("Hintergrundfarbe", backgroundIndicator, true, color -> {
+      if (requestFormatCommand("backgroundColor", toCssColor(color))) {
+        return;
+      }
       InlineCssStyleUtil.setSelectionProperty(targetArea(), "-rtfx-background-color", toCssColor(color));
       afterFormattingApplied();
     });
 
     textIndicator = new Rectangle(14, 14, Color.rgb(40, 40, 40));
-    textColorMenu = colorMenu("Schriftfarbe", textIndicator, color -> {
+    textColorMenu = colorMenu("Schriftfarbe", textIndicator, false, color -> {
+      if (requestFormatCommand("textColor", toCssColor(color))) {
+        return;
+      }
       InlineCssStyleUtil.setSelectionProperty(targetArea(), "-fx-fill", toCssColor(color));
       afterFormattingApplied();
     });
@@ -213,6 +225,9 @@ public final class NoteFormattingMenuContent {
     item.setOnAction(e -> {
       currentAlignIcon = icon;
       host.setGraphic(icon.imageView());
+      if (requestFormatCommand("align", value)) {
+        return;
+      }
       InlineCssStyleUtil.setParagraphPropertyForSelection(targetArea(), "-fx-text-alignment", value);
       afterFormattingApplied();
     });
@@ -280,18 +295,27 @@ public final class NoteFormattingMenuContent {
     return row;
   }
 
-  private MenuButton colorMenu(String tooltip, Rectangle indicator, java.util.function.Consumer<Color> apply) {
+  private MenuButton colorMenu(String tooltip,
+                               Rectangle indicator,
+                               boolean includeTransparent,
+                               java.util.function.Consumer<Color> apply) {
     MenuButton menu = new MenuButton();
     menu.getStyleClass().addAll("note-formatting-menu", "note-formatting-dropdown");
     menu.setTooltip(new Tooltip(tooltip));
     menu.setGraphic(indicator);
 
-    List<Color> swatches = List.of(
-        Color.TRANSPARENT,
-        Color.web("#1f1f1f"), Color.web("#7a0f0f"), Color.web("#1b5fbf"),
-        Color.web("#2e7d32"), Color.web("#f57c00"), Color.web("#fdd835"),
-        Color.web("#e0e0e0"), Color.web("#ffffff")
-    );
+    List<Color> swatches = includeTransparent
+        ? List.of(
+            Color.TRANSPARENT,
+            Color.web("#000000"), Color.web("#7a0f0f"), Color.web("#1b5fbf"),
+            Color.web("#2e7d32"), Color.web("#f57c00"), Color.web("#fdd835"),
+            Color.web("#e0e0e0"), Color.web("#ffffff")
+        )
+        : List.of(
+            Color.web("#000000"), Color.web("#7a0f0f"), Color.web("#1b5fbf"),
+            Color.web("#2e7d32"), Color.web("#f57c00"), Color.web("#fdd835"),
+            Color.web("#e0e0e0"), Color.web("#ffffff")
+        );
 
     FlowPane swatchPane = new FlowPane();
     swatchPane.getStyleClass().add("note-formatting-swatches");
@@ -474,7 +498,7 @@ public final class NoteFormattingMenuContent {
     return TriState.OFF;
   }
 
-  private String toCssColor(Color color) {
+  private static String toCssColor(Color color) {
     if (color == null) {
       return "transparent";
     }
@@ -482,6 +506,9 @@ public final class NoteFormattingMenuContent {
     int g = (int) Math.round(color.getGreen() * 255);
     int b = (int) Math.round(color.getBlue() * 255);
     double a = color.getOpacity();
+    if (a <= 0.001) {
+      return "transparent";
+    }
     if (a >= 0.999) {
       return String.format("#%02x%02x%02x", r, g, b);
     }
@@ -567,6 +594,9 @@ public final class NoteFormattingMenuContent {
 
   private void wireActions() {
     clearFormatting.setOnAction(e -> {
+      if (requestFormatCommand("clear", null)) {
+        return;
+      }
       InlineCssStyleUtil.clearSelectionFormatting(targetArea());
       resetToggles();
       syncFromSelection();
@@ -575,6 +605,7 @@ public final class NoteFormattingMenuContent {
 
     bold.setOnAction(e -> {
       if (syncing) return;
+      if (requestFormatCommand("bold", null)) return;
       setMixedClass(bold, false);
       InlineCssStyleUtil.toggleSelectionProperty(targetArea(), "-fx-font-weight", "bold", bold.isSelected());
       syncFromSelection();
@@ -582,6 +613,7 @@ public final class NoteFormattingMenuContent {
     });
     italic.setOnAction(e -> {
       if (syncing) return;
+      if (requestFormatCommand("italic", null)) return;
       setMixedClass(italic, false);
       InlineCssStyleUtil.toggleSelectionProperty(targetArea(), "-fx-font-style", "italic", italic.isSelected());
       syncFromSelection();
@@ -589,6 +621,7 @@ public final class NoteFormattingMenuContent {
     });
     underline.setOnAction(e -> {
       if (syncing) return;
+      if (requestFormatCommand("underline", null)) return;
       setMixedClass(underline, false);
       InlineCssStyleUtil.toggleSelectionProperty(targetArea(), "-fx-underline", "true", underline.isSelected());
       syncFromSelection();
@@ -596,6 +629,7 @@ public final class NoteFormattingMenuContent {
     });
     strike.setOnAction(e -> {
       if (syncing) return;
+      if (requestFormatCommand("strike", null)) return;
       setMixedClass(strike, false);
       InlineCssStyleUtil.toggleSelectionProperty(targetArea(), "-fx-strikethrough", "true", strike.isSelected());
       syncFromSelection();
@@ -604,6 +638,7 @@ public final class NoteFormattingMenuContent {
 
     sup.setOnAction(e -> {
       if (syncing) return;
+      if (requestFormatCommand("sup", null)) return;
       setMixedClass(sup, false);
       InlineCssStyleUtil.toggleSelectionSuperscript(targetArea(), sup.isSelected());
       syncFromSelection();
@@ -611,6 +646,7 @@ public final class NoteFormattingMenuContent {
     });
     sub.setOnAction(e -> {
       if (syncing) return;
+      if (requestFormatCommand("sub", null)) return;
       setMixedClass(sub, false);
       InlineCssStyleUtil.toggleSelectionSubscript(targetArea(), sub.isSelected());
       syncFromSelection();
@@ -624,6 +660,10 @@ public final class NoteFormattingMenuContent {
       setMixedClass(h1, false);
       setMixedClass(h2, false);
 
+      if (now == h1 && requestFormatCommand("h1", null)) return;
+      else if (now == h2 && requestFormatCommand("h2", null)) return;
+      else if (now == null && requestFormatCommand("paragraph", null)) return;
+
       if (now == h1) InlineCssStyleUtil.applyHeadingForSelection(targetArea(), 20);
       else if (now == h2) InlineCssStyleUtil.applyHeadingForSelection(targetArea(), 16);
       else InlineCssStyleUtil.clearHeadingForSelection(targetArea());
@@ -633,28 +673,34 @@ public final class NoteFormattingMenuContent {
     });
 
     indent.setOnAction(e -> {
+      if (requestFormatCommand("indent", null)) return;
       InlineCssStyleUtil.adjustParagraphIndentForSelection(targetArea(), 20);
       afterFormattingApplied();
     });
     outdent.setOnAction(e -> {
+      if (requestFormatCommand("outdent", null)) return;
       InlineCssStyleUtil.adjustParagraphIndentForSelection(targetArea(), -20);
       afterFormattingApplied();
     });
 
     bullets.setOnAction(e -> {
+      if (requestFormatCommand("bullets", null)) return;
       InlineCssStyleUtil.toggleSelectionBullets(targetArea());
       afterFormattingApplied();
     });
     numbers.setOnAction(e -> {
+      if (requestFormatCommand("numbers", null)) return;
       InlineCssStyleUtil.toggleSelectionNumbers(targetArea());
       afterFormattingApplied();
     });
     insertCitation.setOnAction(e -> {
+      if (requestFormatCommand("citation", null)) return;
       InlineCssStyleUtil.applyCitationForSelection(targetArea());
       syncFromSelection();
       afterFormattingApplied();
     });
     separator.setOnAction(e -> {
+      if (requestFormatCommand("separator", null)) return;
       InlineCssStyleUtil.applySeparatorForSelection(targetArea());
       syncFromSelection();
       afterFormattingApplied();
@@ -671,7 +717,9 @@ public final class NoteFormattingMenuContent {
         suppressNextImageAction = false;
         return;
       }
-      insertImageReference();
+      if (!requestFormatCommand("image", null)) {
+        insertImageReference();
+      }
     });
     table.setOnAction(e -> showTableSelectionPopup());
     tableColumnInsertLeft.setOnAction(e -> requestTableAction(TableAction.INSERT_COLUMN_LEFT));
@@ -685,6 +733,7 @@ public final class NoteFormattingMenuContent {
       if (syncing) return;
       String family = fontFamily.getValue();
       if (family != null && !family.isBlank()) {
+        if (requestFormatCommand("fontFamily", family.replace("'", ""))) return;
         InlineCssStyleUtil.setSelectionProperty(targetArea(), "-fx-font-family", "'" + family.replace("'", "") + "'");
         syncFromSelection();
         afterFormattingApplied();
@@ -711,6 +760,15 @@ public final class NoteFormattingMenuContent {
   }
 
   /**
+   * Setzt einen Handler fuer TinyMCE-Formatierbefehle.
+   *
+   * @param onFormatCommandRequested Handler oder {@code null} fuer RichTextFX
+   */
+  public void setOnFormatCommandRequested(FormatCommandHandler onFormatCommandRequested) {
+    this.onFormatCommandRequested = onFormatCommandRequested;
+  }
+
+  /**
    * Schaltet die Tabellenbefehle im Formatierungsmenue sichtbar.
    *
    * @param visible {@code true}, wenn eine Tabellenzelle aktiv ist
@@ -729,6 +787,17 @@ public final class NoteFormattingMenuContent {
     if (onTableActionRequested != null) {
       onTableActionRequested.accept(action);
     }
+  }
+
+  private boolean requestFormatCommand(String command, String value) {
+    if (onFormatCommandRequested == null) {
+      return false;
+    }
+    boolean handled = onFormatCommandRequested.handle(command, value);
+    if (handled) {
+      afterFormattingApplied();
+    }
+    return handled;
   }
 
   /**
@@ -866,6 +935,7 @@ public final class NoteFormattingMenuContent {
     Region[][] cells = new Region[6][6];
     int[] selectedRows = {1};
     int[] selectedColumns = {1};
+    boolean[] tableInserted = {false};
     for (int row = 0; row < 6; row++) {
       for (int column = 0; column < 6; column++) {
         Region cell = new Region();
@@ -876,10 +946,18 @@ public final class NoteFormattingMenuContent {
         int columns = column + 1;
         cell.setOnMouseEntered(_ -> updateTableSelection(cells, sizeLabel, selectedRows, selectedColumns, rows, columns));
         cell.setOnMouseDragged(_ -> updateTableSelection(cells, sizeLabel, selectedRows, selectedColumns, rows, columns));
-        cell.setOnMouseReleased(_ -> {
-          insertTableReference(selectedRows[0], selectedColumns[0]);
+        Runnable insertSelectedTable = () -> {
+          if (tableInserted[0]) {
+            return;
+          }
+          tableInserted[0] = true;
+          if (!requestFormatCommand("insertTable", selectedRows[0] + "x" + selectedColumns[0])) {
+            insertTableReference(selectedRows[0], selectedColumns[0]);
+          }
           popup.hide();
-        });
+        };
+        cell.setOnMouseReleased(_ -> insertSelectedTable.run());
+        cell.setOnMouseClicked(_ -> insertSelectedTable.run());
         cells[row][column] = cell;
         grid.add(cell, column, row);
       }

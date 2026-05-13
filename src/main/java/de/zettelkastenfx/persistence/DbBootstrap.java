@@ -1,6 +1,7 @@
 package de.zettelkastenfx.persistence;
 
 import de.zettelkastenfx.fx.config.AppDirectories;
+import de.zettelkastenfx.fx.config.ExternalStylesheetService;
 import lombok.Getter;
 import org.flywaydb.core.Flyway;
 import org.sqlite.SQLiteDataSource;
@@ -26,6 +27,7 @@ public final class DbBootstrap {
   public static DataSource initAndMigrate() {
     Path dbFile = databaseFile();
     ensureImageDirectoryExists(dbFile);
+    ExternalStylesheetService.ensureExternalStylesheet(dbFile.toAbsolutePath().normalize().getParent());
 
     ds = new SQLiteDataSource();
     ds.setUrl("jdbc:sqlite:" + dbFile.toAbsolutePath());
@@ -45,6 +47,7 @@ public final class DbBootstrap {
                         .load();
 
     flyway.migrate();
+    new NotesWebMigrationService(ds).migrateIfNecessary();
     return ds;
   }
 

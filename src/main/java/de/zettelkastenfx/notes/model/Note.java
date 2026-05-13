@@ -2,9 +2,12 @@ package de.zettelkastenfx.notes.model;
 
 import de.zettelkastenfx.notes.editor.NoteEditorPane;
 import de.zettelkastenfx.notes.keywords.KeywordsTablePane;
+import de.zettelkastenfx.persistence.HtmlBodyCodec;
 import de.zettelkastenfx.persistence.InlineCssRtfxBlobCodec;
+import de.zettelkastenfx.notes.web.RichTextHtmlConverter;
 import org.fxmisc.richtext.InlineCssTextArea;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -13,7 +16,7 @@ public class Note {
   private int id;
   private String title = "";
   byte[] bodyBlob = new byte[0];
-  String bodyCodec = InlineCssRtfxBlobCodec.CODEC_NAME;
+  String bodyCodec = HtmlBodyCodec.CODEC_NAME;
   private Integer bibliographyRefId;
 
   private List<String> keywords = new ArrayList<>();
@@ -63,7 +66,7 @@ public class Note {
 
   public void setBodyCodec(String bodyCodec) {
     this.bodyCodec = (bodyCodec == null || bodyCodec.isBlank())
-                         ? InlineCssRtfxBlobCodec.CODEC_NAME
+                         ? HtmlBodyCodec.CODEC_NAME
                          : bodyCodec;
   }
 
@@ -159,7 +162,11 @@ public class Note {
                           KeywordsTablePane keywordsPane) {
     editor.commitBodySourceViewIfActive();
     setTitle(editor.getTitleEditorArea().getText());
-    captureBodyFrom(editor.getBodyArea());
+    if (editor.getBodyArea().getLength() > 0) {
+      captureBodyFrom(editor.getBodyArea());
+    } else {
+      captureBodyFrom(editor);
+    }
 
     getKeywords().clear();
     getKeywords().addAll(keywordsPane.getKeywords());
@@ -169,8 +176,7 @@ public class Note {
                       KeywordsTablePane keywordsPane) {
     editor.discardBodySourceView();
     editor.getTitleEditorArea().setText(getTitle());
-    applyBodyTo(editor.getBodyArea());
-    editor.refreshImageReferences();
+    applyBodyTo(editor);
     keywordsPane.setKeywords(getKeywords());
     editor.setHeaderNoteNumber(id);
     editor.setHeaderCreatedAt(createdAt);
@@ -182,6 +188,16 @@ public class Note {
     setBodyBlob(InlineCssRtfxBlobCodec.encodeToGzip(area));
   }
 
+  /**
+   * Sammelt den HTML-Body aus dem WebView-Editor ein.
+   *
+   * @param editor Zettel-Editor
+   */
+  public void captureBodyFrom(NoteEditorPane editor) {
+    setBodyCodec(HtmlBodyCodec.CODEC_NAME);
+    setBodyBlob(editor.getBodyHtml().getBytes(StandardCharsets.UTF_8));
+  }
+
   // Body in UI “ausspielen”
   public void applyBodyTo(InlineCssTextArea area) {
     if (bodyBlob == null || bodyBlob.length == 0) {
@@ -189,5 +205,28 @@ public class Note {
       return;
     }
     InlineCssRtfxBlobCodec.decodeFromGzipInto(area, bodyBlob);
+  }
+
+  /**
+   * Spielt den Inhalt in den WebView-Editor aus. Alte RichTextFX-Blobs werden als Fallback konvertiert.
+   *
+   * @param editor Zettel-Editor
+   */
+  public void applyBodyTo(NoteEditorPane editor) {
+    if (bodyBlob == null || bodyBlob.length == 0) {
+      editor.setBodyHtml("");
+      return;
+    }
+    if (HtmlBodyCodec.CODEC_NAME.equals(bodyCodec)) {
+      editor.setBodyHtml(new String(bodyBlob, StandardCharsets.UTF_8));
+      return;
+    }
+    if (InlineCssRtfxBlobCodec.CODEC_NAME.equals(bodyCodec)) {
+      InlineCssTextArea area = editor.getBodyArea();
+      InlineCssRtfxBlobCodec.decodeFromGzipInto(area, bodyBlob);
+      editor.setBodyHtml(new RichTextHtmlConverter().plainTextToHtmlBody(area.getText()));
+      return;
+    }
+    editor.setBodyHtml(new String(bodyBlob, StandardCharsets.UTF_8));
   }
 }

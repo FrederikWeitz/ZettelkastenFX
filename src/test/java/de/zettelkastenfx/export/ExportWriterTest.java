@@ -6,17 +6,25 @@ import de.zettelkastenfx.export.model.ExportParagraph;
 import de.zettelkastenfx.export.model.ExportParagraphStyle;
 import de.zettelkastenfx.export.model.ExportTextRun;
 import de.zettelkastenfx.export.model.ExportTextStyle;
+import de.zettelkastenfx.notes.model.Note;
+import de.zettelkastenfx.persistence.HtmlBodyCodec;
+import org.apache.pdfbox.Loader;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import javax.imageio.ImageIO;
+import org.apache.pdfbox.pdmodel.PDDocument;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.zip.ZipFile;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -92,6 +100,32 @@ class ExportWriterTest {
     assertTrue(content.contains("\\sb45 "));
     assertTrue(content.contains("\\cf"));
     assertTrue(content.contains("\\highlight"));
+  }
+
+  /**
+   * Prueft, dass eine Absatz-Schriftgroesse in RTF nicht in nachfolgende normale Absaetze hineinwirkt.
+   */
+  @Test
+  void writesRtfDefaultFontSizeForNormalParagraphAfterLargeParagraph() throws Exception {
+    Note note = new Note();
+    note.setBodyCodec(HtmlBodyCodec.CODEC_NAME);
+    note.setBodyBlob("""
+        <h1>Gross</h1>
+        <p>Normal</p>
+        """.getBytes(StandardCharsets.UTF_8));
+    NoteBodyTextExtractor extractor = new NoteBodyTextExtractor();
+    ExportDocument document = new ExportDocument(
+        List.of(new ExportNote(1, "Titel", extractor.extractPlainText(note), extractor.extractStyledParagraphs(note), List.of(), null)),
+        List.of(),
+        ExportSelection.defaultSelection()
+    );
+    Path rtf = tempDir.resolve("schriftgroesse.rtf");
+
+    new RtfExportWriter().write(document, rtf);
+
+    String content = Files.readString(rtf);
+    assertTrue(content.contains("\\s1\\b\\fs40 Gross"));
+    assertTrue(content.contains("\\pard\\plain \\fs20 Normal"));
   }
 
   /**
@@ -223,6 +257,162 @@ class ExportWriterTest {
   }
 
   /**
+   * Prueft, dass DOCX und RTF unterschiedliche Spaltenbreiten aus dem Exportmodell uebernehmen.
+   */
+  @Test
+  void writesDocxAndRtfTableWithColumnWidths() throws Exception {
+    ExportDocument document = weightedTableDocument();
+    Path docx = tempDir.resolve("breitentabelle.docx");
+    Path rtf = tempDir.resolve("breitentabelle.rtf");
+
+    new DocxExportWriter().write(document, docx);
+    new RtfExportWriter().write(document, rtf);
+
+    String documentXml = readDocxEntry(docx, "word/document.xml");
+    assertTrue(documentXml.contains("<w:gridCol w:w=\"2250\"/>"));
+    assertTrue(documentXml.contains("<w:gridCol w:w=\"6750\"/>"));
+    assertTrue(documentXml.contains("<w:tcW w:w=\"2250\" w:type=\"dxa\"/>"));
+    assertTrue(documentXml.contains("<w:tcW w:w=\"6750\" w:type=\"dxa\"/>"));
+
+    String rtfContent = Files.readString(rtf);
+    assertTrue(rtfContent.contains("\\cellx2250"));
+    assertTrue(rtfContent.contains("\\cellx9000"));
+  }
+
+  /**
+   * Prueft, dass aus HTML-Body-Zetteln formatierte DOCX/RTF/HTML-Dateien entstehen und kein Roh-HTML sichtbar bleibt.
+   */
+  @Test
+  void writesHtmlBodyNotesAsFormattedExportsWithoutRawHtml() throws Exception {
+    ExportDocument document = htmlBodyDocument();
+    Path docx = tempDir.resolve("htmlbody.docx");
+    Path rtfPath = tempDir.resolve("htmlbody.rtf");
+    Path html = tempDir.resolve("htmlbody.html");
+    Path pdf = tempDir.resolve("htmlbody.pdf");
+
+    new DocxExportWriter().write(document, docx);
+    new RtfExportWriter().write(document, rtfPath);
+    new HtmlExportWriter().write(document, html);
+    new PdfExportWriter().write(document, pdf);
+
+    String documentXml = readDocxEntry(docx, "word/document.xml");
+    assertFalseRawHtml(documentXml);
+    assertTrue(documentXml.contains("<w:b/>"));
+    assertTrue(documentXml.contains("<w:color w:val=\"1B5FBF\"/>"));
+    assertTrue(documentXml.contains("<w:color w:val=\"FF0000\"/>"));
+    assertTrue(documentXml.contains("<w:rFonts w:ascii=\"Times New Roman\" w:hAnsi=\"Times New Roman\"/>"));
+    assertTrue(documentXml.contains("<w:shd w:val=\"clear\" w:color=\"auto\" w:fill=\"EEEEEE\"/>"));
+    assertTrue(documentXml.contains("<w:tbl>"));
+
+    String rtf = Files.readString(rtfPath);
+    assertFalseRawHtml(rtf);
+    assertTrue(rtf.contains("\\b "));
+    assertTrue(rtf.contains("\\cf"));
+    assertTrue(rtf.contains("\\f"));
+    assertTrue(rtf.contains("\\highlight"));
+    assertTrue(rtf.contains("\\trowd"));
+
+    String htmlContent = Files.readString(html);
+    assertFalse(htmlContent.contains("&lt;p"));
+    assertFalse(htmlContent.contains("class=&quot;"));
+    assertTrue(htmlContent.contains("font-weight:bold"));
+    assertTrue(htmlContent.contains("color:#1b5fbf;"));
+    assertTrue(htmlContent.contains("color:#ff0000;"));
+    assertTrue(htmlContent.contains("font-family:'Times New Roman';"));
+    assertTrue(htmlContent.contains("<table"));
+
+    assertTrue(Files.size(pdf) > 0);
+    assertTrue(pdfFontNames(pdf).stream().anyMatch(name -> name.toLowerCase().contains("times")));
+  }
+
+  /**
+   * Prueft, dass HTML-Body-Listen und Ueberschriften als Struktur in HTML, DOCX und RTF erhalten bleiben.
+   */
+  @Test
+  void writesHtmlBodyHeadingsAndListsAsDocumentStructure() throws Exception {
+    Note note = new Note();
+    note.setBodyCodec(HtmlBodyCodec.CODEC_NAME);
+    note.setBodyBlob("""
+        <h1>Kapitel</h1>
+        <h2>Abschnitt</h2>
+        <ul><li>Alpha</li><li>Beta</li></ul>
+        <ol><li>Eins</li><li>Zwei</li></ol>
+        <p>Nachlauf</p>
+        """.getBytes(StandardCharsets.UTF_8));
+    NoteBodyTextExtractor extractor = new NoteBodyTextExtractor();
+    ExportDocument document = new ExportDocument(
+        List.of(new ExportNote(1, "Titel", extractor.extractPlainText(note), extractor.extractStyledParagraphs(note), List.of(), null)),
+        List.of(),
+        ExportSelection.defaultSelection()
+    );
+    Path html = tempDir.resolve("struktur.html");
+    Path docx = tempDir.resolve("struktur.docx");
+    Path rtf = tempDir.resolve("struktur.rtf");
+
+    new HtmlExportWriter().write(document, html);
+    new DocxExportWriter().write(document, docx);
+    new RtfExportWriter().write(document, rtf);
+
+    String htmlContent = Files.readString(html);
+    assertTrue(htmlContent.contains("<h1>Kapitel</h1>"));
+    assertTrue(htmlContent.contains("<h2>Abschnitt</h2>"));
+    assertTrue(htmlContent.contains("<ul><li>Alpha</li><li>Beta</li></ul>"));
+    assertTrue(htmlContent.contains("<ol><li>Eins</li><li>Zwei</li></ol>"));
+
+    String documentXml = readDocxEntry(docx, "word/document.xml");
+    String numberingXml = readDocxEntry(docx, "word/numbering.xml");
+    assertTrue(documentXml.contains("<w:pStyle w:val=\"Heading1\"/>"));
+    assertTrue(documentXml.contains("<w:pStyle w:val=\"Heading2\"/>"));
+    assertTrue(documentXml.contains("<w:numId w:val=\"1\"/>"));
+    assertTrue(documentXml.contains("<w:numId w:val=\"2\"/>"));
+    assertTrue(numberingXml.contains("<w:numFmt w:val=\"bullet\"/>"));
+    assertTrue(numberingXml.contains("<w:numFmt w:val=\"decimal\"/>"));
+
+    String rtfContent = Files.readString(rtf);
+    assertTrue(rtfContent.contains("\\s1\\b\\fs40 Kapitel"));
+    assertTrue(rtfContent.contains("\\s2\\b\\fs32 Abschnitt"));
+    assertTrue(rtfContent.contains("{\\pn\\pnlvlblt"));
+    assertTrue(rtfContent.contains("{\\pn\\pnlvlbody"));
+    assertTrue(rtfContent.contains("{\\pntext\\u8226?\\tab}Alpha"));
+    assertTrue(rtfContent.contains("{\\pntext 1.\\tab}Eins"));
+    assertTrue(rtfContent.contains("\\pard\\plain \\fs20 Nachlauf"));
+  }
+
+  /**
+   * Prueft, dass HTML-Body-Bildabsaetze im Exportmodell landen und in DOCX eingebettet werden.
+   */
+  @Test
+  void writesWrappedHtmlBodyImageAsEmbeddedDocxMedia() throws Exception {
+    Path image = createPng();
+    Note note = new Note();
+    note.setBodyCodec(HtmlBodyCodec.CODEC_NAME);
+    note.setBodyBlob(("<p><img src=\"" + image + "\"></p>").getBytes(StandardCharsets.UTF_8));
+    NoteBodyTextExtractor extractor = new NoteBodyTextExtractor();
+    ExportDocument document = new ExportDocument(
+        List.of(new ExportNote(
+            1,
+            "Titel",
+            extractor.extractPlainText(note),
+            extractor.extractStyledParagraphs(note),
+            List.of(),
+            null
+        )),
+        List.of(),
+        ExportSelection.defaultSelection()
+    );
+    Path docx = tempDir.resolve("htmlbild.docx");
+
+    new DocxExportWriter().write(document, docx);
+
+    try (ZipFile zip = new ZipFile(docx.toFile())) {
+      assertNotNull(zip.getEntry("word/media/image1.png"));
+    }
+    String documentXml = readDocxEntry(docx, "word/document.xml");
+    assertFalseRawHtml(documentXml);
+    assertTrue(documentXml.contains("<w:drawing>"));
+  }
+
+  /**
    * Erstellt ein Exportdokument mit mehreren Inline-Formatierungen.
    *
    * @return formatiertes Exportdokument
@@ -268,6 +458,68 @@ class ExportWriterTest {
         List.of(),
         ExportSelection.defaultSelection()
     );
+  }
+
+  private ExportDocument weightedTableDocument() {
+    ExportParagraph paragraph = ExportParagraph.table(
+        new de.zettelkastenfx.export.model.ExportTable(
+            1,
+            2,
+            List.of(List.of("Schmal", "Breit")),
+            List.of(25, 75)
+        )
+    );
+    return new ExportDocument(
+        List.of(new ExportNote(1, "Titel", "", List.of(paragraph), List.of(), null)),
+        List.of(),
+        ExportSelection.defaultSelection()
+    );
+  }
+
+  private ExportDocument htmlBodyDocument() {
+    Note note = new Note();
+    note.setBodyCodec(HtmlBodyCodec.CODEC_NAME);
+    note.setBodyBlob("""
+        <p class="j q"><span class="b" style="color: #1b5fbf;">Alpha</span></p>
+        <p><span style="color: rgb(255 0 0 / 1); font-family: 'Times New Roman', serif;">Rot</span></p>
+        <table><tbody><tr><td>A</td><td>B</td></tr></tbody></table>
+        """.getBytes(StandardCharsets.UTF_8));
+    NoteBodyTextExtractor extractor = new NoteBodyTextExtractor();
+    return new ExportDocument(
+        List.of(new ExportNote(
+            1,
+            "Titel",
+            extractor.extractPlainText(note),
+            extractor.extractStyledParagraphs(note),
+            List.of(),
+            null
+        )),
+        List.of(),
+        ExportSelection.defaultSelection()
+    );
+  }
+
+  private void assertFalseRawHtml(String content) {
+    assertFalse(content.contains("<p class="));
+    assertFalse(content.contains("<span"));
+    assertFalse(content.contains("</p>"));
+    assertFalse(content.contains("&lt;p"));
+  }
+
+  private Set<String> pdfFontNames(Path pdf) throws IOException {
+    Set<String> names = new HashSet<>();
+    try (PDDocument document = Loader.loadPDF(pdf.toFile())) {
+      for (var page : document.getPages()) {
+        var resources = page.getResources();
+        if (resources == null) {
+          continue;
+        }
+        for (var fontName : resources.getFontNames()) {
+          names.add(resources.getFont(fontName).getName());
+        }
+      }
+    }
+    return names;
   }
 
   private Path createPng() throws IOException {

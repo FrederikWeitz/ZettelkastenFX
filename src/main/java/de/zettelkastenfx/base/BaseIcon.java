@@ -99,7 +99,7 @@ public enum BaseIcon {
   TAG_BLUE_ADD("tag_blue_add", "Eigenschaft hinzufügen"),
   TAG_BLUE_DELETE("tag_blue_delete", "Eigenschaft entfernen"),
 
-  SEPARATOR("separator", "Trennlinie einfügen"),
+  SEPARATOR("separator", "Zwischenüberschrift"),
 
   TABLE("table", "Tabelle einfügen"),
   TABLE_COLUMN_DELETE("table_column_delete", "Spalte löschen"),

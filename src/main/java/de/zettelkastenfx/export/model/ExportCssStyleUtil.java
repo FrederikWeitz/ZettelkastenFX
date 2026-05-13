@@ -1,12 +1,36 @@
 package de.zettelkastenfx.export.model;
 
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
  * Liest die fuer den Export relevanten Werte aus Inline-CSS des Editors.
  */
-final class ExportCssStyleUtil {
+public final class ExportCssStyleUtil {
+
+  private static final Map<String, String> NAMED_COLORS = Map.ofEntries(
+      Map.entry("black", "#000000"),
+      Map.entry("white", "#ffffff"),
+      Map.entry("red", "#ff0000"),
+      Map.entry("green", "#008000"),
+      Map.entry("blue", "#0000ff"),
+      Map.entry("yellow", "#ffff00"),
+      Map.entry("gray", "#808080"),
+      Map.entry("grey", "#808080"),
+      Map.entry("silver", "#c0c0c0"),
+      Map.entry("maroon", "#800000"),
+      Map.entry("purple", "#800080"),
+      Map.entry("fuchsia", "#ff00ff"),
+      Map.entry("magenta", "#ff00ff"),
+      Map.entry("lime", "#00ff00"),
+      Map.entry("olive", "#808000"),
+      Map.entry("navy", "#000080"),
+      Map.entry("teal", "#008080"),
+      Map.entry("aqua", "#00ffff"),
+      Map.entry("cyan", "#00ffff"),
+      Map.entry("orange", "#ffa500")
+  );
 
   private ExportCssStyleUtil() {
   }
@@ -19,7 +43,7 @@ final class ExportCssStyleUtil {
    * @param expected erwarteter Wert
    * @return {@code true}, wenn der Wert vorhanden ist
    */
-  static boolean cssValueEquals(String css, String property, String expected) {
+  public static boolean cssValueEquals(String css, String property, String expected) {
     String actual = cssValue(css, property);
     return actual != null && stripQuotes(actual).equalsIgnoreCase(stripQuotes(expected));
   }
@@ -31,7 +55,7 @@ final class ExportCssStyleUtil {
    * @param property Eigenschaftsname
    * @return Eigenschaftswert oder {@code null}
    */
-  static String cssValue(String css, String property) {
+  public static String cssValue(String css, String property) {
     String normalized = css == null ? "" : css;
     var matcher = Pattern.compile(Pattern.quote(property) + "\\s*:\\s*([^;]+)", Pattern.CASE_INSENSITIVE)
                          .matcher(normalized);
@@ -45,7 +69,7 @@ final class ExportCssStyleUtil {
    * @param property Eigenschaftsname
    * @return Pixelwert oder {@code null}
    */
-  static Integer pixelValue(String css, String property) {
+  public static Integer pixelValue(String css, String property) {
     String value = cssValue(css, property);
     if (value == null) {
       return null;
@@ -64,7 +88,7 @@ final class ExportCssStyleUtil {
    * @param css CSS-Text
    * @return linker Einzug in Pixeln
    */
-  static int leftPaddingPixels(String css) {
+  public static int leftPaddingPixels(String css) {
     return paddingPixels(css, 3);
   }
 
@@ -74,7 +98,7 @@ final class ExportCssStyleUtil {
    * @param css CSS-Text
    * @return oberer Abstand in Pixeln
    */
-  static int topPaddingPixels(String css) {
+  public static int topPaddingPixels(String css) {
     return paddingPixels(css, 0);
   }
 
@@ -108,7 +132,7 @@ final class ExportCssStyleUtil {
    * @param raw Farbe aus CSS
    * @return Hex-Farbe mit fuehrendem # oder {@code null}
    */
-  static String normalizeColor(String raw) {
+  public static String normalizeColor(String raw) {
     if (raw == null) {
       return null;
     }
@@ -124,14 +148,20 @@ final class ExportCssStyleUtil {
           + value.charAt(2) + value.charAt(2)
           + value.charAt(3) + value.charAt(3);
     }
+    if (NAMED_COLORS.containsKey(value)) {
+      return NAMED_COLORS.get(value);
+    }
     var rgb = Pattern.compile("rgba?\\(([^)]+)\\)").matcher(value);
     if (rgb.find()) {
-      String[] parts = rgb.group(1).split(",");
+      String rgbValue = rgb.group(1).trim();
+      String[] parts = rgbValue.contains(",")
+          ? rgbValue.split(",")
+          : rgbValue.replace("/", " ").split("\\s+");
       if (parts.length >= 3) {
         try {
-          int r = clampColor(Integer.parseInt(parts[0].trim()));
-          int g = clampColor(Integer.parseInt(parts[1].trim()));
-          int b = clampColor(Integer.parseInt(parts[2].trim()));
+          int r = parseColorComponent(parts[0]);
+          int g = parseColorComponent(parts[1]);
+          int b = parseColorComponent(parts[2]);
           return String.format("#%02x%02x%02x", r, g, b);
         } catch (NumberFormatException ignored) {
           return null;
@@ -147,11 +177,20 @@ final class ExportCssStyleUtil {
    * @param value Rohwert
    * @return Wert ohne Quotes
    */
-  static String stripQuotes(String value) {
+  public static String stripQuotes(String value) {
     return value == null ? null : value.replace("'", "").replace("\"", "").trim();
   }
 
   private static int clampColor(int value) {
     return Math.max(0, Math.min(255, value));
+  }
+
+  private static int parseColorComponent(String raw) {
+    String value = raw == null ? "" : raw.trim();
+    if (value.endsWith("%")) {
+      double percent = Double.parseDouble(value.substring(0, value.length() - 1).trim());
+      return clampColor((int) Math.round(255.0 * percent / 100.0));
+    }
+    return clampColor((int) Math.round(Double.parseDouble(value)));
   }
 }

@@ -1,0 +1,88 @@
+body,
+.mce-content-body,
+#fallbackEditor {
+  font-size: 12px;
+}
+
+p {
+  margin: 0;
+}
+
+.l {
+  text-align: left;
+}
+
+.r {
+  text-align: right;
+}
+
+.m {
+  text-align: center;
+}
+
+.j {
+  text-align: justify;
+}
+
+.q {
+  padding: 3px 2px 3px 12px;
+  background-color: #eeeeee;
+}
+
+.s {
+  font-weight: bold;
+  padding: 3px 0 0 0;
+}
+
+.b {
+  font-weight: bold;
+}
+
+.i {
+  font-style: italic;
+}
+
+.u {
+  text-decoration-line: underline;
+}
+
+.x {
+  text-decoration-line: line-through;
+}
+
+.u.x {
+  text-decoration-line: underline line-through;
+}
+
+h1 {
+  font-size: 20px;
+  font-weight: bold;
+}
+
+h2 {
+  font-size: 16px;
+  font-weight: bold;
+}
+
+ul,
+ol {
+  margin: 0;
+}
+
+li {
+  margin: 0;
+}
+
+img {
+  margin: 2px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+td {
+  border: 1px solid #999999;
+  padding: 2px;
+}
