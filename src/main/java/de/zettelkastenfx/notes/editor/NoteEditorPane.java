@@ -8,6 +8,10 @@ import de.zettelkastenfx.notes.editor.web.TinyMceEditorPane;
 import de.zettelkastenfx.notes.model.NoteReferenceInfo;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.geometry.Point2D;
+import javafx.beans.binding.Bindings;
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
 import javafx.scene.Cursor;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
@@ -15,11 +19,16 @@ import javafx.scene.control.ContextMenu;
 import javafx.scene.control.CustomMenuItem;
 import javafx.scene.control.Hyperlink;
 import javafx.scene.control.Label;
+import javafx.scene.control.ListView;
 import javafx.scene.control.TextArea;
 import javafx.scene.control.TextFormatter;
 import javafx.scene.control.Tooltip;
+import javafx.scene.input.DragEvent;
+import javafx.scene.input.Dragboard;
 import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
 import javafx.scene.input.MouseEvent;
+import javafx.scene.input.TransferMode;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.HBox;
@@ -33,6 +42,7 @@ import javafx.stage.FileChooser;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.IntConsumer;
 
@@ -55,8 +65,10 @@ public class NoteEditorPane extends VBox {
   private final Popup infoPopup = new Popup();
   private final VBox infoPopupRoot = new VBox(8);
   private final VBox bibliographyHost;
+  private Popup imageDropPopup;
 
   private boolean bodySourceMode;
+  private boolean suppressNextCtrlMParagraphInsert;
   private IntConsumer onNavigateToNote = _ -> {};
   private List<NoteReferenceInfo> infoOutgoing = List.of();
   private List<NoteReferenceInfo> infoIncoming = List.of();
@@ -161,6 +173,8 @@ public class NoteEditorPane extends VBox {
     webBodyEditor.setOnTableContextChanged(formattingMenuContent::setTableControlsVisible);
     formattingMenuContent.setOnTableActionRequested(this::handleTableAction);
     formattingMenuContent.setOnFormatCommandRequested(this::handleWebFormatCommand);
+    formattingMenuContent.setOnImageDropPopupRequested(this::showImageDropPopup);
+    installBodyEditorShortcuts();
     formattingDragHandle = new Region();
     formattingDragHandle.getStyleClass().add("note-formatting-drag-handle");
     formattingDragHandle.setCursor(Cursor.HAND);
@@ -267,6 +281,76 @@ public class NoteEditorPane extends VBox {
     }
   }
 
+  /**
+   * Verdrahtet Editor-Shortcuts auf denselben Formatbefehlspfad, den auch das Formatierfenster verwendet.
+   */
+  private void installBodyEditorShortcuts() {
+    webBodyEditor.getWebView().addEventFilter(KeyEvent.KEY_TYPED, event -> {
+      if (isCtrlMParagraphInsert(event)) {
+        suppressNextCtrlMParagraphInsert = false;
+        event.consume();
+      }
+    });
+    webBodyEditor.getWebView().addEventFilter(KeyEvent.KEY_RELEASED, event -> {
+      if (event.getCode() == KeyCode.M) {
+        suppressNextCtrlMParagraphInsert = false;
+      }
+    });
+    webBodyEditor.getWebView().addEventFilter(KeyEvent.KEY_PRESSED, event -> {
+      if (event.isAltDown()
+          && !event.isControlDown()
+          && !event.isMetaDown()
+          && !event.isShiftDown()
+          && event.getCode() == KeyCode.S) {
+        webBodyEditor.requestKeyFilterTextFromSelection();
+        event.consume();
+        return;
+      }
+
+      if (!event.isControlDown() || event.isAltDown() || event.isMetaDown() || event.isShiftDown()) {
+        return;
+      }
+
+      boolean handled = switch (event.getCode()) {
+        case B -> handleWebFormatCommand("bold", null);
+        case I -> handleWebFormatCommand("italic", null);
+        case U -> handleWebFormatCommand("underline", null);
+        case D -> handleWebFormatCommand("strike", null);
+        case L -> handleWebFormatCommand("align", "left");
+        case R -> handleWebFormatCommand("align", "right");
+        case M -> {
+          boolean applied = handleWebFormatCommand("align", "center");
+          suppressNextCtrlMParagraphInsert = applied;
+          yield applied;
+        }
+        case J -> handleWebFormatCommand("align", "justify");
+        case DIGIT1, NUMPAD1 -> handleWebFormatCommand("h1", null);
+        case DIGIT2, NUMPAD2 -> handleWebFormatCommand("h2", null);
+        case Q -> handleWebFormatCommand("citation", null);
+        case S -> handleWebFormatCommand("separator", null);
+        default -> false;
+      };
+
+      if (handled) {
+        event.consume();
+      }
+    });
+  }
+
+  /**
+   * Erkennt das von WebView nach Strg+M gelieferte Return-Zeichen, das sonst einen neuen Absatz einfuegt.
+   *
+   * @param event das zu pruefende Tastaturereignis
+   * @return {@code true}, wenn das Ereignis zum nativen Absatzeinschub von Strg+M gehoert
+   */
+  private boolean isCtrlMParagraphInsert(KeyEvent event) {
+    if (!suppressNextCtrlMParagraphInsert) {
+      return false;
+    }
+    String character = event.getCharacter();
+    return "\r".equals(character) || "\n".equals(character);
+  }
+
   private int parsePositiveInt(String value, int fallback) {
     try {
       return Math.max(1, Integer.parseInt(value));
@@ -277,6 +361,7 @@ public class NoteEditorPane extends VBox {
 
   private void insertImageViaFileChooser() {
     FileChooser chooser = new FileChooser();
+    chooser.setInitialDirectory(EditorImageAssetService.ensureImageDirectory().toFile());
     chooser.setTitle("Bild auswählen");
     chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter(
         "Bilddateien",
@@ -289,6 +374,143 @@ public class NoteEditorPane extends VBox {
     Path imagePath = selected.toPath().toAbsolutePath().normalize();
     if (EditorImageAssetService.isSupportedImageFile(imagePath)) {
       webBodyEditor.insertImage(imagePath.toUri().toString());
+    }
+  }
+
+  /**
+   * Oeffnet das Sonder-Popup des Bildbuttons fuer Drag-and-Drop-Importe in den Bildordner.
+   *
+   * @param screenPosition Position unterhalb des Bildbuttons in Bildschirmkoordinaten
+   */
+  private void showImageDropPopup(Point2D screenPosition) {
+    if (imageDropPopup != null) {
+      imageDropPopup.hide();
+    }
+
+    Popup popup = new Popup();
+    popup.setAutoHide(false);
+    VBox root = new VBox(8);
+    root.getStyleClass().add("note-image-drop-popup");
+    root.setPadding(new Insets(10));
+    root.setPrefWidth(360);
+
+    Label title = new Label("Bilder hier ablegen");
+    title.getStyleClass().add("note-image-drop-title");
+    Button close = new Button("schließen");
+    close.setFocusTraversable(false);
+    Region titleSpacer = new Region();
+    HBox.setHgrow(titleSpacer, Priority.ALWAYS);
+    HBox titleRow = new HBox(8, title, titleSpacer, close);
+    titleRow.setAlignment(Pos.CENTER_LEFT);
+
+    Label status = new Label("Noch keine Bilder ausgewählt");
+    status.getStyleClass().add("note-image-drop-status");
+
+    ObservableList<Path> droppedImages = FXCollections.observableArrayList();
+    ListView<Path> imageList = new ListView<>(droppedImages);
+    imageList.setPrefHeight(140);
+
+    Button copy = new Button("kopieren");
+    Button move = new Button("verschieben");
+    copy.disableProperty().bind(Bindings.isEmpty(droppedImages));
+    move.disableProperty().bind(Bindings.isEmpty(droppedImages));
+    HBox actions = new HBox(8, copy, move);
+    actions.setAlignment(Pos.CENTER_RIGHT);
+
+    root.getChildren().addAll(titleRow, imageList, status, actions);
+    root.setOnDragOver(event -> handleImageDropDragOver(event));
+    root.setOnDragDropped(event -> handleImageDrop(event, droppedImages, status));
+    copy.setOnAction(_ -> transferDroppedImages(droppedImages, status, false, popup));
+    move.setOnAction(_ -> transferDroppedImages(droppedImages, status, true, popup));
+    close.setOnAction(_ -> popup.hide());
+
+    popup.getContent().setAll(root);
+    imageDropPopup = popup;
+    double x = screenPosition == null ? 0.0 : screenPosition.getX();
+    double y = screenPosition == null ? 0.0 : screenPosition.getY();
+    if (getScene() == null) {
+      popup.show(this, x, y);
+    } else {
+      popup.show(getScene().getWindow(), x, y);
+    }
+  }
+
+  /**
+   * Akzeptiert Drag-Ereignisse, sobald mindestens eine unterstuetzte Bilddatei enthalten ist.
+   *
+   * @param event Drag-Ereignis
+   */
+  private void handleImageDropDragOver(DragEvent event) {
+    if (supportedImageFiles(event.getDragboard()).isEmpty()) {
+      return;
+    }
+    event.acceptTransferModes(TransferMode.COPY);
+    event.consume();
+  }
+
+  /**
+   * Uebernimmt abgelegte Bilddateien in die Popup-Liste, ohne sie in den Zettel einzufuegen.
+   *
+   * @param event Drag-Drop-Ereignis
+   * @param droppedImages bisher gesammelte Bilddateien
+   * @param status Statusanzeige
+   */
+  private void handleImageDrop(DragEvent event, ObservableList<Path> droppedImages, Label status) {
+    List<Path> files = supportedImageFiles(event.getDragboard());
+    if (files.isEmpty()) {
+      event.setDropCompleted(false);
+      event.consume();
+      status.setText("Keine unterstützten Bilddateien abgelegt");
+      return;
+    }
+    droppedImages.addAll(files);
+    status.setText(droppedImages.size() + " Bild(er) vorgemerkt");
+    event.setDropCompleted(true);
+    event.consume();
+  }
+
+  /**
+   * Liefert die unterstuetzten Bilddateien eines Dragboards.
+   *
+   * @param dragboard Dragboard
+   * @return Bilddateien aus dem Dragboard
+   */
+  private List<Path> supportedImageFiles(Dragboard dragboard) {
+    if (dragboard == null || !dragboard.hasFiles()) {
+      return List.of();
+    }
+    List<Path> supported = new ArrayList<>();
+    for (java.io.File file : dragboard.getFiles()) {
+      Path path = file.toPath().toAbsolutePath().normalize();
+      if (EditorImageAssetService.isSupportedImageFile(path)) {
+        supported.add(path);
+      }
+    }
+    return supported;
+  }
+
+  /**
+   * Kopiert oder verschiebt alle im Popup gesammelten Bilder in den Bildordner.
+   *
+   * @param droppedImages gesammelte Bilddateien
+   * @param status Statusanzeige
+   * @param move ob verschoben statt kopiert wird
+   * @param popup Popup, das fuer den manuellen Abschluss offen bleibt
+   */
+  private void transferDroppedImages(ObservableList<Path> droppedImages, Label status, boolean move, Popup popup) {
+    try {
+      int count = droppedImages.size();
+      for (Path image : List.copyOf(droppedImages)) {
+        if (move) {
+          EditorImageAssetService.moveIntoImageDirectory(image);
+        } else {
+          EditorImageAssetService.copyIntoImageDirectory(image);
+        }
+      }
+      droppedImages.clear();
+      status.setText(count + " Bild(er) " + (move ? "verschoben" : "kopiert"));
+    } catch (RuntimeException exception) {
+      status.setText(exception.getMessage() == null ? "Bildtransfer fehlgeschlagen" : exception.getMessage());
     }
   }
 

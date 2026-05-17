@@ -16,6 +16,7 @@ import javafx.scene.layout.Region;
 
 import java.util.*;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 public class KeywordsTablePane extends BorderPane {
 
@@ -29,6 +30,7 @@ public class KeywordsTablePane extends BorderPane {
   private final TableColumn<Row, String> colKeyword = new TableColumn<>();
   private final TableColumn<Row, String> colCount = new TableColumn<>();
   private Function<KeywordSuggestionRequest, List<String>> keywordSuggestionProvider = request -> List.of();
+  private Predicate<String> keyFilterTransferHandler = _ -> false;
   private boolean prefixSearchMode;
   private boolean tokenAndSearchMode;
   private int pendingEditorTextRow = -1;
@@ -238,8 +240,7 @@ public class KeywordsTablePane extends BorderPane {
 
         // Enter commit
         textField.setOnAction(e -> {
-          hideSuggestions();
-          commitEdit(textField.getText());
+          commitAndEditTrailingEmptyRow();
         });
 
         // Klick woanders hin / Fokus weg => commit (statt cancel)
@@ -396,13 +397,21 @@ public class KeywordsTablePane extends BorderPane {
     private void handleEditorKeyPressed(KeyEvent event) {
       if (event.getCode() == KeyCode.HOME) {
         prefixSearchMode = !prefixSearchMode;
+        if (prefixSearchMode) {
+          tokenAndSearchMode = false;
+        }
         updateEditorSearchModeStyle();
         refreshSuggestions(textField.getText());
         event.consume();
         return;
       }
-      if (event.isAltDown() && event.getCode() == KeyCode.DOWN) {
+      if (event.isAltDown() && event.getCode() == KeyCode.X) {
         toggleTokenAndSearchMode();
+        event.consume();
+        return;
+      }
+      if (event.isAltDown() && event.getCode() == KeyCode.S) {
+        transferEditorTextToKeyFilter();
         event.consume();
         return;
       }
@@ -432,6 +441,11 @@ public class KeywordsTablePane extends BorderPane {
         event.consume();
         return;
       }
+      if (event.getCode() == KeyCode.ENTER) {
+        commitAndEditTrailingEmptyRow();
+        event.consume();
+        return;
+      }
       if (event.getCode() == KeyCode.ESCAPE) {
         if (suggestionMenu != null && suggestionMenu.isShowing()) {
           leaveSuggestionSelection();
@@ -457,7 +471,7 @@ public class KeywordsTablePane extends BorderPane {
      * @param event Tastaturereignis im Vorschlagsmenue
      */
     private void handleSuggestionMenuKeyPressed(KeyEvent event) {
-      if (event.isAltDown() && event.getCode() == KeyCode.DOWN) {
+      if (event.isAltDown() && event.getCode() == KeyCode.X) {
         toggleTokenAndSearchMode();
         event.consume();
         return;
@@ -485,7 +499,7 @@ public class KeywordsTablePane extends BorderPane {
      * @param event Tastaturereignis
      */
     private void handleSuggestionNodeKeyPressed(KeyEvent event) {
-      if (event.isAltDown() && event.getCode() == KeyCode.DOWN) {
+      if (event.isAltDown() && event.getCode() == KeyCode.X) {
         toggleTokenAndSearchMode();
         event.consume();
         return;
@@ -519,9 +533,35 @@ public class KeywordsTablePane extends BorderPane {
      */
     private void toggleTokenAndSearchMode() {
       tokenAndSearchMode = !tokenAndSearchMode;
+      if (tokenAndSearchMode) {
+        prefixSearchMode = false;
+      }
       clearSuggestionFocus();
       updateEditorSearchModeStyle();
       refreshSuggestions(textField.getText());
+    }
+
+    /**
+     * Uebergibt die aktuelle Eingabe an das KEY-Filterfeld und beendet die Bearbeitung nur,
+     * wenn die Uebergabe angenommen wurde.
+     */
+    private void transferEditorTextToKeyFilter() {
+      String transferText = textField == null ? "" : textField.getText();
+      if (!keyFilterTransferHandler.test(transferText == null ? "" : transferText)) {
+        return;
+      }
+
+      hideSuggestions();
+      cancelEdit();
+    }
+
+    /**
+     * Speichert die aktuelle Eingabe und oeffnet danach die letzte leere Schlagwortzeile.
+     */
+    private void commitAndEditTrailingEmptyRow() {
+      hideSuggestions();
+      commitEdit(textField.getText());
+      javafx.application.Platform.runLater(this::editTrailingEmptyRow);
     }
 
     /**
@@ -739,6 +779,17 @@ public class KeywordsTablePane extends BorderPane {
       table.scrollTo(row);
       table.edit(row, colKeyword);
     }
+
+    /**
+     * Oeffnet die garantiert vorhandene leere Schlusszeile.
+     */
+    private void editTrailingEmptyRow() {
+      normalizeRows();
+      int row = items.size() - 1;
+      table.getSelectionModel().clearAndSelect(row, colKeyword);
+      table.scrollTo(row);
+      table.edit(row, colKeyword);
+    }
   }
 
   /**
@@ -749,6 +800,16 @@ public class KeywordsTablePane extends BorderPane {
    */
   public void setKeywordSuggestionProvider(Function<KeywordSuggestionRequest, List<String>> provider) {
     this.keywordSuggestionProvider = (provider == null) ? request -> List.of() : provider;
+  }
+
+  /**
+   * Setzt den Callback fuer Alt+S-Uebergaben aus der Schlagwortliste an das KEY-Filterfeld.
+   *
+   * @param handler Callback mit dem aktuellen Editorinhalt; liefert {@code true}, wenn die
+   *                Uebergabe angenommen wurde
+   */
+  public void setOnKeyFilterTransferRequested(Predicate<String> handler) {
+    this.keyFilterTransferHandler = handler == null ? _ -> false : handler;
   }
 
   public void setOnKeywordsCommitted(Runnable r) {

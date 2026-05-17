@@ -261,6 +261,7 @@ public class ZettelWindowController {
       view.clearKeyActionStatus();
     });
     view.getKeywordsTablePane().setKeywordSuggestionProvider(this::loadKeywordSuggestionsForInlineEdit);
+    view.getKeywordsTablePane().setOnKeyFilterTransferRequested(this::copyKeywordEditorTextToKeyFilterIfOpen);
     view.setKeyAltClickHandler(this::addKeywordToCurrentNote);
 
     wireBottomToolbar();
@@ -1403,6 +1404,8 @@ public class ZettelWindowController {
   }
 
   private void wireBodyEditingAndContextMenu(NoteEditorPane editor) {
+    editor.getWebBodyEditor().setOnKeyFilterTextRequested(this::copyBodySelectionToKeyFilterIfOpen);
+
     editor.getBodyContainer().addEventHandler(MouseEvent.MOUSE_PRESSED, _ -> {
       if (!editor.getBodyContainer().getStyleClass().contains("note-body-active")) {
         editor.getBodyContainer().getStyleClass().add("note-body-active");
@@ -1454,6 +1457,45 @@ public class ZettelWindowController {
         editor.getFormattingContextMenu().hide();
       }
     });
+  }
+
+  /**
+   * Uebernimmt den per Alt+S markierten Body-Text in das KEY-Filterfeld,
+   * sofern das KEY-Fenster sichtbar geoeffnet ist, und startet danach die Filterung.
+   *
+   * @param text ausgewaehlter Text bis zum ersten Zeilenumbruch
+   */
+  private void copyBodySelectionToKeyFilterIfOpen(String text) {
+    copyTextToKeyFilterIfOpen(text == null ? "" : text.trim());
+  }
+
+  /**
+   * Uebernimmt den per Alt+S eingegebenen Schlagworttext in das KEY-Filterfeld,
+   * sofern das KEY-Fenster sichtbar geoeffnet ist, und startet danach die Filterung.
+   *
+   * @param text aktueller Text des Schlagwort-Editors
+   * @return {@code true}, wenn das KEY-Filterfeld sichtbar war und die Uebergabe angenommen wurde
+   */
+  private boolean copyKeywordEditorTextToKeyFilterIfOpen(String text) {
+    return copyTextToKeyFilterIfOpen(text == null ? "" : text);
+  }
+
+  /**
+   * Uebernimmt Text in das KEY-Filterfeld, falls das KEY-Fenster sichtbar ist.
+   *
+   * @param filterText Filtertext
+   * @return {@code true}, wenn der Text uebernommen wurde
+   */
+  private boolean copyTextToKeyFilterIfOpen(String filterText) {
+    if (view.isServiceAreaCollapsed()
+        || view.getActiveServiceAreaMode() != ZettelWindowView.ServiceAreaMode.KEY) {
+      return false;
+    }
+
+    view.getKeyFilterField().setText(filterText);
+    refreshKeyWindow();
+    view.clearKeyActionStatus();
+    return true;
   }
 
   /**

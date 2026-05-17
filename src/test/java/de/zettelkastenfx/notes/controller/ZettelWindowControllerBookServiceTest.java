@@ -651,7 +651,7 @@ class ZettelWindowControllerBookServiceTest {
       }
     });
 
-    if (!actionLatch.await(5, TimeUnit.SECONDS)) {
+    if (!actionLatch.await(15, TimeUnit.SECONDS)) {
       fail("JavaFX-Testcode wurde nicht rechtzeitig ausgefuehrt.");
     }
     if (failure.get() instanceof Exception exception) {

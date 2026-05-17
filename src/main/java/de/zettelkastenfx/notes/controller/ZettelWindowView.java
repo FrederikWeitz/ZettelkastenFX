@@ -1349,6 +1349,7 @@ public class ZettelWindowView {
 
     noteEditorPane = new NoteEditorPane();
     noteEditorPane.getStyleClass().add("zettel-work-pane");
+    noteEditorPane.setBibliographyVisible(bottomToolbar.bookToggle().isSelected());
 
     keywordsTablePane = new KeywordsTablePane();
     keywordsTablePane.getStyleClass().add("zettel-work-pane");

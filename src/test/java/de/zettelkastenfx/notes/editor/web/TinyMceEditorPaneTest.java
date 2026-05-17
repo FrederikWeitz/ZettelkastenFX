@@ -1,8 +1,11 @@
 package de.zettelkastenfx.notes.editor.web;
 
 import de.zettelkastenfx.fx.config.ExternalStylesheetService;
+import de.zettelkastenfx.notes.editor.NoteEditorPane;
 import javafx.application.Platform;
 import javafx.scene.Scene;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
 import javafx.stage.Stage;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -637,6 +640,74 @@ class TinyMceEditorPaneTest {
   }
 
   /**
+   * Markiert ein angeklicktes Bild temporaer und entfernt es mit der Entf-Taste,
+   * ohne die Markierungsklasse im gespeicherten HTML zu persistieren.
+   *
+   * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
+   */
+  @Test
+  void clickedImageIsSelectedAndDeleteRemovesItWithoutPersistingSelectionClass() throws Exception {
+    AtomicReference<TinyMceEditorPane> editorRef = new AtomicReference<>();
+    AtomicReference<Stage> stageRef = new AtomicReference<>();
+    runOnFxThread(() -> {
+      TinyMceEditorPane editor = new TinyMceEditorPane();
+      Stage stage = new Stage();
+      stage.setScene(new Scene(editor, 640, 420));
+      stage.show();
+      editorRef.set(editor);
+      stageRef.set(stage);
+    });
+    TinyMceEditorPane editor = editorRef.get();
+    assertNotNull(editor);
+
+    try {
+      waitUntilFx(() -> Boolean.TRUE.equals(editor.getWebView().getEngine().executeScript(
+          "Boolean(window.zkfxSetContent && window.zkfxUseFallback)"
+      )));
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("window.zkfxUseFallback();"));
+      runOnFxThread(() -> editor.setHtmlContent("<p>Alpha</p><p><img src=\"image/bild.png\"></p><p>Beta</p>"));
+      waitUntilFx(() -> editor.getHtmlContent().contains("image/bild.png"));
+
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("""
+          const image = document.querySelector('#fallbackEditor img');
+          image.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          """));
+
+      AtomicReference<Boolean> selectedRef = new AtomicReference<>();
+      AtomicReference<String> serializedRef = new AtomicReference<>();
+      runOnFxThread(() -> {
+        selectedRef.set(Boolean.TRUE.equals(editor.getWebView().getEngine().executeScript(
+            "document.querySelector('#fallbackEditor img').classList.contains('zkfx-selected-image')"
+        )));
+        serializedRef.set(editor.getHtmlContent());
+      });
+
+      assertTrue(selectedRef.get());
+      assertFalse(serializedRef.get().contains("zkfx-selected-image"), serializedRef.get());
+
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("""
+          document.getElementById('fallbackEditor').dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Delete',
+            keyCode: 46,
+            which: 46,
+            bubbles: true,
+            cancelable: true
+          }));
+          """));
+
+      AtomicReference<String> htmlRef = new AtomicReference<>();
+      runOnFxThread(() -> htmlRef.set(editor.getHtmlContent()));
+      String html = htmlRef.get();
+
+      assertFalse(html.contains("<img"), html);
+      assertTrue(html.contains("<p>Alpha</p>"), html);
+      assertTrue(html.contains("<p>Beta</p>"), html);
+    } finally {
+      runOnFxThread(() -> stageRef.get().close());
+    }
+  }
+
+  /**
    * H1 setzt ein echtes h1-Tag und wandelt es bei erneutem Befehl wieder in p zurueck.
    *
    * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
@@ -725,6 +796,521 @@ class TinyMceEditorPaneTest {
     }
   }
 
+  /**
+   * Inline-Formatierungen werden als span-Klassen gespeichert, nicht als native HTML-Format-Tags.
+   *
+   * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
+   */
+  @Test
+  void inlineFormattingCommandsWriteConfiguredCssClasses() throws Exception {
+    AtomicReference<TinyMceEditorPane> editorRef = new AtomicReference<>();
+    AtomicReference<Stage> stageRef = new AtomicReference<>();
+    runOnFxThread(() -> {
+      TinyMceEditorPane editor = new TinyMceEditorPane();
+      Stage stage = new Stage();
+      stage.setScene(new Scene(editor, 640, 420));
+      stage.show();
+      editorRef.set(editor);
+      stageRef.set(stage);
+    });
+    TinyMceEditorPane editor = editorRef.get();
+    assertNotNull(editor);
+
+    try {
+      waitUntilFx(() -> Boolean.TRUE.equals(editor.getWebView().getEngine().executeScript(
+          "Boolean(window.zkfxSetContent && window.zkfxUseFallback)"
+      )));
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("window.zkfxUseFallback();"));
+
+      assertInlineClassCommand(editor, "bold", "b");
+      assertInlineClassCommand(editor, "italic", "i");
+      assertInlineClassCommand(editor, "underline", "u");
+      assertInlineClassCommand(editor, "strike", "x");
+    } finally {
+      runOnFxThread(() -> stageRef.get().close());
+    }
+  }
+
+  /**
+   * TinyMCE registriert die Inline-Formate als span-Klassen aus der Editor-CSS.
+   *
+   * @throws Exception bei Dateifehlern
+   */
+  @Test
+  void tinyMceInlineFormatsUseConfiguredCssClasses() throws Exception {
+    String source = Files.readString(Path.of(
+        "src/main/java/de/zettelkastenfx/notes/editor/web/TinyMceEditorPane.java"
+    ));
+
+    assertTrue(source.contains("editor.formatter.register('zkBold'"), source);
+    assertTrue(source.contains("classes: 'b'"), source);
+    assertTrue(source.contains("editor.formatter.register('zkItalic'"), source);
+    assertTrue(source.contains("classes: 'i'"), source);
+    assertTrue(source.contains("editor.formatter.register('zkUnderline'"), source);
+    assertTrue(source.contains("classes: 'u'"), source);
+    assertTrue(source.contains("editor.formatter.register('zkStrike'"), source);
+    assertTrue(source.contains("classes: 'x'"), source);
+    assertFalse(source.contains("editor.addShortcut("), source);
+    assertFalse(source.contains("execCommand('Bold'"), source);
+    assertFalse(source.contains("execCommand('Italic'"), source);
+    assertFalse(source.contains("execCommand('Underline'"), source);
+    assertFalse(source.contains("execCommand('Strikethrough'"), source);
+  }
+
+  /**
+   * NoteEditorPane leitet Strg+D ueber denselben Formatbefehlspfad wie das Formatierfenster.
+   *
+   * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
+   */
+  @Test
+  void noteEditorPaneCtrlDShortcutUsesSharedFormatCommandPath() throws Exception {
+    AtomicReference<NoteEditorPane> editorRef = new AtomicReference<>();
+    AtomicReference<Stage> stageRef = new AtomicReference<>();
+    runOnFxThread(() -> {
+      NoteEditorPane editor = new NoteEditorPane();
+      Stage stage = new Stage();
+      stage.setScene(new Scene(editor, 640, 420));
+      stage.show();
+      editorRef.set(editor);
+      stageRef.set(stage);
+    });
+    NoteEditorPane editor = editorRef.get();
+    assertNotNull(editor);
+
+    try {
+      TinyMceEditorPane webEditor = editor.getWebBodyEditor();
+      waitUntilFx(() -> Boolean.TRUE.equals(webEditor.getWebView().getEngine().executeScript(
+          "Boolean(window.zkfxSetContent && window.zkfxUseFallback)"
+      )));
+      runOnFxThread(() -> webEditor.getWebView().getEngine().executeScript("window.zkfxUseFallback();"));
+      runOnFxThread(() -> editor.setBodyHtml("<p>Alpha</p>"));
+      waitUntilFx(() -> editor.getBodyHtml().contains("Alpha"));
+
+      selectFallbackTextRange(webEditor, "p", 0, 0);
+      runOnFxThread(() -> webEditor.getWebView().fireEvent(new KeyEvent(
+          KeyEvent.KEY_PRESSED,
+          "",
+          "",
+          KeyCode.D,
+          false,
+          true,
+          false,
+          false
+      )));
+
+      AtomicReference<String> htmlRef = new AtomicReference<>();
+      AtomicReference<String> selectionRef = new AtomicReference<>();
+      runOnFxThread(() -> htmlRef.set(editor.getBodyHtml()));
+      runOnFxThread(() -> selectionRef.set(String.valueOf(webEditor.getWebView().getEngine().executeScript(
+          "window.getSelection().toString()"
+      ))));
+      String html = htmlRef.get();
+
+      assertTrue(html.contains("<span class=\"x\">Alpha</span>"), html);
+      assertEquals("Alpha", selectionRef.get());
+    } finally {
+      runOnFxThread(() -> stageRef.get().close());
+    }
+  }
+
+  /**
+   * Ein Absatzformat wirkt bei gesetztem Cursor auf den aktuellen Absatz.
+   *
+   * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
+   */
+  @Test
+  void paragraphFormattingAppliesToCurrentParagraphWhenSelectionIsCollapsed() throws Exception {
+    AtomicReference<TinyMceEditorPane> editorRef = new AtomicReference<>();
+    AtomicReference<Stage> stageRef = new AtomicReference<>();
+    runOnFxThread(() -> {
+      TinyMceEditorPane editor = new TinyMceEditorPane();
+      Stage stage = new Stage();
+      stage.setScene(new Scene(editor, 640, 420));
+      stage.show();
+      editorRef.set(editor);
+      stageRef.set(stage);
+    });
+    TinyMceEditorPane editor = editorRef.get();
+    assertNotNull(editor);
+
+    try {
+      waitUntilFx(() -> Boolean.TRUE.equals(editor.getWebView().getEngine().executeScript(
+          "Boolean(window.zkfxSetContent && window.zkfxUseFallback)"
+      )));
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("window.zkfxUseFallback();"));
+      runOnFxThread(() -> editor.setHtmlContent("<p>Alpha</p><p>Beta</p>"));
+      waitUntilFx(() -> editor.getHtmlContent().contains("Beta"));
+
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("""
+          const fallback = document.getElementById('fallbackEditor');
+          const text = fallback.querySelectorAll('p')[1].firstChild;
+          const range = document.createRange();
+          range.setStart(text, 2);
+          range.collapse(true);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          """));
+      runOnFxThread(() -> editor.executeCommand("align", "right"));
+
+      AtomicReference<String> htmlRef = new AtomicReference<>();
+      AtomicReference<String> cursorRef = new AtomicReference<>();
+      runOnFxThread(() -> htmlRef.set(editor.getHtmlContent()));
+      runOnFxThread(() -> cursorRef.set(String.valueOf(editor.getWebView().getEngine().executeScript("""
+          (() => {
+            const selection = window.getSelection();
+            if (!selection || selection.rangeCount === 0) return '';
+            const range = selection.getRangeAt(0);
+            return range.collapsed + ':' + range.startContainer.nodeValue + ':' + range.startOffset;
+          })();
+          """))));
+      String html = htmlRef.get();
+
+      assertTrue(html.contains("<p>Alpha</p>"), html);
+      assertTrue(html.contains("<p class=\"r\">Beta</p>"), html);
+      assertEquals("true:Beta:2", cursorRef.get());
+    } finally {
+      runOnFxThread(() -> stageRef.get().close());
+    }
+  }
+
+  /**
+   * Strg+M zentriert den aktuellen Absatz, ohne an der Cursorposition Text einzufuegen.
+   *
+   * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
+   */
+  @Test
+  void ctrlMCenterShortcutDoesNotInsertBlankAtCursor() throws Exception {
+    AtomicReference<NoteEditorPane> editorRef = new AtomicReference<>();
+    AtomicReference<Stage> stageRef = new AtomicReference<>();
+    runOnFxThread(() -> {
+      NoteEditorPane editor = new NoteEditorPane();
+      Stage stage = new Stage();
+      stage.setScene(new Scene(editor, 640, 420));
+      stage.show();
+      editorRef.set(editor);
+      stageRef.set(stage);
+    });
+    NoteEditorPane editor = editorRef.get();
+    assertNotNull(editor);
+
+    try {
+      TinyMceEditorPane webEditor = editor.getWebBodyEditor();
+      waitUntilFx(() -> Boolean.TRUE.equals(webEditor.getWebView().getEngine().executeScript(
+          "Boolean(window.zkfxSetContent && window.zkfxUseFallback)"
+      )));
+      runOnFxThread(() -> webEditor.getWebView().getEngine().executeScript("window.zkfxUseFallback();"));
+      runOnFxThread(() -> editor.setBodyHtml("<p>Alpha</p>"));
+      waitUntilFx(() -> editor.getBodyHtml().contains("Alpha"));
+
+      runOnFxThread(() -> webEditor.getWebView().getEngine().executeScript("""
+          const text = document.querySelector('#fallbackEditor p').firstChild;
+          const range = document.createRange();
+          range.setStart(text, 2);
+          range.collapse(true);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          """));
+      runOnFxThread(() -> webEditor.getWebView().fireEvent(new KeyEvent(
+          KeyEvent.KEY_PRESSED,
+          "",
+          "",
+          KeyCode.M,
+          false,
+          true,
+          false,
+          false
+      )));
+      runOnFxThread(() -> {
+        KeyEvent typedEvent = new KeyEvent(
+            KeyEvent.KEY_TYPED,
+            "\r",
+            "",
+            KeyCode.UNDEFINED,
+            false,
+            true,
+            false,
+            false
+        );
+        webEditor.getWebView().fireEvent(typedEvent);
+      });
+      AtomicReference<Boolean> domShortcutPreventedRef = new AtomicReference<>();
+      runOnFxThread(() -> domShortcutPreventedRef.set(Boolean.TRUE.equals(
+          webEditor.getWebView().getEngine().executeScript("""
+              (() => {
+                const fallback = document.getElementById('fallbackEditor');
+                const down = new KeyboardEvent('keydown', {
+                  key: '', code: 'KeyM', ctrlKey: true, bubbles: true, cancelable: true
+                });
+                const press = new KeyboardEvent('keypress', {
+                  key: 'Enter', keyCode: 13, which: 13, charCode: 13,
+                  ctrlKey: true, bubbles: true, cancelable: true
+                });
+                const input = typeof InputEvent === 'function'
+                    ? new InputEvent('beforeinput', {
+                        inputType: 'insertParagraph', bubbles: true, cancelable: true
+                      })
+                    : new Event('beforeinput', { bubbles: true, cancelable: true });
+                fallback.dispatchEvent(down);
+                fallback.dispatchEvent(press);
+                fallback.dispatchEvent(input);
+                return down.defaultPrevented && press.defaultPrevented && input.defaultPrevented;
+              })();
+              """))));
+
+      AtomicReference<String> htmlRef = new AtomicReference<>();
+      AtomicReference<String> cursorRef = new AtomicReference<>();
+      runOnFxThread(() -> htmlRef.set(editor.getBodyHtml()));
+      runOnFxThread(() -> cursorRef.set(fallbackCursorSummary(webEditor)));
+
+      assertTrue(htmlRef.get().contains("<p class=\"m\">Alpha</p>"), htmlRef.get());
+      assertFalse(htmlRef.get().contains("Al pha"), htmlRef.get());
+      assertFalse(htmlRef.get().contains("<p class=\"m\">Al</p><p>pha</p>"), htmlRef.get());
+      assertTrue(domShortcutPreventedRef.get(), "Strg+M muss auch im DOM als nativer Shortcut verhindert werden");
+      assertEquals("true:Alpha:2", cursorRef.get());
+    } finally {
+      runOnFxThread(() -> stageRef.get().close());
+    }
+  }
+
+  /**
+   * H1 und H2 behalten bei kollabierter Auswahl die Cursorposition im Text.
+   *
+   * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
+   */
+  @Test
+  void headingCommandsKeepCollapsedCursorOffset() throws Exception {
+    AtomicReference<TinyMceEditorPane> editorRef = new AtomicReference<>();
+    AtomicReference<Stage> stageRef = new AtomicReference<>();
+    runOnFxThread(() -> {
+      TinyMceEditorPane editor = new TinyMceEditorPane();
+      Stage stage = new Stage();
+      stage.setScene(new Scene(editor, 640, 420));
+      stage.show();
+      editorRef.set(editor);
+      stageRef.set(stage);
+    });
+    TinyMceEditorPane editor = editorRef.get();
+    assertNotNull(editor);
+
+    try {
+      waitUntilFx(() -> Boolean.TRUE.equals(editor.getWebView().getEngine().executeScript(
+          "Boolean(window.zkfxSetContent && window.zkfxUseFallback)"
+      )));
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("window.zkfxUseFallback();"));
+
+      assertHeadingKeepsCursor(editor, "h1", "<h1>Alpha</h1>");
+      assertHeadingKeepsCursor(editor, "h2", "<h2>Alpha</h2>");
+    } finally {
+      runOnFxThread(() -> stageRef.get().close());
+    }
+  }
+
+  /**
+   * Eine Teilauswahl ueber mehrere Absaetze formatiert jeden beruehrten Absatz.
+   *
+   * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
+   */
+  @Test
+  void paragraphFormattingAppliesToEveryPartlySelectedParagraph() throws Exception {
+    AtomicReference<TinyMceEditorPane> editorRef = new AtomicReference<>();
+    AtomicReference<Stage> stageRef = new AtomicReference<>();
+    runOnFxThread(() -> {
+      TinyMceEditorPane editor = new TinyMceEditorPane();
+      Stage stage = new Stage();
+      stage.setScene(new Scene(editor, 640, 420));
+      stage.show();
+      editorRef.set(editor);
+      stageRef.set(stage);
+    });
+    TinyMceEditorPane editor = editorRef.get();
+    assertNotNull(editor);
+
+    try {
+      waitUntilFx(() -> Boolean.TRUE.equals(editor.getWebView().getEngine().executeScript(
+          "Boolean(window.zkfxSetContent && window.zkfxUseFallback)"
+      )));
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("window.zkfxUseFallback();"));
+      runOnFxThread(() -> editor.setHtmlContent("<p>Alpha</p><p>Beta</p><p>Gamma</p>"));
+      waitUntilFx(() -> editor.getHtmlContent().contains("Gamma"));
+
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("""
+          const fallback = document.getElementById('fallbackEditor');
+          const paragraphs = fallback.querySelectorAll('p');
+          const range = document.createRange();
+          range.setStart(paragraphs[0].firstChild, 2);
+          range.setEnd(paragraphs[1].firstChild, 1);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          """));
+      runOnFxThread(() -> editor.executeCommand("citation", null));
+
+      AtomicReference<String> htmlRef = new AtomicReference<>();
+      runOnFxThread(() -> htmlRef.set(editor.getHtmlContent()));
+      String html = htmlRef.get();
+
+      assertTrue(html.contains("<p class=\"q\">Alpha</p>"), html);
+      assertTrue(html.contains("<p class=\"q\">Beta</p>"), html);
+      assertTrue(html.contains("<p>Gamma</p>"), html);
+    } finally {
+      runOnFxThread(() -> stageRef.get().close());
+    }
+  }
+
+  /**
+   * Alt+S uebergibt nur die erste Zeile der aktuellen Textauswahl an Java.
+   *
+   * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
+   */
+  @Test
+  void altSTransfersSelectedTextUntilFirstLineBreak() throws Exception {
+    AtomicReference<NoteEditorPane> editorRef = new AtomicReference<>();
+    AtomicReference<Stage> stageRef = new AtomicReference<>();
+    AtomicReference<String> transferredTextRef = new AtomicReference<>();
+    runOnFxThread(() -> {
+      NoteEditorPane editor = new NoteEditorPane();
+      editor.getWebBodyEditor().setOnKeyFilterTextRequested(transferredTextRef::set);
+      Stage stage = new Stage();
+      stage.setScene(new Scene(editor, 640, 420));
+      stage.show();
+      editorRef.set(editor);
+      stageRef.set(stage);
+    });
+    NoteEditorPane editor = editorRef.get();
+    assertNotNull(editor);
+
+    try {
+      TinyMceEditorPane webEditor = editor.getWebBodyEditor();
+      waitUntilFx(() -> Boolean.TRUE.equals(webEditor.getWebView().getEngine().executeScript(
+          "Boolean(window.zkfxSetContent && window.zkfxUseFallback)"
+      )));
+      runOnFxThread(() -> webEditor.getWebView().getEngine().executeScript("window.zkfxUseFallback();"));
+      runOnFxThread(() -> editor.setBodyHtml("<p>Alpha</p><p>Beta</p>"));
+      waitUntilFx(() -> editor.getBodyHtml().contains("Beta"));
+
+      selectFallbackTextRange(webEditor, "p", 0, 1);
+      runOnFxThread(() -> webEditor.getWebView().fireEvent(new KeyEvent(
+          KeyEvent.KEY_PRESSED,
+          "",
+          "",
+          KeyCode.S,
+          false,
+          false,
+          true,
+          false
+      )));
+
+      waitUntilFx(() -> "Alpha".equals(transferredTextRef.get()));
+    } finally {
+      runOnFxThread(() -> stageRef.get().close());
+    }
+  }
+
+  /**
+   * Per Strg+V eingefuegter Klartext wird absatzweise von mehrfachen Leerzeichen und Randzeichen bereinigt.
+   *
+   * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
+   */
+  @Test
+  void fallbackPasteCleansPlainTextParagraphs() throws Exception {
+    AtomicReference<TinyMceEditorPane> editorRef = new AtomicReference<>();
+    AtomicReference<Stage> stageRef = new AtomicReference<>();
+    runOnFxThread(() -> {
+      TinyMceEditorPane editor = new TinyMceEditorPane();
+      Stage stage = new Stage();
+      stage.setScene(new Scene(editor, 640, 420));
+      stage.show();
+      editorRef.set(editor);
+      stageRef.set(stage);
+    });
+    TinyMceEditorPane editor = editorRef.get();
+    assertNotNull(editor);
+
+    try {
+      waitUntilFx(() -> Boolean.TRUE.equals(editor.getWebView().getEngine().executeScript(
+          "Boolean(window.zkfxSetContent && window.zkfxUseFallback)"
+      )));
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("window.zkfxUseFallback();"));
+      runOnFxThread(() -> editor.setHtmlContent("<p><br></p>"));
+      waitUntilFx(() -> editor.getHtmlContent().contains("<p><br></p>"));
+
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("""
+          (() => {
+            const fallback = document.getElementById('fallbackEditor');
+            fallback.focus();
+            const range = document.createRange();
+            range.selectNodeContents(fallback);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            const event = new Event('paste', { bubbles: true, cancelable: true });
+            Object.defineProperty(event, 'clipboardData', {
+              value: {
+                getData: function(type) {
+                  if (type === 'text/html') return '';
+                  if (type === 'text/plain') return '  Alpha   Beta  \\n\\t Gamma    Delta ' + String.fromCharCode(8203);
+                  return '';
+                }
+              }
+            });
+            fallback.dispatchEvent(event);
+          })();
+          """));
+
+      AtomicReference<String> htmlRef = new AtomicReference<>();
+      runOnFxThread(() -> htmlRef.set(editor.getHtmlContent()));
+
+      assertTrue(htmlRef.get().contains("<p>Alpha Beta</p>"), htmlRef.get());
+      assertTrue(htmlRef.get().contains("<p>Gamma Delta</p>"), htmlRef.get());
+      assertFalse(htmlRef.get().contains("Alpha   Beta"), htmlRef.get());
+      assertFalse(htmlRef.get().contains("Gamma    Delta"), htmlRef.get());
+    } finally {
+      runOnFxThread(() -> stageRef.get().close());
+    }
+  }
+
+  /**
+   * HTML-Paste wird innerhalb vorhandener Absaetze bereinigt, ohne die Absatzstruktur zu verlieren.
+   *
+   * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
+   */
+  @Test
+  void pasteCleanupKeepsHtmlParagraphsAndTrimsEdges() throws Exception {
+    AtomicReference<TinyMceEditorPane> editorRef = new AtomicReference<>();
+    AtomicReference<Stage> stageRef = new AtomicReference<>();
+    runOnFxThread(() -> {
+      TinyMceEditorPane editor = new TinyMceEditorPane();
+      Stage stage = new Stage();
+      stage.setScene(new Scene(editor, 640, 420));
+      stage.show();
+      editorRef.set(editor);
+      stageRef.set(stage);
+    });
+    TinyMceEditorPane editor = editorRef.get();
+    assertNotNull(editor);
+
+    try {
+      waitUntilFx(() -> Boolean.TRUE.equals(editor.getWebView().getEngine().executeScript(
+          "Boolean(window.zkfxSetContent && window.zkfxUseFallback)"
+      )));
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("window.zkfxUseFallback();"));
+
+      AtomicReference<String> cleanedRef = new AtomicReference<>();
+      runOnFxThread(() -> cleanedRef.set(String.valueOf(editor.getWebView().getEngine().executeScript("""
+          window.zkfxCleanPastedHtml(
+            '<p>&nbsp; Alpha   <span>Beta&nbsp;</span></p>'
+            + '<p>' + String.fromCharCode(8203) + ' Gamma    Delta ' + String.fromCharCode(8203) + '</p>'
+          )
+          """))));
+
+      assertEquals("<p>Alpha <span>Beta</span></p><p>Gamma Delta</p>", cleanedRef.get());
+    } finally {
+      runOnFxThread(() -> stageRef.get().close());
+    }
+  }
+
   private static void waitUntilFx(FxBooleanSupplier condition) throws Exception {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
     while (System.nanoTime() < deadline) {
@@ -780,6 +1366,42 @@ class TinyMceEditorPaneTest {
         .replace("__END__", Integer.toString(end))));
   }
 
+  private static String fallbackCursorSummary(TinyMceEditorPane editor) {
+    return String.valueOf(editor.getWebView().getEngine().executeScript("""
+        (() => {
+          const selection = window.getSelection();
+          if (!selection || selection.rangeCount === 0) return '';
+          const range = selection.getRangeAt(0);
+          return range.collapsed + ':' + range.startContainer.nodeValue + ':' + range.startOffset;
+        })();
+        """));
+  }
+
+  private static void assertHeadingKeepsCursor(TinyMceEditorPane editor, String command, String expectedHtml) throws Exception {
+    runOnFxThread(() -> editor.setHtmlContent("<p>Alpha</p>"));
+    waitUntilFx(() -> editor.getHtmlContent().contains("Alpha"));
+    runOnFxThread(() -> editor.getWebView().getEngine().executeScript("""
+        (() => {
+        const text = document.querySelector('#fallbackEditor p').firstChild;
+        const range = document.createRange();
+        range.setStart(text, 2);
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        })();
+        """));
+    runOnFxThread(() -> editor.executeCommand(command, null));
+
+    AtomicReference<String> htmlRef = new AtomicReference<>();
+    AtomicReference<String> cursorRef = new AtomicReference<>();
+    runOnFxThread(() -> htmlRef.set(editor.getHtmlContent()));
+    runOnFxThread(() -> cursorRef.set(fallbackCursorSummary(editor)));
+
+    assertTrue(htmlRef.get().contains(expectedHtml), htmlRef.get());
+    assertEquals("true:Alpha:2", cursorRef.get());
+  }
+
   private static int countOccurrences(String text, String needle) {
     int count = 0;
     int index = 0;
@@ -788,6 +1410,26 @@ class TinyMceEditorPaneTest {
       index += needle.length();
     }
     return count;
+  }
+
+  private static void assertInlineClassCommand(TinyMceEditorPane editor, String command, String cssClass) throws Exception {
+    runOnFxThread(() -> editor.setHtmlContent("<p>Alpha</p>"));
+    waitUntilFx(() -> editor.getHtmlContent().contains("Alpha"));
+    selectFallbackTextRange(editor, "p", 0, 0);
+    runOnFxThread(() -> editor.executeCommand(command, null));
+
+    AtomicReference<String> htmlRef = new AtomicReference<>();
+    runOnFxThread(() -> htmlRef.set(editor.getHtmlContent()));
+    String html = htmlRef.get();
+
+    assertTrue(html.contains("<span class=\"" + cssClass + "\">Alpha</span>"), html);
+    assertFalse(html.contains("<b>"), html);
+    assertFalse(html.contains("<strong>"), html);
+    assertFalse(html.contains("<i>"), html);
+    assertFalse(html.contains("<em>"), html);
+    assertFalse(html.contains("<u>"), html);
+    assertFalse(html.contains("<strike>"), html);
+    assertFalse(html.contains("<s>"), html);
   }
 
   @FunctionalInterface

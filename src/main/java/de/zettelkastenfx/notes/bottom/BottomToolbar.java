@@ -33,6 +33,7 @@ public class BottomToolbar {
 
     btnBack.getStyleClass().add("nav-button");
     btnForward.getStyleClass().add("nav-button");
+    btnBook.setSelected(true);
 
     root.getChildren().addAll(
         lblZettel, txtNoteId,

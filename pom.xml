@@ -14,7 +14,7 @@
 
     <groupId>de.zettelkastenfx</groupId>
     <artifactId>zettelkastenfx</artifactId>
-    <version>0.3.0-SNAPSHOT</version>
+    <version>0.4.0-SNAPSHOT</version>
     <name>ZettelkastenFX</name>
     <description>Lokale Desktop-Anwendung zur Verwaltung von Zetteln</description>
 

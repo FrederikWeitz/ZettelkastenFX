@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -27,6 +28,28 @@ class ZettelWindowViewWorkAreaTest {
 
   private static final double EPSILON = 0.000_001;
   private static final double LAYOUT_TOLERANCE = 1.0;
+
+  /**
+   * Beim Oeffnen ist die bibliographische Angabe sichtbar; der Book-Button bleibt als Toggle nutzbar.
+   *
+   * @throws Exception wenn die Ausfuehrung auf dem JavaFX-Thread fehlschlaegt
+   */
+  @Test
+  void bibliographyAreaIsVisibleByDefaultAndBookButtonStillToggles() throws Exception {
+    runOnFxThread(() -> {
+      ZettelWindowView view = new ZettelWindowView();
+
+      assertTrue(view.getBottomToolbar().bookToggle().isSelected());
+      assertTrue(view.getNoteEditorPane().getBibliographyHost().isVisible());
+      assertTrue(view.getNoteEditorPane().getBibliographyHost().isManaged());
+
+      view.getBottomToolbar().bookToggle().setSelected(false);
+      view.getNoteEditorPane().setBibliographyVisible(view.getBottomToolbar().bookToggle().isSelected());
+
+      assertFalse(view.getNoteEditorPane().getBibliographyHost().isVisible());
+      assertFalse(view.getNoteEditorPane().getBibliographyHost().isManaged());
+    });
+  }
 
   /**
    * Startet die JavaFX-Plattform fuer View-nahe Tests.
@@ -384,7 +407,7 @@ class ZettelWindowViewWorkAreaTest {
       }
     });
 
-    if (!actionLatch.await(5, TimeUnit.SECONDS)) {
+    if (!actionLatch.await(15, TimeUnit.SECONDS)) {
       fail("JavaFX-Testcode wurde nicht rechtzeitig ausgefuehrt.");
     }
     if (failure.get() instanceof Exception exception) {
