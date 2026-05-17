@@ -9,10 +9,6 @@ import de.zettelkastenfx.notes.editor.media.EditorImageAssetService;
 import de.zettelkastenfx.notes.editor.table.EditorTableService;
 import de.zettelkastenfx.notes.model.Note;
 import de.zettelkastenfx.persistence.HtmlBodyCodec;
-import de.zettelkastenfx.persistence.InlineCssRtfxBlobCodec;
-import org.fxmisc.richtext.model.Paragraph;
-import org.fxmisc.richtext.model.StyledDocument;
-import org.fxmisc.richtext.model.StyledSegment;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -37,10 +33,6 @@ public class NoteBodyTextExtractor {
     }
 
     String codec = note.getBodyCodec() == null ? "" : note.getBodyCodec().trim();
-    if (InlineCssRtfxBlobCodec.CODEC_NAME.equals(codec)) {
-      return removeTrailingBlankLines(InlineCssRtfxBlobCodec.decodeFromGzipToPlainText(note.getBodyBlob()));
-    }
-
     if ("plain".equalsIgnoreCase(codec) || "text/plain".equalsIgnoreCase(codec)) {
       return removeTrailingBlankLines(new String(note.getBodyBlob(), StandardCharsets.UTF_8));
     }
@@ -64,10 +56,6 @@ public class NoteBodyTextExtractor {
     }
 
     String codec = note.getBodyCodec() == null ? "" : note.getBodyCodec().trim();
-    if (InlineCssRtfxBlobCodec.CODEC_NAME.equals(codec)) {
-      return removeTrailingBlankParagraphs(styledParagraphsFromRtfx(note.getBodyBlob()));
-    }
-
     String text = new String(note.getBodyBlob(), StandardCharsets.UTF_8);
     if (HtmlBodyCodec.CODEC_NAME.equals(codec)) {
       return removeTrailingBlankParagraphs(htmlBodyParser.parse(text));
@@ -113,43 +101,6 @@ public class NoteBodyTextExtractor {
         text.append(table.cell(row, column));
       }
     }
-  }
-
-  /**
-   * Dekodiert RTFX-GZIP in formatierte Exportabsaetze.
-   *
-   * @param bodyBlob gespeicherter Zettelinhalt
-   * @return formatierte Exportabsaetze
-   */
-  private List<ExportParagraph> styledParagraphsFromRtfx(byte[] bodyBlob) {
-    StyledDocument<String, String, String> document =
-        InlineCssRtfxBlobCodec.decodeFromGzipToStyledDocument(bodyBlob);
-    if (document == null) {
-      return List.of();
-    }
-
-    List<ExportParagraph> paragraphs = new ArrayList<>();
-    for (Paragraph<String, String, String> paragraph : document.getParagraphs()) {
-      String paragraphText = paragraph.getText();
-      if (EditorImageAssetService.isImageReferenceParagraph(paragraphText)) {
-        paragraphs.add(ExportParagraph.image(EditorImageAssetService.resolveReferencePath(paragraphText)));
-        continue;
-      }
-      if (EditorTableService.isTableReferenceParagraph(paragraphText)) {
-        paragraphs.add(tableParagraph(paragraphText));
-        continue;
-      }
-
-      List<ExportTextRun> runs = new ArrayList<>();
-      for (StyledSegment<String, String> segment : paragraph.getStyledSegments()) {
-        String text = segment.getSegment();
-        if (text != null && !text.isEmpty()) {
-          runs.add(new ExportTextRun(text, ExportTextStyle.fromInlineCss(segment.getStyle())));
-        }
-      }
-      paragraphs.add(new ExportParagraph(runs, ExportParagraphStyle.fromParagraphCss(paragraph.getParagraphStyle())));
-    }
-    return paragraphs;
   }
 
   /**

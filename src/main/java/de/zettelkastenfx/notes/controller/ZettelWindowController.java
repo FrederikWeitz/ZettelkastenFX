@@ -11,14 +11,12 @@ import de.zettelkastenfx.bibliography.ui.MediaManagementDialog;
 import de.zettelkastenfx.export.ui.ManualExportDialog;
 import de.zettelkastenfx.notes.controller.ZettelWindowView.KeyTableRow;
 import de.zettelkastenfx.notes.editor.NoteEditorPane;
-import de.zettelkastenfx.notes.editor.format.InlineCssStyleUtil;
 import de.zettelkastenfx.notes.editor.web.TinyMceContextMenuEvent;
 import de.zettelkastenfx.notes.keywords.KeywordsTablePane;
 import de.zettelkastenfx.notes.model.LinkType;
 import de.zettelkastenfx.notes.model.Note;
 import de.zettelkastenfx.notes.model.NoteLink;
 import de.zettelkastenfx.notes.model.NoteReferenceInfo;
-import de.zettelkastenfx.persistence.InlineCssRtfxBlobCodec;
 import de.zettelkastenfx.persistence.HtmlBodyCodec;
 import de.zettelkastenfx.persistence.NoteRepository;
 import javafx.animation.PauseTransition;
@@ -1405,8 +1403,6 @@ public class ZettelWindowController {
   }
 
   private void wireBodyEditingAndContextMenu(NoteEditorPane editor) {
-    editor.getBodyArea().setEditable(false);
-
     editor.getBodyContainer().addEventHandler(MouseEvent.MOUSE_PRESSED, _ -> {
       if (!editor.getBodyContainer().getStyleClass().contains("note-body-active")) {
         editor.getBodyContainer().getStyleClass().add("note-body-active");
@@ -5951,7 +5947,7 @@ public class ZettelWindowController {
   }
 
   /**
-   * Dekodiert den gespeicherten RichText-Inhalt eines Zettels in Plaintext.
+   * Dekodiert den gespeicherten HTML-Inhalt eines Zettels in Plaintext.
    *
    * @param note Zetteldaten
    * @return durchsuchbarer Text
@@ -5962,13 +5958,7 @@ public class ZettelWindowController {
     }
 
     try {
-      if (HtmlBodyCodec.CODEC_NAME.equals(note.bodyCodec)) {
-        return htmlToPlainText(new String(note.bodyBlob, StandardCharsets.UTF_8));
-      }
-      if (InlineCssRtfxBlobCodec.CODEC_NAME.equals(note.bodyCodec)) {
-        return InlineCssRtfxBlobCodec.decodeFromGzipToPlainText(note.bodyBlob);
-      }
-      return "";
+      return htmlToPlainText(new String(note.bodyBlob, StandardCharsets.UTF_8));
     } catch (Exception ex) {
       return "";
     }

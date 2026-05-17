@@ -47,7 +47,6 @@ public final class DbBootstrap {
                         .load();
 
     flyway.migrate();
-    new NotesWebMigrationService(ds).migrateIfNecessary();
     return ds;
   }
 

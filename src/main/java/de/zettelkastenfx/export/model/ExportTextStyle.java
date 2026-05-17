@@ -85,7 +85,7 @@ public record ExportTextStyle(
   /**
    * Erzeugt einen Exportstil aus einem Inline-CSS-String des Editors.
    *
-   * @param inlineCss Inline-CSS des RichTextFX-Segments
+   * @param inlineCss CSS-Fragment des Textbereichs
    * @return exportrelevanter Textstil
    */
   public static ExportTextStyle fromInlineCss(String inlineCss) {

@@ -3,9 +3,6 @@ package de.zettelkastenfx.notes.model;
 import de.zettelkastenfx.notes.editor.NoteEditorPane;
 import de.zettelkastenfx.notes.keywords.KeywordsTablePane;
 import de.zettelkastenfx.persistence.HtmlBodyCodec;
-import de.zettelkastenfx.persistence.InlineCssRtfxBlobCodec;
-import de.zettelkastenfx.notes.web.RichTextHtmlConverter;
-import org.fxmisc.richtext.InlineCssTextArea;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -162,11 +159,7 @@ public class Note {
                           KeywordsTablePane keywordsPane) {
     editor.commitBodySourceViewIfActive();
     setTitle(editor.getTitleEditorArea().getText());
-    if (editor.getBodyArea().getLength() > 0) {
-      captureBodyFrom(editor.getBodyArea());
-    } else {
-      captureBodyFrom(editor);
-    }
+    captureBodyFrom(editor);
 
     getKeywords().clear();
     getKeywords().addAll(keywordsPane.getKeywords());
@@ -183,11 +176,6 @@ public class Note {
   }
 
   // Body aus UI “einsammeln”
-  public void captureBodyFrom(InlineCssTextArea area) {
-    setBodyCodec(InlineCssRtfxBlobCodec.CODEC_NAME);
-    setBodyBlob(InlineCssRtfxBlobCodec.encodeToGzip(area));
-  }
-
   /**
    * Sammelt den HTML-Body aus dem WebView-Editor ein.
    *
@@ -199,16 +187,8 @@ public class Note {
   }
 
   // Body in UI “ausspielen”
-  public void applyBodyTo(InlineCssTextArea area) {
-    if (bodyBlob == null || bodyBlob.length == 0) {
-      area.clear();
-      return;
-    }
-    InlineCssRtfxBlobCodec.decodeFromGzipInto(area, bodyBlob);
-  }
-
   /**
-   * Spielt den Inhalt in den WebView-Editor aus. Alte RichTextFX-Blobs werden als Fallback konvertiert.
+   * Spielt den HTML-Inhalt in den WebView-Editor aus.
    *
    * @param editor Zettel-Editor
    */
@@ -219,12 +199,6 @@ public class Note {
     }
     if (HtmlBodyCodec.CODEC_NAME.equals(bodyCodec)) {
       editor.setBodyHtml(new String(bodyBlob, StandardCharsets.UTF_8));
-      return;
-    }
-    if (InlineCssRtfxBlobCodec.CODEC_NAME.equals(bodyCodec)) {
-      InlineCssTextArea area = editor.getBodyArea();
-      InlineCssRtfxBlobCodec.decodeFromGzipInto(area, bodyBlob);
-      editor.setBodyHtml(new RichTextHtmlConverter().plainTextToHtmlBody(area.getText()));
       return;
     }
     editor.setBodyHtml(new String(bodyBlob, StandardCharsets.UTF_8));
