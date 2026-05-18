@@ -4,6 +4,8 @@ import de.zettelkastenfx.fx.config.ExternalStylesheetService;
 import de.zettelkastenfx.notes.editor.NoteEditorPane;
 import javafx.application.Platform;
 import javafx.scene.Scene;
+import javafx.scene.input.Clipboard;
+import javafx.scene.input.ClipboardContent;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
 import javafx.stage.Stage;
@@ -1209,7 +1211,7 @@ class TinyMceEditorPaneTest {
   }
 
   /**
-   * Per Strg+V eingefuegter Klartext wird absatzweise von mehrfachen Leerzeichen und Randzeichen bereinigt.
+   * Per Strg+V eingefuegter Klartext wird absatzweise von mehrfachen Leerzeichen bereinigt.
    *
    * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
    */
@@ -1250,7 +1252,7 @@ class TinyMceEditorPaneTest {
               value: {
                 getData: function(type) {
                   if (type === 'text/html') return '';
-                  if (type === 'text/plain') return '  Alpha   Beta  \\n\\t Gamma    Delta ' + String.fromCharCode(8203);
+                  if (type === 'text/plain') return 'Alpha   Beta\\nGamma    Delta';
                   return '';
                 }
               }
@@ -1272,12 +1274,12 @@ class TinyMceEditorPaneTest {
   }
 
   /**
-   * HTML-Paste wird innerhalb vorhandener Absaetze bereinigt, ohne die Absatzstruktur zu verlieren.
+   * HTML-Paste reduziert nur mehrfache Leerzeichen in Textknoten und erhaelt Tags mit Attributen.
    *
    * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
    */
   @Test
-  void pasteCleanupKeepsHtmlParagraphsAndTrimsEdges() throws Exception {
+  void pasteCleanupKeepsHtmlTagsAndAttributes() throws Exception {
     AtomicReference<TinyMceEditorPane> editorRef = new AtomicReference<>();
     AtomicReference<Stage> stageRef = new AtomicReference<>();
     runOnFxThread(() -> {
@@ -1300,12 +1302,153 @@ class TinyMceEditorPaneTest {
       AtomicReference<String> cleanedRef = new AtomicReference<>();
       runOnFxThread(() -> cleanedRef.set(String.valueOf(editor.getWebView().getEngine().executeScript("""
           window.zkfxCleanPastedHtml(
-            '<p>&nbsp; Alpha   <span>Beta&nbsp;</span></p>'
-            + '<p>' + String.fromCharCode(8203) + ' Gamma    Delta ' + String.fromCharCode(8203) + '</p>'
+            '<table data-source="clipboard"><tbody><tr>'
+            + '<td style="width: 40%;">Alpha   Beta</td>'
+            + '<td><span class="keep">Gamma    Delta</span></td>'
+            + '</tr></tbody></table>'
+            + '<ul class="keep-list"><li data-id="1">One   Two</li><li>Three    Four</li></ul>'
           )
           """))));
 
-      assertEquals("<p>Alpha <span>Beta</span></p><p>Gamma Delta</p>", cleanedRef.get());
+      String cleaned = cleanedRef.get();
+      assertTrue(cleaned.contains("<table"), cleaned);
+      assertTrue(cleaned.contains("data-source=\"clipboard\""), cleaned);
+      assertTrue(cleaned.contains("<td style=\"width: 40%;\">Alpha Beta</td>"), cleaned);
+      assertTrue(cleaned.contains("<span class=\"keep\">Gamma Delta</span>"), cleaned);
+      assertTrue(cleaned.contains("<ul class=\"keep-list\">"), cleaned);
+      assertTrue(cleaned.contains("<li data-id=\"1\">One Two</li>"), cleaned);
+      assertFalse(cleaned.contains("Alpha   Beta"), cleaned);
+      assertFalse(cleaned.contains("Gamma    Delta"), cleaned);
+    } finally {
+      runOnFxThread(() -> stageRef.get().close());
+    }
+  }
+
+  /**
+   * Strg+V liest HTML direkt aus der JavaFX-Zwischenablage, bevor WebView es als Klartext behandeln kann.
+   *
+   * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
+   */
+  @Test
+  void ctrlVPasteUsesJavaFxClipboardHtmlBeforePlainText() throws Exception {
+    AtomicReference<TinyMceEditorPane> editorRef = new AtomicReference<>();
+    AtomicReference<Stage> stageRef = new AtomicReference<>();
+    runOnFxThread(() -> {
+      TinyMceEditorPane editor = new TinyMceEditorPane();
+      Stage stage = new Stage();
+      stage.setScene(new Scene(editor, 640, 420));
+      stage.show();
+      editorRef.set(editor);
+      stageRef.set(stage);
+    });
+    TinyMceEditorPane editor = editorRef.get();
+    assertNotNull(editor);
+
+    try {
+      waitUntilFx(() -> Boolean.TRUE.equals(editor.getWebView().getEngine().executeScript(
+          "Boolean(window.zkfxSetContent && window.zkfxUseFallback)"
+      )));
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("window.zkfxUseFallback();"));
+      runOnFxThread(() -> editor.setHtmlContent("<p><br></p>"));
+      waitUntilFx(() -> editor.getHtmlContent().contains("<p><br></p>"));
+
+      runOnFxThread(() -> {
+        ClipboardContent content = new ClipboardContent();
+        content.putHtml("""
+            <table data-source="javafx"><tbody><tr><td>Alpha   Beta</td></tr></tbody></table>
+            <ol class="steps"><li data-id="1">One    Two</li></ol>
+            """);
+        content.putString("Alpha   Beta\nOne    Two");
+        Clipboard.getSystemClipboard().setContent(content);
+        editor.requestEditorFocus();
+      });
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("""
+          (() => {
+            const fallback = document.getElementById('fallbackEditor');
+            const range = document.createRange();
+            range.selectNodeContents(fallback);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+          })();
+          """));
+      runOnFxThread(() -> editor.getWebView().fireEvent(new KeyEvent(
+          KeyEvent.KEY_PRESSED,
+          "",
+          "",
+          KeyCode.V,
+          false,
+          true,
+          false,
+          false
+      )));
+
+      AtomicReference<String> htmlRef = new AtomicReference<>();
+      runOnFxThread(() -> htmlRef.set(editor.getHtmlContent()));
+      String html = htmlRef.get();
+
+      assertTrue(html.contains("<table"), html);
+      assertTrue(html.contains("data-source=\"javafx\""), html);
+      assertTrue(html.contains("<td"), html);
+      assertTrue(html.contains("Alpha Beta"), html);
+      assertTrue(html.contains("<ol class=\"steps\">"), html);
+      assertTrue(html.contains("<li data-id=\"1\">One Two</li>"), html);
+      assertFalse(html.contains("Alpha   Beta"), html);
+      assertFalse(html.contains("One    Two"), html);
+    } finally {
+      runOnFxThread(() -> stageRef.get().close());
+    }
+  }
+
+  /**
+   * Bei vertikaler Scrollbar vergroessert der Editor das rechte Padding um die Scrollbarbreite.
+   *
+   * @throws Exception wenn JavaFX oder WebView nicht rechtzeitig reagieren
+   */
+  @Test
+  void fallbackEditorAddsRightInsetWhenVerticalScrollbarIsVisible() throws Exception {
+    AtomicReference<TinyMceEditorPane> editorRef = new AtomicReference<>();
+    AtomicReference<Stage> stageRef = new AtomicReference<>();
+    runOnFxThread(() -> {
+      TinyMceEditorPane editor = new TinyMceEditorPane();
+      Stage stage = new Stage();
+      stage.setScene(new Scene(editor, 360, 120));
+      stage.show();
+      editorRef.set(editor);
+      stageRef.set(stage);
+    });
+    TinyMceEditorPane editor = editorRef.get();
+    assertNotNull(editor);
+
+    try {
+      waitUntilFx(() -> Boolean.TRUE.equals(editor.getWebView().getEngine().executeScript(
+          "Boolean(window.zkfxSetContent && window.zkfxUseFallback)"
+      )));
+      runOnFxThread(() -> editor.getWebView().getEngine().executeScript("window.zkfxUseFallback();"));
+      StringBuilder html = new StringBuilder();
+      for (int i = 0; i < 80; i++) {
+        html.append("<p>Zeile ").append(i).append("</p>");
+      }
+      runOnFxThread(() -> editor.setHtmlContent(html.toString()));
+
+      waitUntilFx(() -> Boolean.TRUE.equals(editor.getWebView().getEngine().executeScript("""
+          (() => {
+            const fallback = document.getElementById('fallbackEditor');
+            window.zkfxUpdateScrollbarInset();
+            const base = parseFloat(fallback.getAttribute('data-zkfx-base-padding-right') || '0');
+            const right = parseFloat(fallback.style.paddingRight || '0');
+            return fallback.scrollHeight > fallback.clientHeight && right > base;
+          })();
+          """)));
+
+      AtomicReference<String> debugRef = new AtomicReference<>();
+      runOnFxThread(() -> debugRef.set(String.valueOf(editor.getWebView().getEngine().executeScript("""
+          (() => {
+            const fallback = document.getElementById('fallbackEditor');
+            return fallback.getAttribute('data-zkfx-base-padding-right') + ':' + fallback.style.paddingRight;
+          })();
+          """))));
+      assertTrue(debugRef.get().matches("\\d+(\\.\\d+)?:\\d+(\\.\\d+)?px"), debugRef.get());
     } finally {
       runOnFxThread(() -> stageRef.get().close());
     }
